@@ -1,0 +1,69 @@
+{
+  "release": "InsightForge user-feedback completion refresh",
+  "application_version": "3.0.0",
+  "verification_date": "2026-08-28",
+  "source_baseline": "InsightForge_Current_Runnable_WIP_20260828_071251.zip",
+  "items": [
+    {
+      "id": 1,
+      "item": "完整示例七步讲解 UI、进度保存、跳过/重启",
+      "status": "IMPLEMENTED_AND_TESTED"
+    },
+    {
+      "id": 2,
+      "item": "首页下一步建议卡片和项目内引导卡片",
+      "status": "IMPLEMENTED_AND_TESTED"
+    },
+    {
+      "id": 3,
+      "item": "PRD/TechDoc 在线编辑、自动草稿、版本差异、恢复旧版本、指定版本导出",
+      "status": "IMPLEMENTED_AND_TESTED"
+    },
+    {
+      "id": 4,
+      "item": "历史项目中心：搜索、筛选、排序、分页、复制、集中回收箱",
+      "status": "IMPLEMENTED_AND_TESTED"
+    },
+    {
+      "id": 5,
+      "item": "项目级模型覆盖前端选择入口",
+      "status": "IMPLEMENTED_AND_TESTED"
+    },
+    {
+      "id": 6,
+      "item": "Qwen/Kimi/DeepSeek/GLM 真实 API 连接验证",
+      "status": "IMPLEMENTED_LOCAL_GATE_PENDING",
+      "boundary": "真实账号连通必须在用户 Windows 本机用 Credential Manager 密钥并显式授权最小真实调用；本沙箱不把模拟适配器写成 PASS。"
+    },
+    {
+      "id": 7,
+      "item": "桌面端和移动端浏览器验收",
+      "status": "ACCEPTANCE_EVIDENCE_INCLUDED_LOCAL_RECHECK_REQUIRED",
+      "boundary": "已包含桌面/移动验收截图与结果；当前沙箱对新的 localhost Chromium 导航施加管理员阻断，因此正式 Windows 部署后需再验收一次。"
+    },
+    {
+      "id": 8,
+      "item": "正式替换 E:\\AI_Projects\\InsightForge",
+      "status": "DEPLOYMENT_SCRIPT_INCLUDED_PENDING_LOCAL_EXECUTION",
+      "boundary": "本沙箱不能访问用户 E 盘；包内含 staging/backup/rollback PowerShell 脚本与 Codex 指令。"
+    },
+    {
+      "id": 9,
+      "item": "完整示例复制独立审查",
+      "status": "IMPLEMENTED_TESTED_REVIEW_INCLUDED"
+    }
+  ],
+  "automated_verification": {
+    "full_pytest": "337 passed, 1 skipped in 106.36s",
+    "skip_reason": "Windows-only start.bat launcher test skipped on Linux",
+    "compileall": "PASS",
+    "node_app_js": "PASS",
+    "node_model_settings_js": "PASS"
+  },
+  "claim_boundary": [
+    "本包可主张上述工程功能已实现并有自动化回归覆盖。",
+    "不能主张四家付费供应商真实账号在本沙箱全部连通。",
+    "不能主张 E:\\AI_Projects\\InsightForge 已被本沙箱正式替换。",
+    "模拟适配器测试不等于真实 API 连通。"
+  ]
+}

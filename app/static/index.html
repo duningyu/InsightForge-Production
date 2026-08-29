@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="InsightForge 3.0：从模糊 Idea 到可执行 MVP，并用证据持续校正产品判断。">
+  <title>InsightForge 3.0 · Quick Value → Evidence Depth</title>
+  <link rel="stylesheet" href="/static/styles.css?v=3.0.0&amp;build=user-feedback-complete.1">
+</head>
+<body>
+  <div class="app-frame">
+    <header class="global-header">
+      <a id="home-button" class="brand" href="#" aria-label="InsightForge 首页">
+        <span class="brand-symbol" aria-hidden="true">IF</span>
+        <span><strong>InsightForge</strong><small>Idea → MVP → Evidence</small></span>
+      </a>
+      <div id="project-context" class="project-context hidden">
+        <label>
+          <span>当前项目</span>
+          <select id="project-select" aria-label="选择项目"></select>
+        </label>
+        <label class="project-model-field">
+          <span>项目模型</span>
+          <select id="project-model-profile" aria-label="项目级模型覆盖">
+            <option value="">继承全局模型</option>
+          </select>
+        </label>
+        <button id="new-idea-button" class="button button-quiet" type="button">＋ 新 Idea</button>
+      </div>
+      <button id="settings-button" class="button button-secondary header-settings-button" type="button" aria-controls="model-settings-view">设置</button>
+      <button id="mobile-nav-button" class="mobile-nav-button hidden" type="button" aria-controls="primary-nav" aria-expanded="false">☰</button>
+    </header>
+
+    <main>
+      <div id="runtime-disclosure" class="runtime-disclosure hidden" role="status" aria-live="polite">
+        <div>
+          <strong>本地演示模式</strong>
+          <span>本地演示模式：当前结构化结果用于验证工作流，不代表真实模型已理解任意 Idea。</span>
+        </div>
+      </div>
+      <section id="quick-start-view" class="quick-start-view">
+        <div class="quick-start-copy">
+          <p class="eyebrow">QUICK VALUE</p>
+          <h1>把一个 Idea 变成能做的产品。</h1>
+          <p>先得到真正针对当前问题的 2–3 个方案和可执行 MVP；只有需要继续验证时，再进入证据和正式文档。</p>
+        </div>
+        <article id="home-next-action-card" class="next-action-card hidden" aria-live="polite"></article>
+        <form id="quick-start-form" class="quick-start-card">
+          <label class="idea-label" for="quick-start-idea">你现在想解决什么问题？</label>
+          <textarea id="quick-start-idea" required maxlength="4000" rows="5" placeholder="例如：我想做一个帮助小型便利店减少缺货的工具。"></textarea>
+          <div class="optional-grid">
+            <label>目标用户（可选）<input id="quick-start-target-user" type="text" maxlength="1000" placeholder="例如：小型便利店店主"></label>
+            <label>你最在意什么
+              <select id="quick-start-priority">
+                <option value="fast_mvp">最快 MVP</option>
+                <option value="lowest_cost">最低成本</option>
+                <option value="best_effect">效果优先</option>
+                <option value="portfolio">作品集表达</option>
+              </select>
+            </label>
+          </div>
+          <label>已有资源/数据（可选）<textarea id="quick-start-resources" rows="2" placeholder="每行一项，例如：商品库存、近 7 日销量"></textarea></label>
+          <div class="form-actions">
+            <button class="button button-primary" type="submit">生成项目方案</button>
+            <span id="runtime-note" class="runtime-note"></span>
+          </div>
+        </form>
+        <section class="example-gallery" aria-labelledby="example-gallery-title">
+          <div class="recent-projects-heading">
+            <div>
+              <p class="eyebrow">GUIDED EXAMPLE</p>
+              <h2 id="example-gallery-title">完整示例 · 七步讲解</h2>
+              <p>复制示例到独立项目后，从 Idea、方案、MVP、关键判断、证据、文档到开发交接逐步了解完整流程。</p>
+            </div>
+          </div>
+          <div id="example-list" class="example-list" aria-live="polite"></div>
+        </section>
+        <section id="recent-projects" class="recent-projects" aria-labelledby="recent-projects-title">
+          <div class="recent-projects-heading">
+            <div>
+              <p class="eyebrow">PROJECT HISTORY</p>
+              <h2 id="recent-projects-title">历史项目</h2>
+              <p>继续之前的产品设计，项目内容和版本记录都会保留。</p>
+            </div>
+            <button id="show-all-projects" class="button button-secondary hidden" type="button" aria-expanded="false">查看全部历史</button>
+          </div>
+          <div id="recent-project-list" class="recent-project-list" aria-live="polite"></div>
+        </section>
+        <section id="history-center" class="history-center" aria-labelledby="history-center-title">
+          <div class="recent-projects-heading">
+            <div>
+              <p class="eyebrow">PROJECT CENTER</p>
+              <h2 id="history-center-title">历史项目中心</h2>
+              <p>搜索、筛选、排序和分页管理全部项目；复制不会共享可变项目状态。</p>
+            </div>
+          </div>
+          <div class="history-toolbar">
+            <label>搜索<input id="history-search" type="search" maxlength="300" placeholder="项目名称或摘要"></label>
+            <label>状态<select id="history-status-filter"><option value="all">全部</option><option value="active">进行中</option><option value="example">完整示例</option><option value="trashed">回收箱</option></select></label>
+            <label>排序<select id="history-sort"><option value="updated_at:desc">最近更新</option><option value="created_at:desc">最近创建</option><option value="title:asc">名称 A–Z</option><option value="title:desc">名称 Z–A</option></select></label>
+          </div>
+          <div id="history-project-list" class="history-project-list" aria-live="polite"></div>
+          <div class="history-pagination">
+            <button id="history-prev" class="button button-secondary" type="button">上一页</button>
+            <span id="history-page-status" class="muted">第 1 页</span>
+            <button id="history-next" class="button button-secondary" type="button">下一页</button>
+          </div>
+          <details id="trash-center" class="trash-center">
+            <summary>集中回收箱</summary>
+            <p class="muted">切换上方状态为“回收箱”即可集中恢复或永久删除项目。</p>
+          </details>
+        </section>
+      </section>
+
+      <section id="model-settings-view" class="model-settings-view hidden" aria-labelledby="model-settings-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">SETTINGS</p>
+            <h1 id="model-settings-title">模型配置</h1>
+            <p>配置会安全保存在本机凭据存储中；此页面不会显示、复制或保留已有密钥。</p>
+          </div>
+          <button id="settings-back" class="button button-secondary" type="button">返回首页</button>
+        </div>
+        <div class="model-settings-grid">
+          <form id="model-profile-form" class="model-profile-form">
+            <div class="model-form-heading"><strong id="model-profile-form-title">新增模型配置</strong><button id="model-profile-cancel" class="button button-quiet hidden" type="button">取消编辑</button></div>
+            <label>显示名称<input name="display_name" type="text" maxlength="160" required placeholder="例如：团队 Qwen 主配置"></label>
+            <label>服务商
+              <select name="provider" id="model-profile-provider" required>
+                <option value="qwen">Qwen</option>
+                <option value="kimi">Kimi</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="glm">GLM</option>
+                <option value="openai">OpenAI</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <label>模型 ID<input name="model_id" type="text" maxlength="240" required placeholder="例如：qwen-plus"></label>
+            <label>API 密钥（新增或替换时填写）<input name="api_key" type="password" value="" autocomplete="new-password" placeholder="仅发送到本机服务，不会回显"></label>
+            <details id="custom-provider-fields" class="advanced-panel">
+              <summary>高级：Custom 协议与 Base URL</summary>
+              <div class="custom-provider-fields">
+                <label>协议
+                  <select name="protocol">
+                    <option value="openai_chat_completions">OpenAI Chat Completions</option>
+                    <option value="anthropic_messages">Anthropic Messages</option>
+                  </select>
+                </label>
+                <label>Base URL<input name="base_url" type="url" maxlength="2000" placeholder="https://example.com/v1"></label>
+              </div>
+            </details>
+            <label class="enabled-field"><input name="enabled" type="checkbox" checked> 启用此配置</label>
+            <div class="form-actions"><button class="button button-primary" type="submit">保存配置</button><span id="model-profile-form-note" class="runtime-note"></span></div>
+          </form>
+          <div class="model-profile-list-panel">
+            <div class="model-form-heading"><strong>已保存的配置</strong><span id="model-profile-count" class="muted"></span></div>
+            <div id="model-profile-list" class="model-profile-list" aria-live="polite"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="project-shell" class="project-shell hidden">
+        <aside id="primary-nav" class="primary-nav" aria-label="项目主导航">
+          <div class="nav-project">
+            <span class="nav-kicker">CURRENT PROJECT</span>
+            <strong id="nav-project-title">项目</strong>
+          </div>
+          <button class="nav-item active" data-view="snapshot" type="button"><span>01</span><strong>项目成果</strong></button>
+          <button class="nav-item" data-view="solutions" type="button"><span>02</span><strong>方案</strong></button>
+          <button class="nav-item" data-view="evidence" type="button"><span>03</span><strong>证据</strong></button>
+          <button class="nav-item" data-view="documents" type="button"><span>04</span><strong>文档</strong></button>
+          <button class="nav-item" data-view="handoff" type="button"><span>05</span><strong>开发交接</strong></button>
+        </aside>
+
+        <div id="project-content" class="project-content">
+          <article id="project-next-action-card" class="next-action-card hidden" aria-live="polite"></article>
+          <section id="snapshot-view" class="workspace-view" data-workspace-view="snapshot">
+            <div id="snapshot-content" class="view-content"></div>
+            <button id="snapshot-primary-action" class="button button-primary hidden" type="button"></button>
+            <button id="snapshot-health-reconfirm" class="button button-secondary hidden" type="button">确认当前 Snapshot 仍可执行</button>
+          </section>
+          <section id="solutions-view" class="workspace-view hidden" data-workspace-view="solutions">
+            <div id="idea-brief-content"></div>
+            <div id="solutions-content"></div>
+          </section>
+          <section id="evidence-view" class="workspace-view hidden" data-workspace-view="evidence">
+            <div class="section-heading"><div><p class="eyebrow">EVIDENCE</p><h2>当前最需要验证什么？</h2><p>优先验证会改变方案的关键判断，而不是先堆资料。</p></div></div>
+            <div class="evidence-tabs" role="tablist" aria-label="证据视图">
+              <button class="evidence-tab active" data-evidence-tab="claims" type="button" role="tab" aria-selected="true">关键判断</button>
+              <button class="evidence-tab" data-evidence-tab="impact" type="button" role="tab" aria-selected="false">影响记录</button>
+              <button class="evidence-tab" data-evidence-tab="sources" type="button" role="tab" aria-selected="false">资料库</button>
+            </div>
+            <div id="evidence-claims-panel" class="evidence-panel"><div id="evidence-content"></div></div>
+            <div id="evidence-impact-panel" class="evidence-panel hidden"><div id="impact-content"></div></div>
+            <div id="evidence-sources-panel" class="evidence-panel hidden">
+              <div class="secondary-panel">
+                <div class="secondary-panel-heading"><div><strong>项目资料库</strong><p>资料进入后仍要经过 Claim 关系与 exact-span 校验；上传本身不等于支持某个判断。</p></div><button id="analyze-evidence-button" class="button button-secondary" type="button">分析资料影响</button></div>
+                <form id="add-evidence-form" class="evidence-form">
+                  <label>标题<input id="evidence-title" maxlength="200" required placeholder="例如：店主访谈 #03"></label>
+                  <label>来源类型
+                    <select id="evidence-source-type">
+                      <option value="real_user_research">真实用户研究</option>
+                      <option value="public_source">公开资料</option>
+                      <option value="user_input">项目所有者输入</option>
+                      <option value="implementation_evidence">实现证据</option>
+                      <option value="simulated_research">模拟研究（仅演示）</option>
+                    </select>
+                  </label>
+                  <label class="evidence-content-field">内容<textarea id="evidence-text" rows="5" maxlength="2000000" required placeholder="粘贴访谈原话、公开资料摘录或实现证据。"></textarea></label>
+                  <button class="button button-primary" type="submit">添加证据</button>
+                </form>
+                <div id="source-list"></div>
+              </div>
+            </div>
+          </section>
+          <section id="documents-view" class="workspace-view hidden" data-workspace-view="documents">
+            <div class="section-heading"><div><p class="eyebrow">DOCUMENTS</p><h2>正式文档</h2><p>PRD / TechDoc 来自当前确认的项目成果；编辑会先自动保存为草稿，正式保存始终创建新版本。</p></div></div>
+            <div id="documents-content"></div>
+            <section class="document-editor-shell" aria-labelledby="document-editor-title">
+              <div class="document-editor-toolbar">
+                <div><strong id="document-editor-title">在线编辑</strong><span id="document-autosave-status" class="muted">选择文档版本后开始编辑</span></div>
+                <div class="document-editor-controls">
+                  <label>文档<select id="document-editor-type"><option value="prd">PRD</option><option value="techdoc">TechDoc</option></select></label>
+                  <label>导出<select id="document-export-format"><option value="md">Markdown</option><option value="docx">DOCX</option><option value="json">JSON</option></select></label>
+                  <button id="document-export-selected" class="button button-secondary" type="button">导出指定版本</button>
+                </div>
+              </div>
+              <div class="document-editor-grid">
+                <div class="document-editor-main">
+                  <textarea id="document-editor" rows="24" spellcheck="false" aria-label="文档在线编辑器" placeholder="先生成或选择一个正式文档版本。"></textarea>
+                  <div class="document-editor-actions">
+                    <button id="document-save-version" class="button button-primary" type="button">保存为新版本</button>
+                    <button id="document-validate-selected" class="button button-secondary" type="button">检查当前版本</button>
+                    <button id="document-restore-selected" class="button button-quiet" type="button">恢复所选旧版本为新版本</button>
+                  </div>
+                  <pre id="document-diff-view" class="document-diff-view" aria-live="polite">选择两个版本后可查看差异。</pre>
+                </div>
+                <aside class="document-version-panel">
+                  <strong>版本历史</strong>
+                  <div id="document-version-list" class="document-version-list"></div>
+                </aside>
+              </div>
+            </section>
+          </section>
+          <section id="handoff-view" class="workspace-view hidden" data-workspace-view="handoff">
+            <div class="section-heading"><div><p class="eyebrow">HANDOFF</p><h2>开发准备</h2><p>只把当前确认的 MVP 范围、验收案例和正式文档交给开发工具。</p></div></div>
+            <div id="handoff-content"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <aside id="walkthrough-panel" class="walkthrough-panel hidden" aria-live="polite">
+    <div class="walkthrough-head"><div><p class="eyebrow">7-STEP WALKTHROUGH</p><strong id="walkthrough-title">完整示例讲解</strong></div><button id="walkthrough-close" class="button button-quiet" type="button" aria-label="关闭讲解">×</button></div>
+    <div class="walkthrough-progress"><span id="walkthrough-progress-text">步骤 1 / 7</span><progress id="walkthrough-progress" max="7" value="1"></progress></div>
+    <h3 id="walkthrough-step-title"></h3>
+    <p id="walkthrough-step-copy" class="muted"></p>
+    <div class="walkthrough-actions">
+      <button id="walkthrough-restart" class="button button-quiet" type="button">重新开始</button>
+      <button id="walkthrough-skip" class="button button-secondary" type="button">跳过讲解</button>
+      <button id="walkthrough-next" class="button button-primary" type="button">下一步</button>
+    </div>
+  </aside>
+
+  <dialog id="idea-brief-dialog" class="dialog-card">
+    <form method="dialog" id="idea-brief-form">
+      <p class="eyebrow">IDEA BRIEF</p>
+      <h2>我目前这样理解你的想法</h2>
+      <div id="idea-brief-dialog-content"></div>
+      <div class="dialog-actions">
+        <button id="idea-brief-edit" class="button button-quiet" value="cancel" type="button">修改理解</button>
+        <button id="idea-brief-confirm" class="button button-primary" value="default" type="submit">基本准确，继续</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js?v=3.0.0&amp;build=user-feedback-complete.1" defer></script>
+  <script src="/static/model-settings.js?v=3.0.0&amp;build=secure-profiles.1" defer></script>
+</body>
+</html>

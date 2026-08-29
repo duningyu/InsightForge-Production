@@ -1,0 +1,33 @@
+{
+  "desktop_home": {
+    "overflow_ok": true,
+    "example_cards": 1
+  },
+  "walkthrough": {
+    "step": "步骤 1 / 7",
+    "title": "1. Idea 理解",
+    "model_options": 2,
+    "after_next": "步骤 2 / 7"
+  },
+  "documents": {
+    "versions": 2,
+    "enabled": true,
+    "diff": "--- prd_v1\n+++ prd_v2\n@@\n-早期版本问题定义。\n+补货依赖人工经验。"
+  },
+  "history": {
+    "items": 2,
+    "page": "第 1 / 1 页 · 共 2 个"
+  },
+  "desktop_errors": {
+    "console": [
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    ],
+    "page": []
+  },
+  "mobile": {
+    "overflow_ok": true,
+    "console": [],
+    "page": []
+  }
+}

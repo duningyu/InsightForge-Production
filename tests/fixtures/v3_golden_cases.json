@@ -1,0 +1,823 @@
+{
+  "convenience_replenishment": {
+    "match_terms": [
+      "便利店",
+      "缺货",
+      "补货"
+    ],
+    "brief": {
+      "target_user": "小型便利店店主与店员",
+      "problem": "补货依赖人工经验，可能不能及时发现需要补货的商品",
+      "desired_outcome": "更及时发现补货需求并降低漏补货",
+      "known_resources": [],
+      "constraints": [
+        "优先低成本 MVP"
+      ],
+      "unknowns": [
+        "是否有数字库存数据",
+        "是否有稳定历史销量"
+      ],
+      "provenance": {
+        "target_user": "model_hypothesis",
+        "problem": "model_hypothesis",
+        "desired_outcome": "model_hypothesis",
+        "known_resources": "model_hypothesis",
+        "constraints": "user_input",
+        "unknowns": "model_hypothesis"
+      },
+      "clarification_required": false,
+      "clarification_question": null
+    },
+    "solutions": [
+      {
+        "title": "库存阈值提醒",
+        "mechanism": "rule_based",
+        "summary": "库存低于安全阈值时生成补货提醒。",
+        "why_fit": "数据依赖最低，可先验证主动提醒本身是否有价值。",
+        "user_flow": [
+          "查看库存",
+          "规则判断",
+          "查看待补货清单",
+          "人工确认"
+        ],
+        "mvp_pages": [
+          "今日补货看板",
+          "商品库存页",
+          "阈值设置页"
+        ],
+        "features": [
+          "库存维护",
+          "阈值规则",
+          "补货清单",
+          "人工确认"
+        ],
+        "inputs": [
+          "商品",
+          "当前库存",
+          "安全库存"
+        ],
+        "outputs": [
+          "是否需要补货",
+          "补货优先级"
+        ],
+        "decision_logic": [
+          "当前库存 <= 安全库存时提醒"
+        ],
+        "data_requirements": [
+          "当前库存"
+        ],
+        "technical_components": [
+          "FastAPI",
+          "SQLite",
+          "规则引擎",
+          "Web UI"
+        ],
+        "implementation_plan": [
+          "Week 1: 数据结构、库存管理、规则判断",
+          "Week 2: 看板、确认流程、测试"
+        ],
+        "acceptance_cases": [
+          "库存3且安全库存5时商品进入待补货列表"
+        ],
+        "risks": [
+          "安全库存阈值需要合理维护"
+        ],
+        "unknowns": [
+          "店主是否愿意维护安全库存"
+        ],
+        "complexity": "low",
+        "provenance": "model_hypothesis",
+        "required_data_class": "current_inventory",
+        "automation_level": "low",
+        "human_role": "确认补货任务",
+        "core_decision_logic": "inventory_threshold",
+        "major_dependency": "reliable_inventory_input",
+        "requires_llm_runtime": false,
+        "requires_rag_runtime": false,
+        "requires_agent_runtime": false
+      },
+      {
+        "title": "销量预测补货",
+        "mechanism": "prediction_based",
+        "summary": "根据历史销量和库存预测库存耗尽时间并提前提醒。",
+        "why_fit": "能进一步解决什么时候补和补多少，但依赖历史销量。",
+        "user_flow": [
+          "同步销量与库存",
+          "生成预测",
+          "查看补货建议",
+          "执行补货"
+        ],
+        "mvp_pages": [
+          "风险看板",
+          "商品趋势页"
+        ],
+        "features": [
+          "销量特征",
+          "耗尽时间预测",
+          "补货建议"
+        ],
+        "inputs": [
+          "当前库存",
+          "历史销量"
+        ],
+        "outputs": [
+          "预计耗尽时间",
+          "建议补货量"
+        ],
+        "decision_logic": [
+          "根据销量趋势预测库存消耗"
+        ],
+        "data_requirements": [
+          "当前库存",
+          "至少7日历史销量"
+        ],
+        "technical_components": [
+          "FastAPI",
+          "SQLite",
+          "预测模型",
+          "Web UI"
+        ],
+        "implementation_plan": [
+          "Week 1: 数据清洗与预测基线",
+          "Week 2: 风险看板与离线验收"
+        ],
+        "acceptance_cases": [
+          "高销量且库存低的商品应获得更高补货优先级"
+        ],
+        "risks": [
+          "历史销量不足会导致预测不稳定"
+        ],
+        "unknowns": [
+          "历史销量是否稳定可获得"
+        ],
+        "complexity": "medium",
+        "provenance": "model_hypothesis",
+        "required_data_class": "inventory_plus_sales_history",
+        "automation_level": "medium",
+        "human_role": "查看并执行预测建议",
+        "core_decision_logic": "forecast_stockout_time",
+        "major_dependency": "historical_sales_availability",
+        "requires_llm_runtime": false,
+        "requires_rag_runtime": false,
+        "requires_agent_runtime": false
+      },
+      {
+        "title": "预测 + 人工确认",
+        "mechanism": "human_in_the_loop",
+        "summary": "系统预测补货需求，由店主确认建议后生成补货任务。",
+        "why_fit": "在保留预测能力的同时控制错误自动化风险。",
+        "user_flow": [
+          "生成预测",
+          "查看建议",
+          "人工调整",
+          "确认补货任务"
+        ],
+        "mvp_pages": [
+          "补货建议页",
+          "人工确认页"
+        ],
+        "features": [
+          "预测建议",
+          "人工调整",
+          "确认记录"
+        ],
+        "inputs": [
+          "库存",
+          "历史销量",
+          "人工调整"
+        ],
+        "outputs": [
+          "建议补货量",
+          "确认后的补货任务"
+        ],
+        "decision_logic": [
+          "预测建议必须经人工确认后生效"
+        ],
+        "data_requirements": [
+          "当前库存",
+          "历史销量"
+        ],
+        "technical_components": [
+          "FastAPI",
+          "SQLite",
+          "预测模型",
+          "确认工作流"
+        ],
+        "implementation_plan": [
+          "Week 1: 预测基线与建议接口",
+          "Week 2: 人工确认与记录"
+        ],
+        "acceptance_cases": [
+          "未经人工确认的建议不得进入正式补货任务"
+        ],
+        "risks": [
+          "确认步骤可能增加操作负担"
+        ],
+        "unknowns": [
+          "用户是否接受每次人工确认"
+        ],
+        "complexity": "medium",
+        "provenance": "model_hypothesis",
+        "required_data_class": "inventory_plus_sales_history",
+        "automation_level": "medium",
+        "human_role": "最终确认和调整补货量",
+        "core_decision_logic": "forecast_then_human_confirm",
+        "major_dependency": "historical_sales_and_human_review",
+        "requires_llm_runtime": false,
+        "requires_rag_runtime": false,
+        "requires_agent_runtime": false
+      }
+    ]
+  },
+  "hr_resume_screening": {
+    "match_terms": [
+      "筛选简历",
+      "简历筛选",
+      "简历"
+    ],
+    "brief": {
+      "target_user": "企业招聘 HR 与用人部门面试官",
+      "problem": "招聘人员需要从大量简历中识别满足岗位硬性条件且值得优先沟通的候选人，人工逐份浏览耗时且筛选标准可能不一致",
+      "desired_outcome": "在保留人工最终判断的前提下，更快形成可解释的候选人初筛清单",
+      "known_resources": [],
+      "constraints": [
+        "简历包含个人敏感信息",
+        "系统只能辅助筛选，不能自动做出录用决定"
+      ],
+      "unknowns": [
+        "岗位要求是否已经结构化",
+        "现有简历的文件格式与数量",
+        "企业允许使用哪些模型或部署环境"
+      ],
+      "provenance": {
+        "target_user": "model_hypothesis",
+        "problem": "model_hypothesis",
+        "desired_outcome": "model_hypothesis",
+        "known_resources": "model_hypothesis",
+        "constraints": "model_hypothesis",
+        "unknowns": "model_hypothesis"
+      },
+      "clarification_required": false,
+      "clarification_question": null
+    },
+    "solutions": [
+      {
+        "title": "岗位硬条件简历初筛",
+        "mechanism": "rule_based",
+        "summary": "把岗位学历、经验、技能和地点等硬条件转成规则，对简历结构化字段进行可解释初筛。",
+        "why_fit": "无需大模型即可验证 HR 是否能通过统一规则减少重复浏览，并保留每个筛选结果的理由。",
+        "user_flow": [
+          "创建岗位并填写硬性条件",
+          "上传或录入简历字段",
+          "查看通过、待确认和不匹配列表",
+          "HR 人工复核筛选理由"
+        ],
+        "mvp_pages": [
+          "岗位条件设置页",
+          "简历导入页",
+          "候选人初筛列表",
+          "筛选理由详情页"
+        ],
+        "features": [
+          "岗位条件配置",
+          "简历字段提取或手工录入",
+          "规则匹配",
+          "人工复核",
+          "筛选理由记录"
+        ],
+        "inputs": [
+          "岗位硬性条件",
+          "简历结构化字段",
+          "HR 人工修正"
+        ],
+        "outputs": [
+          "简历匹配状态",
+          "命中与未命中的规则",
+          "待人工确认清单"
+        ],
+        "decision_logic": [
+          "逐项检查明确的岗位硬性条件",
+          "信息缺失时进入待确认而不是直接淘汰",
+          "最终去留必须由 HR 人工确认"
+        ],
+        "data_requirements": [
+          "结构化岗位要求",
+          "可读取或人工录入的简历字段"
+        ],
+        "technical_components": [
+          "FastAPI",
+          "SQLite",
+          "规则引擎",
+          "简历字段解析器",
+          "Web UI"
+        ],
+        "implementation_plan": [
+          "Week 1: 岗位条件、简历字段模型与规则匹配接口",
+          "Week 2: 候选人列表、筛选理由、人工复核与测试"
+        ],
+        "acceptance_cases": [
+          "满足全部硬条件的简历进入通过列表并显示命中理由",
+          "缺少工作年限字段的简历进入待确认列表而不是自动淘汰",
+          "HR 可以覆盖系统结果并记录原因"
+        ],
+        "risks": [
+          "规则可能复制历史岗位偏见",
+          "简历字段缺失或解析错误会影响结果"
+        ],
+        "unknowns": [
+          "HR 是否能稳定维护岗位硬条件",
+          "简历格式是否足够统一"
+        ],
+        "complexity": "low",
+        "provenance": "model_hypothesis",
+        "required_data_class": "job_rules_plus_resume_fields",
+        "automation_level": "low",
+        "human_role": "复核所有待确认结果并做最终筛选决定",
+        "core_decision_logic": "explicit_job_rule_matching",
+        "major_dependency": "maintained_job_requirements_and_resume_fields",
+        "requires_llm_runtime": false,
+        "requires_rag_runtime": false,
+        "requires_agent_runtime": false
+      },
+      {
+        "title": "加权岗位匹配与简历排序",
+        "mechanism": "recommendation_based",
+        "summary": "由 HR 为经验、技能和行业背景设置权重，对简历生成可解释匹配分并排序。",
+        "why_fit": "适合硬条件之外仍需比较优先级的岗位，但评分只能用于排序辅助，不能代表候选人真实能力。",
+        "user_flow": [
+          "设置岗位能力项与权重",
+          "导入简历字段",
+          "查看匹配分和分项理由",
+          "HR 调整权重并确认沟通顺序"
+        ],
+        "mvp_pages": [
+          "岗位权重配置页",
+          "简历排序列表",
+          "候选人分项详情页"
+        ],
+        "features": [
+          "能力项权重",
+          "简历加权评分",
+          "分项解释",
+          "人工置顶与备注"
+        ],
+        "inputs": [
+          "岗位能力项",
+          "权重",
+          "简历结构化信息"
+        ],
+        "outputs": [
+          "简历匹配分",
+          "分项得分",
+          "建议沟通顺序"
+        ],
+        "decision_logic": [
+          "按 HR 明确设置的权重计算分项和总分",
+          "信息缺失必须显示而不能按零分静默处理",
+          "排序结果不自动触发淘汰或录用"
+        ],
+        "data_requirements": [
+          "岗位能力模型",
+          "结构化简历字段",
+          "HR 确认的权重"
+        ],
+        "technical_components": [
+          "FastAPI",
+          "SQLite",
+          "加权评分模块",
+          "解释性结果组件",
+          "Web UI"
+        ],
+        "implementation_plan": [
+          "Week 1: 能力项、权重与评分基线",
+          "Week 2: 排序界面、分项解释和一致性测试"
+        ],
+        "acceptance_cases": [
+          "改变技能权重后简历排序按规则可重复变化",
+          "每个总分均可展开查看分项计算",
+          "缺失字段在结果中明确提示"
+        ],
+        "risks": [
+          "权重设计可能产生不合理偏差",
+          "分数容易被误解为候选人能力真值"
+        ],
+        "unknowns": [
+          "不同岗位是否能共享能力项",
+          "HR 是否接受显式配置权重"
+        ],
+        "complexity": "medium",
+        "provenance": "model_hypothesis",
+        "required_data_class": "weighted_job_profile_plus_resume_fields",
+        "automation_level": "medium",
+        "human_role": "定义权重、解释排序并决定实际沟通对象",
+        "core_decision_logic": "transparent_weighted_resume_ranking",
+        "major_dependency": "human_confirmed_weight_model",
+        "requires_llm_runtime": false,
+        "requires_rag_runtime": false,
+        "requires_agent_runtime": false
+      },
+      {
+        "title": "简历摘要与人机协同复核",
+        "mechanism": "human_in_the_loop",
+        "summary": "模型从简历中提取岗位相关经历和待确认问题，HR 查看原文引用后完成复核。",
+        "why_fit": "适合非结构化简历较多、人工阅读成本高的场景，但必须保留原文定位和人工最终判断。",
+        "user_flow": [
+          "上传简历和岗位说明",
+          "生成岗位相关摘要与待确认项",
+          "HR 对照简历原文复核",
+          "确认是否进入沟通名单"
+        ],
+        "mvp_pages": [
+          "简历上传页",
+          "摘要复核队列",
+          "原文对照详情页",
+          "人工确认记录页"
+        ],
+        "features": [
+          "简历文本解析",
+          "岗位相关摘要",
+          "原文引用定位",
+          "待确认问题",
+          "人工确认记录"
+        ],
+        "inputs": [
+          "简历原文",
+          "岗位说明",
+          "HR 复核结果"
+        ],
+        "outputs": [
+          "简历岗位相关摘要",
+          "原文引用",
+          "待确认问题",
+          "人工确认状态"
+        ],
+        "decision_logic": [
+          "模型只提取和摘要，不直接决定淘汰或录用",
+          "每条摘要必须能定位到简历原文",
+          "HR 确认后才能进入后续名单"
+        ],
+        "data_requirements": [
+          "简历原文",
+          "岗位说明",
+          "允许处理个人信息的部署与权限条件"
+        ],
+        "technical_components": [
+          "FastAPI",
+          "SQLite",
+          "文档解析器",
+          "结构化模型运行时",
+          "原文引用组件",
+          "复核工作流"
+        ],
+        "implementation_plan": [
+          "Week 1: 文档解析、结构化摘要 Schema 与隐私边界",
+          "Week 2: 原文对照、人工复核、失败处理和审计记录"
+        ],
+        "acceptance_cases": [
+          "每条简历摘要都能定位到对应原文",
+          "模型无法确定的信息必须进入待确认项",
+          "未经 HR 确认不得进入正式候选名单"
+        ],
+        "risks": [
+          "模型可能遗漏或错误概括经历",
+          "简历个人信息带来隐私与合规风险",
+          "不同模型版本可能产生不一致摘要"
+        ],
+        "unknowns": [
+          "企业是否允许简历进入外部模型",
+          "原文引用是否足以降低复核成本"
+        ],
+        "complexity": "high",
+        "provenance": "model_hypothesis",
+        "required_data_class": "resume_text_plus_job_description",
+        "automation_level": "medium",
+        "human_role": "逐条核对摘要与原文，并做最终筛选决定",
+        "core_decision_logic": "model_extract_then_human_verify",
+        "major_dependency": "approved_private_data_processing_and_structured_llm_runtime",
+        "requires_llm_runtime": true,
+        "requires_rag_runtime": false,
+        "requires_agent_runtime": false
+      }
+    ]
+  },
+  "school_selection": {
+    "match_terms": [
+      "选学校",
+      "择校"
+    ],
+    "brief": {
+      "target_user": "学生",
+      "problem": "需要选择适合自己的学校，但具体场景尚不明确",
+      "desired_outcome": "缩小学校选择范围",
+      "known_resources": [],
+      "constraints": [],
+      "unknowns": [
+        "是高考志愿、考研择校还是留学申请"
+      ],
+      "provenance": {
+        "target_user": "user_input",
+        "problem": "model_hypothesis",
+        "desired_outcome": "model_hypothesis",
+        "known_resources": "model_hypothesis",
+        "constraints": "model_hypothesis",
+        "unknowns": "model_hypothesis"
+      },
+      "clarification_required": true,
+      "clarification_question": "你希望先解决高考志愿、考研择校还是留学申请？"
+    },
+    "solutions": []
+  },
+  "two_solution_workflow": {
+    "match_terms": [
+      "报销",
+      "审批流程"
+    ],
+    "brief": {
+      "target_user": "小团队成员",
+      "problem": "报销申请依赖聊天消息，信息容易缺失",
+      "desired_outcome": "用简单流程统一报销提交与确认",
+      "known_resources": [],
+      "constraints": [
+        "不要求 AI"
+      ],
+      "unknowns": [
+        "审批角色是否固定"
+      ],
+      "provenance": {
+        "target_user": "model_hypothesis",
+        "problem": "model_hypothesis",
+        "desired_outcome": "model_hypothesis",
+        "known_resources": "model_hypothesis",
+        "constraints": "user_input",
+        "unknowns": "model_hypothesis"
+      },
+      "clarification_required": false,
+      "clarification_question": null
+    },
+    "solutions": [
+      {
+        "title": "结构化报销表单",
+        "mechanism": "workflow_based",
+        "summary": "通过固定字段表单和状态流转减少缺失信息。",
+        "why_fit": "无需 AI 即可解决信息不完整。",
+        "user_flow": [
+          "填写表单",
+          "校验字段",
+          "提交",
+          "审批"
+        ],
+        "mvp_pages": [
+          "报销表单",
+          "审批列表"
+        ],
+        "features": [
+          "必填校验",
+          "状态流转"
+        ],
+        "inputs": [
+          "金额",
+          "事由",
+          "凭证"
+        ],
+        "outputs": [
+          "报销申请",
+          "审批状态"
+        ],
+        "decision_logic": [
+          "字段齐全才允许提交"
+        ],
+        "data_requirements": [
+          "报销字段"
+        ],
+        "technical_components": [
+          "FastAPI",
+          "SQLite"
+        ],
+        "implementation_plan": [
+          "Week 1: 表单与状态",
+          "Week 2: 审批与测试"
+        ],
+        "acceptance_cases": [
+          "缺少金额时不得提交"
+        ],
+        "risks": [
+          "流程字段可能不覆盖例外"
+        ],
+        "unknowns": [
+          "审批角色是否固定"
+        ],
+        "complexity": "low",
+        "provenance": "model_hypothesis",
+        "required_data_class": "form_fields",
+        "automation_level": "low",
+        "human_role": "提交和审批",
+        "core_decision_logic": "required_field_validation",
+        "major_dependency": "workflow_definition",
+        "requires_llm_runtime": false,
+        "requires_rag_runtime": false,
+        "requires_agent_runtime": false
+      },
+      {
+        "title": "规则化自动校验与提醒",
+        "mechanism": "automation",
+        "summary": "表单提交前自动检查规则并提醒缺失项。",
+        "why_fit": "在基础流程上减少重复人工检查。",
+        "user_flow": [
+          "填写表单",
+          "规则校验",
+          "修正",
+          "提交审批"
+        ],
+        "mvp_pages": [
+          "报销表单",
+          "校验提示",
+          "审批列表"
+        ],
+        "features": [
+          "规则校验",
+          "缺失提醒",
+          "状态流转"
+        ],
+        "inputs": [
+          "金额",
+          "事由",
+          "凭证",
+          "规则"
+        ],
+        "outputs": [
+          "校验结果",
+          "报销申请"
+        ],
+        "decision_logic": [
+          "规则全部通过才允许正式提交"
+        ],
+        "data_requirements": [
+          "报销字段",
+          "校验规则"
+        ],
+        "technical_components": [
+          "FastAPI",
+          "SQLite",
+          "规则引擎"
+        ],
+        "implementation_plan": [
+          "Week 1: 规则引擎",
+          "Week 2: 提醒与审批"
+        ],
+        "acceptance_cases": [
+          "缺少凭证时显示明确提醒"
+        ],
+        "risks": [
+          "规则维护成本"
+        ],
+        "unknowns": [
+          "例外规则数量"
+        ],
+        "complexity": "medium",
+        "provenance": "model_hypothesis",
+        "required_data_class": "form_fields_plus_rules",
+        "automation_level": "medium",
+        "human_role": "修正后审批",
+        "core_decision_logic": "rule_validation_then_submit",
+        "major_dependency": "maintained_rules",
+        "requires_llm_runtime": false,
+        "requires_rag_runtime": false,
+        "requires_agent_runtime": false
+      }
+    ]
+  },
+  "_engineering_expectations": {
+    "convenience_store_replenishment": {
+      "spec_case": 1,
+      "idea": "帮小型便利店减少缺货",
+      "expected_mechanisms": [
+        "rule_based",
+        "prediction_based",
+        "human_in_the_loop"
+      ],
+      "expected_snapshot_origin": "quick_value_flow",
+      "market_validation": false
+    },
+    "non_ai_workflow_overengineering": {
+      "spec_case": 2,
+      "idea": "让小团队报销审批流程更清楚",
+      "llm_core_required": false,
+      "all_ai_core_must_be_rejected": true,
+      "error_code": "OVERENGINEERED_SOLUTION_SET"
+    },
+    "one_clarification_for_real_ambiguity": {
+      "spec_case": 3,
+      "idea": "帮学生选学校",
+      "clarification_required": true,
+      "max_clarification_questions": 1
+    },
+    "only_two_material_solutions": {
+      "spec_case": 4,
+      "idea": "让小团队报销审批流程更清楚",
+      "expected_solution_count": 2,
+      "must_not_pad_to_three": true
+    },
+    "conflicting_real_user_evidence": {
+      "spec_case": 5,
+      "claim_type": "user_problem",
+      "support_span": "补货提醒确实能帮助我更早发现要补的商品。",
+      "contradict_span": "我们不是经常忘记补货，真正麻烦的是不知道该补多少。",
+      "expected_status": "conflict"
+    },
+    "simulated_research_cannot_validate": {
+      "spec_case": 6,
+      "source_type": "simulated_research",
+      "expected_project_claim_upgrade": false,
+      "expected_error_code": "SOURCE_TYPE_NOT_ADMISSIBLE"
+    },
+    "implementation_evidence_scope": {
+      "spec_case": 7,
+      "source_type": "implementation_evidence",
+      "allowed_claim_types": [
+        "feasibility"
+      ],
+      "forbidden_claim_types": [
+        "target_user",
+        "user_problem",
+        "behavior",
+        "value"
+      ]
+    },
+    "archive_stales_artifact_health": {
+      "spec_case": 8,
+      "source_type": "public_source",
+      "expected_document_health": "stale_evidence",
+      "expected_handoff_ready": false
+    },
+    "cross_project_evidence_attack": {
+      "spec_case": 9,
+      "expected_blocked": true,
+      "expected_error_code": "EVIDENCE_SCOPE_MISMATCH",
+      "expected_cross_project_links": 0
+    },
+    "legacy_2_0_6_migration": {
+      "spec_case": 10,
+      "expected_snapshot_origin": "legacy_migration",
+      "migration_idempotent": true,
+      "invented_evidence_links": 0,
+      "market_validation": false
+    }
+  },
+  "_evidence_cases": [
+    {
+      "id": "convenience_problem_contradiction",
+      "claim_type": "user_problem",
+      "claim_terms": [
+        "补货",
+        "人工经验"
+      ],
+      "source_type": "real_user_research",
+      "chunk_terms": [
+        "不是经常忘记补货",
+        "不知道该补多少"
+      ],
+      "relation": "contradicts",
+      "directness": "direct",
+      "scope_fit": "fit",
+      "recency_state": "current",
+      "evidence_span": "我们不是经常忘记补货，真正麻烦的是不知道该补多少。",
+      "reason": "真实访谈原话直接反驳“当前核心问题主要是遗漏补货”的产品判断。"
+    },
+    {
+      "id": "convenience_problem_support",
+      "claim_type": "user_problem",
+      "claim_terms": [
+        "补货"
+      ],
+      "source_type": "real_user_research",
+      "chunk_terms": [
+        "更早发现",
+        "补的商品"
+      ],
+      "relation": "supports",
+      "directness": "direct",
+      "scope_fit": "limited",
+      "recency_state": "current",
+      "evidence_span": "补货提醒确实能帮助我更早发现要补的商品。",
+      "reason": "真实访谈原话对补货提醒问题形成有限直接支持。"
+    },
+    {
+      "id": "implementation_feasibility_support",
+      "claim_type": "feasibility",
+      "claim_terms": [
+        "数据"
+      ],
+      "source_type": "implementation_evidence",
+      "chunk_terms": [
+        "sqlite",
+        "库存"
+      ],
+      "relation": "supports",
+      "directness": "direct",
+      "scope_fit": "fit",
+      "recency_state": "current",
+      "evidence_span": "SQLite 已成功保存并读取库存字段。",
+      "reason": "实现记录只能支持当前数据持久化可行性。"
+    }
+  ]
+}

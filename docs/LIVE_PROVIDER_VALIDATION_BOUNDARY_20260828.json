@@ -1,0 +1,117 @@
+{
+  "generated_at_utc": "2026-08-28T02:56:09.213676+00:00",
+  "environment": "sandbox/non-Windows",
+  "credential_manager_access": false,
+  "paid_network_calls_authorized": false,
+  "providers": {
+    "Qwen": {
+      "status": "SKIPPED",
+      "reason": "No access to the user's Windows Credential Manager/API account."
+    },
+    "Kimi": {
+      "status": "SKIPPED",
+      "reason": "No access to the user's Windows Credential Manager/API account."
+    },
+    "DeepSeek": {
+      "status": "SKIPPED",
+      "reason": "No access to the user's Windows Credential Manager/API account."
+    },
+    "GLM": {
+      "status": "SKIPPED",
+      "reason": "No access to the user's Windows Credential Manager/API account."
+    }
+  },
+  "provider_related_files": [
+    {
+      "path": "tests/test_model_profile_schema.py",
+      "providers": [
+        "deepseek"
+      ]
+    },
+    {
+      "path": "tests/test_v2_project_lifecycle.py",
+      "providers": [
+        "qwen"
+      ]
+    },
+    {
+      "path": "tests/test_hybrid_runtime.py",
+      "providers": [
+        "deepseek",
+        "qwen"
+      ]
+    },
+    {
+      "path": "tests/test_provider_adapters.py",
+      "providers": [
+        "deepseek",
+        "glm",
+        "kimi",
+        "moonshot",
+        "qwen"
+      ]
+    },
+    {
+      "path": "tests/test_model_settings_ui.py",
+      "providers": [
+        "deepseek",
+        "glm",
+        "kimi",
+        "qwen"
+      ]
+    },
+    {
+      "path": "tests/test_model_profile_api.py",
+      "providers": [
+        "deepseek",
+        "qwen"
+      ]
+    },
+    {
+      "path": "tests/model_settings_behavior_harness.js",
+      "providers": [
+        "qwen"
+      ]
+    },
+    {
+      "path": "app/services/model_providers.py",
+      "providers": [
+        "deepseek",
+        "glm",
+        "kimi",
+        "moonshot",
+        "qwen"
+      ]
+    },
+    {
+      "path": "app/static/model-settings.js",
+      "providers": [
+        "deepseek",
+        "glm",
+        "kimi",
+        "qwen"
+      ]
+    },
+    {
+      "path": "docs/superpowers/plans/2026-08-28-stage-1-secure-multi-provider-generation.md",
+      "providers": [
+        "deepseek",
+        "glm",
+        "kimi",
+        "qwen"
+      ]
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-28-insightforge-guidance-models-documents-history-design.md",
+      "providers": [
+        "deepseek",
+        "glm",
+        "kimi",
+        "moonshot",
+        "qwen",
+        "zhipu"
+      ]
+    }
+  ],
+  "claim_boundary": "Mock/simulated adapter tests are not counted as live provider connectivity."
+}

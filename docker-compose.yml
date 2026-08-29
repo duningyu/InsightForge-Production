@@ -1,0 +1,15 @@
+services:
+  insightforge:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      INSIGHTFORGE_DATABASE_PATH: /app/data/insightforge.sqlite3
+      INSIGHTFORGE_MAX_LOOP_ROUNDS: "2"
+      INSIGHTFORGE_ACCESS_USERNAME: ${INSIGHTFORGE_ACCESS_USERNAME:-}
+      INSIGHTFORGE_ACCESS_PASSWORD: ${INSIGHTFORGE_ACCESS_PASSWORD:-}
+    volumes:
+      - insightforge_data:/app/data
+    restart: unless-stopped
+volumes:
+  insightforge_data:

@@ -1,7 +1,7 @@
 {
   "release_id": "insightforge_closed_beta_20260830_v1",
   "application_version": "3.0.0",
-  "baseline_commit": "pending-staging-baseline",
+  "baseline_commit": "9fbf8abc5134234eb73791cd6d8548ba4ee023a8",
   "provider_contract": "FROZEN_PROVIDER_CONTRACT.md",
   "schema_version": "3.0",
   "prompt_version": "current",

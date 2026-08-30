@@ -38,7 +38,7 @@ EVENT_PROPERTIES = {
     "walkthrough_completed": set(),
     "walkthrough_restarted": set(),
     "beta_task_completed": set(),
-    "beta_feedback_submitted": set(),
+    "beta_feedback_submitted": {"feedback_type", "rating_bucket", "project_stage"},
 }
 EVENTS = frozenset(EVENT_PROPERTIES)
 FORBIDDEN = frozenset(
@@ -64,6 +64,13 @@ def _scan(value: Any) -> None:
 
 
 def _validate_values(event_name: str, properties: dict[str, Any]) -> None:
+    if event_name == "beta_feedback_submitted":
+        if properties.get("feedback_type") not in {"confusing", "helpful", "missing", "incorrect", "bug", "other"}:
+            raise ValueError("EVENT_PROPERTY_VALUE_NOT_ALLOWED")
+        if properties.get("rating_bucket") not in {"1_2", "3", "4_5"}:
+            raise ValueError("EVENT_PROPERTY_VALUE_NOT_ALLOWED")
+        if properties.get("project_stage") not in {"idea", "solutions", "snapshot", "evidence", "documents", "handoff", "history", "walkthrough", "other"}:
+            raise ValueError("EVENT_PROPERTY_VALUE_NOT_ALLOWED")
     action = properties.get("action_type")
     if action is not None and action not in ACTION_TYPES:
         raise ValueError("EVENT_PROPERTY_VALUE_NOT_ALLOWED")

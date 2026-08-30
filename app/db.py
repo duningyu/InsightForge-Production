@@ -603,6 +603,19 @@ CREATE TABLE IF NOT EXISTS product_events (
     beta_release_id TEXT NOT NULL, occurred_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_product_events_participant ON product_events(participant_id, occurred_at);
+CREATE TABLE IF NOT EXISTS beta_feedback (
+    id TEXT PRIMARY KEY,
+    participant_id TEXT NOT NULL,
+    project_id TEXT REFERENCES projects(id),
+    project_stage TEXT NOT NULL,
+    rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+    feedback_type TEXT NOT NULL,
+    comment TEXT NOT NULL CHECK(length(comment) BETWEEN 1 AND 2000),
+    beta_release_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_beta_feedback_participant
+    ON beta_feedback(participant_id, beta_release_id, created_at);
 """
 
 

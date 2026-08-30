@@ -49,6 +49,7 @@ from app.schemas import (
     SolutionSelectRequest,
     BetaConsentRequest,
     BetaEventRequest,
+    BetaFeedbackRequest,
 )
 from app.services.projects import ProjectService
 from app.errors import (
@@ -77,6 +78,7 @@ from app.services.claims import ClaimService
 from app.services.handoff import HandoffService
 from app.services.beta_runtime import BetaInstanceContext
 from app.services.beta_analytics import BetaAnalyticsService
+from app.services.beta_feedback import BetaFeedbackService
 from app.services.beta_sessions import BetaSessionService
 from app.services.retrieval_service import ProjectRetrievalService
 from app.services.sources import SourceService
@@ -149,6 +151,13 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             db, participant_id=settings.beta_participant_id,
             release_id=settings.beta_release_id, beta_mode=settings.beta_mode,
             consent_version=settings.beta_consent_version,
+        )
+        application.state.beta_feedback = BetaFeedbackService(
+            db,
+            application.state.beta_analytics,
+            participant_id=settings.beta_participant_id,
+            release_id=settings.beta_release_id,
+            beta_mode=settings.beta_mode,
         )
         if settings.beta_mode:
             application.state.beta_sessions = BetaSessionService(
@@ -355,6 +364,13 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         return application.state.beta_analytics.record(
             payload.event_name, payload.properties,
             session_id=request.state.beta_session_id, project_id=payload.project_id,
+        )
+
+    @application.post("/api/beta/feedback", status_code=201)
+    def beta_feedback(payload: BetaFeedbackRequest, request: Request) -> dict[str, Any]:
+        return application.state.beta_feedback.submit(
+            **payload.model_dump(),
+            session_id=getattr(request.state, "beta_session_id", ""),
         )
 
     def record_product_event(request: Request, event_name: str, properties: dict[str, Any] | None = None, *, project_id: str | None = None) -> None:

@@ -377,3 +377,26 @@ class BetaEventRequest(StrictModel):
     event_name: str = Field(min_length=1, max_length=80)
     project_id: str | None = Field(default=None, min_length=1, max_length=200)
     properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class BetaFeedbackRequest(StrictModel):
+    project_id: str | None = Field(default=None, min_length=1, max_length=200)
+    project_stage: Literal[
+        "idea", "solutions", "snapshot", "evidence", "documents", "handoff",
+        "history", "walkthrough", "other",
+    ]
+    rating: int = Field(ge=1, le=5)
+    feedback_type: Literal[
+        "confusing", "helpful", "missing", "incorrect", "bug", "other",
+    ]
+    comment: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("comment")
+    @classmethod
+    def normalize_comment(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("comment must not be blank")
+        if len(normalized) > 2000:
+            raise ValueError("comment must not exceed 2000 characters")
+        return normalized

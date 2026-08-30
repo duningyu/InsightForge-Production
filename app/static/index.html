@@ -287,6 +287,35 @@
     </form>
   </dialog>
 
+  <button id="beta-feedback-button" class="beta-feedback-entry" type="button" hidden>提交反馈</button>
+  <dialog id="beta-feedback-dialog" class="dialog-card beta-feedback-dialog" aria-labelledby="beta-feedback-title">
+    <form id="beta-feedback-form">
+      <p class="eyebrow">CLOSED BETA FEEDBACK</p>
+      <h2 id="beta-feedback-title">提交反馈</h2>
+      <p class="muted">反馈不会阻断你的工作。请勿填写 API Key 或其他秘密信息。</p>
+      <label>评分
+        <select id="beta-feedback-rating" required>
+          <option value="5">5 — 很有帮助</option><option value="4">4</option>
+          <option value="3">3</option><option value="2">2</option><option value="1">1 — 需要改进</option>
+        </select>
+      </label>
+      <label>类型
+        <select id="beta-feedback-type" required>
+          <option value="helpful">有帮助</option><option value="confusing">不清楚</option>
+          <option value="missing">缺少内容</option><option value="incorrect">内容不正确</option>
+          <option value="bug">遇到错误</option><option value="other">其他</option>
+        </select>
+      </label>
+      <label>具体反馈
+        <textarea id="beta-feedback-comment" required minlength="1" maxlength="2000" rows="6" placeholder="请描述你刚才的体验"></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button id="beta-feedback-cancel" class="button button-quiet" type="button">取消</button>
+        <button id="beta-feedback-submit" class="button button-primary" type="submit">发送反馈</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/static/app.js?v=3.0.0&amp;build=user-feedback-complete.1" defer></script>
   <script src="/static/model-settings.js?v=3.0.0&amp;build=secure-profiles.1" defer></script>

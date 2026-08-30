@@ -76,6 +76,7 @@ async function ensureBetaConsent() {
   state.betaMode = Boolean(status.beta_mode);
   state.betaConsented = Boolean(status.consented);
   state.betaConsentVersion = Number(status.consent_version || 1);
+  updateBetaFeedbackVisibility();
   if (!state.betaMode || state.betaConsented) return;
   const dialog = qs("#beta-consent-dialog");
   dialog.showModal();
@@ -84,11 +85,42 @@ async function ensureBetaConsent() {
       try {
         await api("/api/beta/consent", {method: "POST", body: JSON.stringify({accepted: true, consent_version: state.betaConsentVersion})});
         state.betaConsented = true;
+        updateBetaFeedbackVisibility();
         dialog.close();
         resolve();
       } catch (error) { reject(error); }
     }, {once: true});
   });
+}
+
+function updateBetaFeedbackVisibility() {
+  const button = qs("#beta-feedback-button");
+  if (button) button.hidden = !(state.betaMode && state.betaConsented);
+}
+
+function feedbackProjectStage() {
+  const allowed = new Set(["idea", "solutions", "snapshot", "evidence", "documents", "handoff", "history", "walkthrough"]);
+  return allowed.has(state.activeView) ? state.activeView : "other";
+}
+
+async function submitBetaFeedback(event) {
+  event.preventDefault();
+  const feedbackComment = qs("#beta-feedback-comment");
+  try {
+    await api("/api/beta/feedback", {
+      method: "POST",
+      body: JSON.stringify({
+        project_id: state.currentProjectId || null,
+        project_stage: feedbackProjectStage(),
+        rating: Number(qs("#beta-feedback-rating").value),
+        feedback_type: qs("#beta-feedback-type").value,
+        comment: qs("#beta-feedback-comment").value,
+      }),
+    });
+    feedbackComment.value = "";
+    qs("#beta-feedback-dialog").close();
+    toast("已收到，谢谢。");
+  } catch (error) { reportError(error); }
 }
 
 function toast(message) {
@@ -1311,6 +1343,9 @@ async function exportHandoff() {
 }
 
 function wireEvents() {
+  qs("#beta-feedback-button")?.addEventListener("click", () => qs("#beta-feedback-dialog")?.showModal());
+  qs("#beta-feedback-cancel")?.addEventListener("click", () => qs("#beta-feedback-dialog")?.close());
+  qs("#beta-feedback-form")?.addEventListener("submit", submitBetaFeedback);
   qs("#home-button").addEventListener("click", (event) => { event.preventDefault(); showQuickStart(); });
   qs("#quick-start-form").addEventListener("submit", quickStart);
   qs("#idea-brief-form").addEventListener("submit", confirmIdeaBrief);

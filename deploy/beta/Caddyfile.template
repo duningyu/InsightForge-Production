@@ -1,8 +1,3 @@
-beta001.{{PUBLIC_IP}}.nip.io {
-  basicauth { USER_HASH }
-  reverse_proxy 127.0.0.1:8001
-}
-beta002.{{PUBLIC_IP}}.nip.io {
-  basicauth { USER_HASH }
-  reverse_proxy 127.0.0.1:8002
-}
+# Generated participant site blocks are inserted by scripts/render_beta_caddy.py.
+# The renderer only accepts bcrypt password hashes and never plaintext passwords.
+{{SITES}}

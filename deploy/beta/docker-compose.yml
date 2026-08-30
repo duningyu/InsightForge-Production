@@ -2,32 +2,28 @@ services:
   beta001:
     build: { context: ../.., dockerfile: deploy/beta/Dockerfile }
     image: insightforge-beta:closed-beta-v1
+    restart: unless-stopped
     environment:
       BETA_MODE: "true"
       BETA_RELEASE_ID: insightforge_closed_beta_20260830_v1
       BETA_PARTICIPANT_ID: beta_001
       INSIGHTFORGE_DATABASE_PATH: /data/insightforge.sqlite3
       RUNTIME_DIR: /runtime
-      INSIGHTFORGE_QWEN_API_KEY: ${INSIGHTFORGE_QWEN_API_KEY:?required}
-      INSIGHTFORGE_KIMI_API_KEY: ${INSIGHTFORGE_KIMI_API_KEY:?required}
-      INSIGHTFORGE_DEEPSEEK_API_KEY: ${INSIGHTFORGE_DEEPSEEK_API_KEY:?required}
-      INSIGHTFORGE_GLM_API_KEY: ${INSIGHTFORGE_GLM_API_KEY:?required}
+      INSIGHTFORGE_CREDENTIAL_BACKEND: environment
     volumes: [beta001_data:/data, beta001_runtime:/runtime]
-    ports: ["8001:8000"]
+    ports: ["127.0.0.1:18001:8000"]
   beta002:
     image: insightforge-beta:closed-beta-v1
+    restart: unless-stopped
     environment:
       BETA_MODE: "true"
       BETA_RELEASE_ID: insightforge_closed_beta_20260830_v1
       BETA_PARTICIPANT_ID: beta_002
       INSIGHTFORGE_DATABASE_PATH: /data/insightforge.sqlite3
       RUNTIME_DIR: /runtime
-      INSIGHTFORGE_QWEN_API_KEY: ${INSIGHTFORGE_QWEN_API_KEY:?required}
-      INSIGHTFORGE_KIMI_API_KEY: ${INSIGHTFORGE_KIMI_API_KEY:?required}
-      INSIGHTFORGE_DEEPSEEK_API_KEY: ${INSIGHTFORGE_DEEPSEEK_API_KEY:?required}
-      INSIGHTFORGE_GLM_API_KEY: ${INSIGHTFORGE_GLM_API_KEY:?required}
+      INSIGHTFORGE_CREDENTIAL_BACKEND: environment
     volumes: [beta002_data:/data, beta002_runtime:/runtime]
-    ports: ["8002:8000"]
+    ports: ["127.0.0.1:18002:8000"]
 volumes:
   beta001_data: {}
   beta001_runtime: {}

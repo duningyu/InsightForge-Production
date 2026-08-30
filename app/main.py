@@ -74,6 +74,7 @@ from app.services.guided_project import GuidedProjectService
 from app.services.claims import ClaimService
 from app.services.handoff import HandoffService
 from app.services.beta_runtime import BetaInstanceContext
+from app.services.beta_analytics import BetaAnalyticsService
 from app.services.retrieval_service import ProjectRetrievalService
 from app.services.sources import SourceService
 from app.services.generation import LLMDocumentGenerator, build_generator
@@ -141,6 +142,10 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         application.state.db = db
         application.state.settings = settings
         application.state.beta_context = beta_context
+        application.state.beta_analytics = BetaAnalyticsService(
+            db, participant_id=settings.beta_participant_id,
+            release_id=settings.beta_release_id, beta_mode=settings.beta_mode,
+        )
         application.state.projects = ProjectService(db)
         application.state.example_copies = ExampleCopyService(db)
         application.state.model_profiles = ModelProfileService(db)
@@ -298,6 +303,22 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             "beta_release_id": settings.beta_release_id,
             "participant_id": settings.beta_participant_id if settings.beta_mode else None,
         }
+
+    @application.get("/api/beta/consent")
+    def beta_consent_status() -> dict[str, Any]:
+        analytics = application.state.beta_analytics
+        return {"beta_mode": settings.beta_mode, "consented": analytics.has_consent()}
+
+    @application.post("/api/beta/consent")
+    def beta_consent() -> dict[str, Any]:
+        return application.state.beta_analytics.consent()
+
+    @application.post("/api/beta/events")
+    def beta_event(payload: dict[str, Any]) -> dict[str, Any]:
+        return application.state.beta_analytics.record(
+            payload.get("event_name", ""), payload.get("properties") or {},
+            session_id=payload.get("session_id", ""), project_id=payload.get("project_id"),
+        )
 
     @application.get("/api/projects")
     def list_projects() -> list[dict[str, Any]]:

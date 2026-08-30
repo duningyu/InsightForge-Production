@@ -586,6 +586,17 @@ CREATE TABLE IF NOT EXISTS project_model_profiles (
 );
 CREATE INDEX IF NOT EXISTS idx_project_model_profiles_profile
     ON project_model_profiles(profile_id);
+CREATE TABLE IF NOT EXISTS beta_consents (
+    id TEXT PRIMARY KEY, participant_id TEXT NOT NULL, beta_release_id TEXT NOT NULL,
+    consent_version INTEGER NOT NULL, consented_at TEXT NOT NULL,
+    UNIQUE(participant_id, beta_release_id, consent_version)
+);
+CREATE TABLE IF NOT EXISTS product_events (
+    id TEXT PRIMARY KEY, participant_id TEXT NOT NULL, session_id TEXT NOT NULL,
+    project_id TEXT, event_name TEXT NOT NULL, properties_json TEXT NOT NULL,
+    beta_release_id TEXT NOT NULL, occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_product_events_participant ON product_events(participant_id, occurred_at);
 """
 
 

@@ -1,20 +1,39 @@
-"""Restore exactly one participant SQLite database from a validated backup."""
+"""Restore one stopped participant instance from a validated snapshot."""
+
 from __future__ import annotations
-import argparse, shutil, sqlite3
+
+import argparse
+import json
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.services.beta_backup import BetaBackupError, restore_participant
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(); ap.add_argument('--participant', required=True); ap.add_argument('--backup', required=True); ap.add_argument('--instances-root', required=True); a = ap.parse_args()
-    if not a.participant.startswith('beta_'):
-        raise SystemExit('participant must be beta_###')
-    src = Path(a.backup); dst = Path(a.instances_root) / a.participant / 'insightforge.sqlite3'
-    if not src.is_file(): raise SystemExit('backup not found')
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists(): shutil.copy2(dst, dst.with_suffix('.before_restore.sqlite3'))
-    shutil.copy2(src, dst)
-    db = sqlite3.connect(dst)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--participant", required=True)
+    parser.add_argument("--backup", required=True)
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--instances-root", required=True)
+    parser.add_argument("--prebackup-output-dir", required=True)
+    parser.add_argument("--confirm-instance-stopped", action="store_true")
+    args = parser.parse_args()
     try:
-        if db.execute('pragma integrity_check').fetchone()[0] != 'ok' or db.execute('pragma foreign_key_check').fetchall():
-            raise SystemExit('restored database integrity check failed')
-    finally: db.close()
-if __name__ == '__main__': main()
+        receipt = restore_participant(
+            instances_root=args.instances_root,
+            participant_id=args.participant,
+            backup_database=args.backup,
+            manifest_path=args.manifest,
+            prebackup_output_dir=args.prebackup_output_dir,
+            instance_stopped=args.confirm_instance_stopped,
+        )
+    except (BetaBackupError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(receipt, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

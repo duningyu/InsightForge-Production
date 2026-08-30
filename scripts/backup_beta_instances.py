@@ -1,17 +1,35 @@
-"""SQLite-safe backups for participant instances (read-only source)."""
+"""Create one validated, participant-scoped closed-beta SQLite snapshot."""
+
 from __future__ import annotations
-import argparse, hashlib, json, sqlite3
-from datetime import datetime, timezone
+
+import argparse
+import json
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.services.beta_backup import BetaBackupError, backup_participant
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(); ap.add_argument('--instances-root', required=True); ap.add_argument('--output-dir', required=True)
-    a = ap.parse_args(); out = Path(a.output_dir); out.mkdir(parents=True, exist_ok=True); manifest=[]
-    for src in sorted(Path(a.instances_root).glob('beta_*/insightforge.sqlite3')):
-        dst = out / f'{src.parent.name}.sqlite'; src_db=sqlite3.connect(src); dst_db=sqlite3.connect(dst)
-        with dst_db: src_db.backup(dst_db)
-        src_db.close(); dst_db.close(); digest=hashlib.sha256(dst.read_bytes()).hexdigest()
-        db=sqlite3.connect(dst); projects=db.execute('select count(*) from projects').fetchone()[0]; docs=db.execute('select count(*) from documents').fetchone()[0]; db.close()
-        manifest.append({'participant_id':src.parent.name,'source_db':str(src),'backup_file':str(dst),'sha256':digest,'project_count':projects,'document_count':docs,'created_at':datetime.now(timezone.utc).isoformat()})
-    (out/'manifest.json').write_text(json.dumps(manifest,indent=2), encoding='utf-8')
-if __name__ == '__main__': main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--instances-root", required=True)
+    parser.add_argument("--participant", required=True)
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--release-id", required=True)
+    args = parser.parse_args()
+    try:
+        receipt = backup_participant(
+            instances_root=args.instances_root,
+            participant_id=args.participant,
+            output_dir=args.output_dir,
+            release_id=args.release_id,
+        )
+    except (BetaBackupError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(receipt, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

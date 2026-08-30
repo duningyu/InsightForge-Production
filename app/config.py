@@ -18,6 +18,9 @@ class Settings:
     beta_mode: bool = False
     beta_release_id: str = "insightforge_closed_beta_20260830_v1"
     beta_participant_id: str | None = None
+    beta_consent_version: int = 1
+    beta_session_idle_timeout_minutes: int = 30
+    beta_session_cookie_secure: bool = False
     runtime_dir: Path = Path("runtime")
 
     @classmethod
@@ -34,6 +37,9 @@ class Settings:
             beta_mode=os.getenv("BETA_MODE", "false").strip().lower() in {"1", "true", "yes"},
             beta_release_id=os.getenv("BETA_RELEASE_ID", "insightforge_closed_beta_20260830_v1"),
             beta_participant_id=os.getenv("BETA_PARTICIPANT_ID") or None,
+            beta_consent_version=int(os.getenv("BETA_CONSENT_VERSION", "1")),
+            beta_session_idle_timeout_minutes=int(os.getenv("BETA_SESSION_IDLE_TIMEOUT_MINUTES", "30")),
+            beta_session_cookie_secure=os.getenv("BETA_SESSION_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes"},
             runtime_dir=Path(os.getenv("RUNTIME_DIR", "runtime")),
         )
         if not 1 <= settings.max_loop_rounds <= 5:
@@ -44,4 +50,8 @@ class Settings:
             raise ValueError(
                 "INSIGHTFORGE_ACCESS_USERNAME and INSIGHTFORGE_ACCESS_PASSWORD must be set together"
             )
+        if settings.beta_consent_version < 1:
+            raise ValueError("BETA_CONSENT_VERSION must be positive")
+        if settings.beta_session_idle_timeout_minutes != 30:
+            raise ValueError("BETA_SESSION_IDLE_TIMEOUT_MINUTES must remain 30")
         return settings

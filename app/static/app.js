@@ -23,6 +23,9 @@ const state = {
   walkthrough: null,
   modelProfiles: [],
   projectModelProfileId: null,
+  betaMode: false,
+  betaConsented: false,
+  betaConsentVersion: 1,
   history: {q: "", status: "all", sort: "updated_at", order: "desc", page: 1, pageSize: 10, pages: 1, total: 0, items: []},
   documentWorkspace: {docType: "prd", versions: [], selectedVersionId: null, compareVersionId: null, draft: null, autosaveTimer: null, dirty: false},
 };
@@ -46,6 +49,46 @@ async function api(path, options = {}) {
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) return response;
   return response.json();
+}
+
+const BETA_ACTION_TYPES = new Set(["validate_assumption", "add_evidence", "generate_prd", "continue_project", "review_change", "open_handoff", "confirm_idea_brief", "generate_solutions", "select_solution", "export_handoff", "ready", "start_tour", "start_example_tour", "create_new_idea", "review_project_snapshot", "reconfirm_project_snapshot", "verify_project_claim", "generate_or_update_prd", "generate_or_update_techdoc", "confirm_document_versions"]);
+
+async function trackBetaEvent(eventName, properties = {}, projectId = null) {
+  if (!state.betaMode || !state.betaConsented) return {recorded: false};
+  try {
+    return await api("/api/beta/events", {method: "POST", body: JSON.stringify({event_name: eventName, project_id: projectId, properties})});
+  } catch (error) {
+    console.warn("Beta analytics event skipped", eventName, error?.status || "client_error");
+    return {recorded: false};
+  }
+}
+
+function trackBetaEventOnce(key, eventName, properties = {}, projectId = null) {
+  const storageKey = `insightforge-beta-event:${key}`;
+  const storage = globalThis.sessionStorage;
+  if (storage?.getItem(storageKey)) return;
+  storage?.setItem(storageKey, "1");
+  void trackBetaEvent(eventName, properties, projectId);
+}
+
+async function ensureBetaConsent() {
+  const status = await api("/api/beta/consent");
+  state.betaMode = Boolean(status.beta_mode);
+  state.betaConsented = Boolean(status.consented);
+  state.betaConsentVersion = Number(status.consent_version || 1);
+  if (!state.betaMode || state.betaConsented) return;
+  const dialog = qs("#beta-consent-dialog");
+  dialog.showModal();
+  await new Promise((resolve, reject) => {
+    qs("#beta-consent-accept").addEventListener("click", async () => {
+      try {
+        await api("/api/beta/consent", {method: "POST", body: JSON.stringify({accepted: true, consent_version: state.betaConsentVersion})});
+        state.betaConsented = true;
+        dialog.close();
+        resolve();
+      } catch (error) { reject(error); }
+    }, {once: true});
+  });
 }
 
 function toast(message) {
@@ -208,6 +251,7 @@ function activateView(view) {
   qsa(".workspace-view").forEach((node) => node.classList.toggle("hidden", node.dataset.workspaceView !== view));
   qs("#primary-nav").classList.remove("open");
   qs("#mobile-nav-button").setAttribute("aria-expanded", "false");
+  if (view === "snapshot" && state.currentProjectId) trackBetaEventOnce(`snapshot:${state.currentProjectId}`, "snapshot_viewed", {}, state.currentProjectId);
 }
 
 const GUIDANCE_ACTION_FIELDS = ["code", "title", "reason", "view", "control_id"];
@@ -284,6 +328,10 @@ function setEvidenceTab(tab) {
   for (const name of ["claims", "impact", "sources"]) {
     qs(`#evidence-${name}-panel`)?.classList.toggle("hidden", name !== tab);
   }
+  if (tab === "impact" && state.currentProjectId) {
+    const impactCount = (state.impacts?.claims || []).length + (state.impacts?.change_proposals || []).length;
+    trackBetaEventOnce(`impact:${state.currentProjectId}`, "evidence_impact_viewed", {impact_count: impactCount}, state.currentProjectId);
+  }
 }
 
 function renderProjectPicker() {
@@ -333,6 +381,8 @@ function renderGuidanceCard(node, action, scopeLabel) {
     return;
   }
   node.classList.remove("hidden");
+  const location = node.id === "home-next-action-card" ? "home" : "project";
+  if (BETA_ACTION_TYPES.has(action.code)) trackBetaEventOnce(`next:${location}:${action.code}:${state.currentProjectId || "home"}`, "next_action_shown", {location, action_type: action.code}, location === "project" ? state.currentProjectId : null);
   node.innerHTML = `
     <div class="next-action-copy">
       <span>${escapeHtml(scopeLabel)}</span>
@@ -341,7 +391,10 @@ function renderGuidanceCard(node, action, scopeLabel) {
     </div>
     <button class="button button-primary" type="button">${escapeHtml(action.title)}</button>`;
   qs("button", node)?.addEventListener("click", async () => {
-    try { await applyGuidanceAction(action); } catch (error) { reportError(error); }
+    try {
+      if (BETA_ACTION_TYPES.has(action.code)) await trackBetaEvent("next_action_clicked", {location, action_type: action.code}, location === "project" ? state.currentProjectId : null);
+      await applyGuidanceAction(action);
+    } catch (error) { reportError(error); }
   });
 }
 
@@ -875,6 +928,9 @@ async function loadDocumentWorkspace(docType = state.documentWorkspace.docType) 
   const editor = qs("#document-editor");
   if (editor) editor.dataset.loadedVersionId = "";
   renderDocumentWorkspace();
+  if (docType === "prd" && workspace.versions.length) {
+    trackBetaEventOnce(`prd-editor:${state.currentProjectId}:${workspace.versions[0].id}`, "prd_editor_opened", {doc_type: "prd", version_no: workspace.versions[0].version || 1}, state.currentProjectId);
+  }
   if (workspace.selectedVersionId && workspace.compareVersionId) await loadDocumentDiff();
 }
 
@@ -1319,6 +1375,7 @@ window.InsightForgeUi = {api, escapeHtml, reportError, toast, secureSettingsExit
 async function bootstrap() {
   wireEvents();
   try {
+    await ensureBetaConsent();
     const health = await api("/api/health");
     state.runtimeMode = health.structured_runtime_mode || health.runtime_mode || health.llm_mode || null;
     renderRuntimeDisclosure();

@@ -267,6 +267,12 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
 .next-action-card { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 18px 20px; border: 1px solid #c9d4ff; border-radius: 16px; background: linear-gradient(135deg, #f6f8ff 0%, #ffffff 72%); box-shadow: 0 8px 28px rgba(49,87,213,.06); }
 #home-next-action-card { grid-column: 1 / -1; }
 #project-next-action-card { max-width: 1180px; margin: 0 auto 20px; }
+.beta-consent-dialog { width: min(620px, calc(100vw - 32px)); padding: 0; border: 0; border-radius: 20px; color: var(--ink); background: var(--surface); box-shadow: 0 30px 90px rgba(8,25,19,.28); }
+.beta-consent-dialog::backdrop { background: rgba(7,22,17,.66); backdrop-filter: blur(4px); }
+.beta-consent-card { display: grid; gap: 12px; padding: 30px; }
+.beta-consent-card h1, .beta-consent-card p { margin: 0; }
+.beta-consent-card ul { margin: 0; padding-left: 22px; color: var(--muted); line-height: 1.65; }
+.beta-consent-card .button { justify-self: start; margin-top: 8px; }
 .next-action-copy { min-width: 0; display: grid; gap: 4px; }
 .next-action-copy > span { color: var(--brand); font-size: 10px; font-weight: 850; letter-spacing: .08em; }
 .next-action-copy > strong { font-size: 17px; }
@@ -327,6 +333,8 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
 }
 
 @media (max-width: 760px) {
+  .beta-consent-card { padding: 22px; }
+  .beta-consent-card .button { width: 100%; }
   .next-action-card { align-items: stretch; flex-direction: column; gap: 12px; }
   .next-action-card .button { width: 100%; }
   .example-list { grid-template-columns: 1fr; }

@@ -15,7 +15,7 @@ def _new_instance(monkeypatch, tmp_path, participant):
 
 def test_two_real_sqlite_instances_do_not_share_projects(monkeypatch, tmp_path):
     with _new_instance(monkeypatch, tmp_path, "beta_001") as a:
-        created = a.post("/api/projects/quick-start", json={"idea": "Project A", "target_user": None, "resources": [], "priority": "fast_mvp"})
+        created = a.post("/api/projects/quick-start", json={"idea": "便利店补货 Project A", "target_user": None, "resources": [], "priority": "fast_mvp"})
         assert created.status_code == 201
     with _new_instance(monkeypatch, tmp_path, "beta_002") as b:
         assert all(item["title"] != "Project A" for item in b.get("/api/projects").json())

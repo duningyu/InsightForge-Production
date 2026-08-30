@@ -366,3 +366,14 @@ class EvidenceRelationDraft(StrictModel):
 
 class EvidenceRelationSetDraft(StrictModel):
     relations: list[EvidenceRelationDraft] = Field(default_factory=list, max_length=30)
+
+
+class BetaConsentRequest(StrictModel):
+    accepted: Literal[True]
+    consent_version: int = Field(ge=1)
+
+
+class BetaEventRequest(StrictModel):
+    event_name: str = Field(min_length=1, max_length=80)
+    project_id: str | None = Field(default=None, min_length=1, max_length=200)
+    properties: dict[str, Any] = Field(default_factory=dict)

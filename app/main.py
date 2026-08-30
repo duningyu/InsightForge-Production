@@ -47,6 +47,8 @@ from app.schemas import (
     RetrievalRequest,
     SourceCreateRequest,
     SolutionSelectRequest,
+    BetaConsentRequest,
+    BetaEventRequest,
 )
 from app.services.projects import ProjectService
 from app.errors import (
@@ -75,6 +77,7 @@ from app.services.claims import ClaimService
 from app.services.handoff import HandoffService
 from app.services.beta_runtime import BetaInstanceContext
 from app.services.beta_analytics import BetaAnalyticsService
+from app.services.beta_sessions import BetaSessionService
 from app.services.retrieval_service import ProjectRetrievalService
 from app.services.sources import SourceService
 from app.services.generation import LLMDocumentGenerator, build_generator
@@ -145,7 +148,15 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         application.state.beta_analytics = BetaAnalyticsService(
             db, participant_id=settings.beta_participant_id,
             release_id=settings.beta_release_id, beta_mode=settings.beta_mode,
+            consent_version=settings.beta_consent_version,
         )
+        if settings.beta_mode:
+            application.state.beta_sessions = BetaSessionService(
+                db,
+                participant_id=settings.beta_participant_id or "",
+                release_id=settings.beta_release_id,
+                idle_timeout_minutes=settings.beta_session_idle_timeout_minutes,
+            )
         application.state.projects = ProjectService(db)
         application.state.example_copies = ExampleCopyService(db)
         application.state.model_profiles = ModelProfileService(db)
@@ -216,6 +227,28 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         ),
         lifespan=lifespan,
     )
+
+    @application.middleware("http")
+    async def beta_session_middleware(request: Request, call_next):
+        if not settings.beta_mode:
+            return await call_next(request)
+        resolution = application.state.beta_sessions.resolve(
+            request.cookies.get("insightforge_beta_session")
+        )
+        request.state.beta_session_id = resolution.session_id
+        if resolution.created and application.state.beta_analytics.has_consent():
+            application.state.beta_analytics.record_session_started_once(resolution.session_id)
+        response = await call_next(request)
+        if resolution.created:
+            response.set_cookie(
+                "insightforge_beta_session",
+                resolution.session_id,
+                httponly=True,
+                samesite="lax",
+                secure=settings.beta_session_cookie_secure,
+                max_age=60 * 60 * 24 * 30,
+            )
+        return response
 
     if settings.access_username and settings.access_password:
         @application.middleware("http")
@@ -307,18 +340,42 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     @application.get("/api/beta/consent")
     def beta_consent_status() -> dict[str, Any]:
         analytics = application.state.beta_analytics
-        return {"beta_mode": settings.beta_mode, "consented": analytics.has_consent()}
+        return {"beta_mode": settings.beta_mode, "consented": analytics.has_consent(), "consent_version": settings.beta_consent_version}
 
     @application.post("/api/beta/consent")
-    def beta_consent() -> dict[str, Any]:
-        return application.state.beta_analytics.consent()
+    def beta_consent(payload: BetaConsentRequest, request: Request) -> dict[str, Any]:
+        result = application.state.beta_analytics.consent(**payload.model_dump())
+        application.state.beta_analytics.record_session_started_once(request.state.beta_session_id)
+        return result
 
     @application.post("/api/beta/events")
-    def beta_event(payload: dict[str, Any]) -> dict[str, Any]:
+    def beta_event(payload: BetaEventRequest, request: Request) -> dict[str, Any]:
+        if not settings.beta_mode:
+            return {"recorded": False, "reason": "not_beta"}
         return application.state.beta_analytics.record(
-            payload.get("event_name", ""), payload.get("properties") or {},
-            session_id=payload.get("session_id", ""), project_id=payload.get("project_id"),
+            payload.event_name, payload.properties,
+            session_id=request.state.beta_session_id, project_id=payload.project_id,
         )
+
+    def record_product_event(request: Request, event_name: str, properties: dict[str, Any] | None = None, *, project_id: str | None = None) -> None:
+        if settings.beta_mode:
+            application.state.beta_analytics.record_safe(
+                event_name, properties or {}, session_id=request.state.beta_session_id,
+                project_id=project_id,
+            )
+
+    def idea_length_bucket(length: int) -> str:
+        if length <= 20: return "0_20"
+        if length <= 50: return "21_50"
+        if length <= 100: return "51_100"
+        if length <= 200: return "101_200"
+        return "200_plus"
+
+    def size_bucket(size: int) -> str:
+        if size <= 1_000: return "0_1kb"
+        if size <= 10_000: return "1_10kb"
+        if size <= 100_000: return "10_100kb"
+        return "100kb_plus"
 
     @application.get("/api/projects")
     def list_projects() -> list[dict[str, Any]]:
@@ -462,9 +519,13 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     @application.post("/api/projects/quick-start", status_code=201)
     def quick_start_project(
         payload: QuickStartRequest,
+        request: Request,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
-        return application.state.quick_start.quick_start(payload, actor=x_actor)
+        result = application.state.quick_start.quick_start(payload, actor=x_actor)
+        if result.get("project_id"):
+            record_product_event(request, "idea_submitted", {"idea_length_bucket": idea_length_bucket(len(payload.idea))}, project_id=result["project_id"])
+        return result
 
     @application.get("/api/projects/history")
     def project_history(
@@ -516,20 +577,34 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         return application.state.walkthrough.get(project_id)
 
     @application.post("/api/projects/{project_id}/walkthrough/start")
-    def start_walkthrough(project_id: str) -> dict[str, Any]:
-        return application.state.walkthrough.start(project_id)
+    def start_walkthrough(project_id: str, request: Request) -> dict[str, Any]:
+        result = application.state.walkthrough.start(project_id)
+        record_product_event(request, "walkthrough_started", {}, project_id=project_id)
+        return result
 
     @application.post("/api/projects/{project_id}/walkthrough/advance")
-    def advance_walkthrough(project_id: str, payload: WalkthroughAdvanceRequest) -> dict[str, Any]:
-        return application.state.walkthrough.advance(project_id, payload.step)
+    def advance_walkthrough(project_id: str, payload: WalkthroughAdvanceRequest, request: Request) -> dict[str, Any]:
+        result = application.state.walkthrough.advance(project_id, payload.step)
+        step_no = ["idea", "solutions", "mvp", "claims", "evidence", "documents", "handoff"].index(payload.step) + 1
+        record_product_event(request, "walkthrough_step_completed", {"step_no": step_no}, project_id=project_id)
+        if result.get("status") == "completed":
+            record_product_event(request, "walkthrough_completed", {}, project_id=project_id)
+        return result
 
     @application.post("/api/projects/{project_id}/walkthrough/skip")
-    def skip_walkthrough(project_id: str) -> dict[str, Any]:
-        return application.state.walkthrough.skip(project_id)
+    def skip_walkthrough(project_id: str, request: Request) -> dict[str, Any]:
+        before = application.state.walkthrough.get(project_id)
+        result = application.state.walkthrough.skip(project_id)
+        step = before.get("current_step")
+        step_no = ["idea", "solutions", "mvp", "claims", "evidence", "documents", "handoff"].index(step) + 1 if step in {"idea", "solutions", "mvp", "claims", "evidence", "documents", "handoff"} else 1
+        record_product_event(request, "walkthrough_skipped", {"step_no": step_no}, project_id=project_id)
+        return result
 
     @application.post("/api/projects/{project_id}/walkthrough/restart")
-    def restart_walkthrough(project_id: str) -> dict[str, Any]:
-        return application.state.walkthrough.restart(project_id)
+    def restart_walkthrough(project_id: str, request: Request) -> dict[str, Any]:
+        result = application.state.walkthrough.restart(project_id)
+        record_product_event(request, "walkthrough_restarted", {}, project_id=project_id)
+        return result
 
     @application.get("/api/projects/{project_id}")
     def get_project(project_id: str) -> dict[str, Any]:
@@ -543,14 +618,17 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     def confirm_idea_brief(
         project_id: str,
         payload: HumanConfirmRequest,
+        request: Request,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
-        return application.state.quick_start.confirm_brief(
+        result = application.state.quick_start.confirm_brief(
             project_id,
             human_confirmed=payload.human_confirmed,
             note=payload.note,
             actor=x_actor,
         )
+        record_product_event(request, "idea_brief_confirmed", {}, project_id=project_id)
+        return result
 
     @application.post("/api/projects/{project_id}/idea-brief/refine")
     def refine_idea_brief(
@@ -563,9 +641,13 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     @application.post("/api/projects/{project_id}/solutions/generate", status_code=201)
     def generate_solutions(
         project_id: str,
+        request: Request,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
-        return application.state.solution_design.generate(project_id, actor=x_actor)
+        result = application.state.solution_design.generate(project_id, actor=x_actor)
+        candidates = result.get("candidates") or []
+        record_product_event(request, "solutions_generated", {"solution_count": len(candidates), "mechanisms": [item["mechanism"] for item in candidates]}, project_id=project_id)
+        return result
 
     @application.get("/api/projects/{project_id}/solutions")
     def list_solutions(project_id: str) -> dict[str, Any]:
@@ -575,9 +657,10 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     def select_solution(
         project_id: str,
         payload: SolutionSelectRequest,
+        request: Request,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
-        return application.state.snapshots.confirm_initial_solution(
+        result = application.state.snapshots.confirm_initial_solution(
             project_id,
             strategy=payload.strategy,
             candidate_ids=payload.candidate_ids,
@@ -585,6 +668,9 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             human_confirmed=payload.human_confirmed,
             actor=x_actor,
         )
+        record_product_event(request, "solution_selected", {"mechanism": result["solution"]["mechanism"], "selection_strategy": "staged" if payload.strategy == "staged" else "manual"}, project_id=project_id)
+        record_product_event(request, "snapshot_created", {"snapshot_version": result["version"]}, project_id=project_id)
+        return result
 
     @application.get("/api/projects/{project_id}/claims")
     def list_project_claims(project_id: str) -> list[dict[str, Any]]:
@@ -776,15 +862,19 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     def add_source(
         project_id: str,
         payload: SourceCreateRequest,
+        request: Request,
     ) -> dict[str, Any]:
-        return application.state.sources.add_source(
+        result = application.state.sources.add_source(
             project_id=project_id,
             **payload.model_dump(),
         )
+        record_product_event(request, "evidence_added", {"source_type": payload.source_type, "file_type": Path(payload.filename or "text.txt").suffix.lower().lstrip(".") or "text", "size_bucket": size_bucket(len(payload.content.encode("utf-8")))}, project_id=project_id)
+        return result
 
     @application.post("/api/projects/{project_id}/sources/upload", status_code=201)
     async def upload_source(
         project_id: str,
+        request: Request,
         title: str = Form(..., min_length=1, max_length=200),
         source_type: str = Form(...),
         authority: float = Form(..., ge=0, le=1),
@@ -798,7 +888,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                 raise ValueError(f"file exceeds {MAX_UPLOAD_BYTES} bytes")
             chunks.append(chunk)
         data = b"".join(chunks)
-        return application.state.sources.add_uploaded_source(
+        result = application.state.sources.add_uploaded_source(
             project_id=project_id,
             title=title,
             source_type=source_type,
@@ -806,6 +896,8 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             filename=file.filename or "source.txt",
             data=data,
         )
+        record_product_event(request, "evidence_added", {"source_type": source_type, "file_type": Path(file.filename or "file").suffix.lower().lstrip(".") or "unknown", "size_bucket": size_bucket(total)}, project_id=project_id)
+        return result
 
     @application.get("/api/retrieval/profiles")
     def retrieval_profiles() -> list[dict[str, Any]]:
@@ -854,12 +946,16 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     def generate_snapshot_aware_document(
         project_id: str,
         payload: GenerateRequest,
+        request: Request,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
         key = payload.idempotency_key or f"v3:{project_id}:{payload.doc_type}:{uuid.uuid4().hex}"
-        return application.state.document_loop.run(
+        result = application.state.document_loop.run(
             project_id, payload.doc_type, idempotency_key=key, require_snapshot=True
         )
+        event_name = "prd_generated" if payload.doc_type == "prd" else "techdoc_generated"
+        record_product_event(request, event_name, {"doc_type": payload.doc_type, "generation_status": "succeeded"}, project_id=project_id)
+        return result
 
     @application.post("/api/projects/{project_id}/generate")
     def generate(
@@ -892,12 +988,22 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         project_id: str,
         doc_type: str,
         payload: DocumentDraftSaveRequest,
+        request: Request,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
-        return application.state.document_workspace.save_draft(
+        try:
+            before = application.state.document_workspace.get_draft(project_id, doc_type)
+        except KeyError:
+            before = {"content": ""}
+        result = application.state.document_workspace.save_draft(
             project_id, doc_type, base_version_id=payload.base_version_id,
             content=payload.content, actor=x_actor
         )
+        if doc_type == "prd":
+            before_length = len(before.get("content") or "")
+            after_length = len(payload.content)
+            record_product_event(request, "prd_draft_saved", {"doc_type": "prd", "chars_before": before_length, "chars_after": after_length, "chars_added": max(0, after_length-before_length), "chars_removed": max(0, before_length-after_length)}, project_id=project_id)
+        return result
 
     @application.post("/api/projects/{project_id}/documents/{doc_type}/draft/commit", status_code=201)
     def commit_document_edit_draft(
@@ -965,13 +1071,16 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         return application.state.document_versions.purge_from_trash(version_id, actor=x_actor)
 
     @application.get("/api/projects/{project_id}/handoff/readiness")
-    def get_handoff_readiness(project_id: str) -> dict[str, Any]:
-        return application.state.handoff.readiness(project_id)
+    def get_handoff_readiness(project_id: str, request: Request) -> dict[str, Any]:
+        result = application.state.handoff.readiness(project_id)
+        record_product_event(request, "handoff_opened", {"handoff_type": "codex"}, project_id=project_id)
+        return result
 
     @application.post("/api/projects/{project_id}/handoff/export")
     def export_handoff(
         project_id: str,
         payload: HandoffExportRequest,
+        request: Request,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> Response:
         data, manifest = application.state.handoff.build_zip(
@@ -979,6 +1088,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             target_client=payload.target_client,
             actor=x_actor,
         )
+        record_product_event(request, "handoff_exported", {"format": "zip", "handoff_type": payload.target_client}, project_id=project_id)
         filename = f"InsightForge_Handoff_{project_id}_{payload.target_client}.zip"
         return Response(
             content=data,
@@ -1003,10 +1113,13 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         )
 
     @application.post("/api/document-versions/{version_id}/confirm")
-    def confirm_document(version_id: str, payload: ApprovalRequest) -> dict[str, Any]:
-        return application.state.document_versions.confirm(
+    def confirm_document(version_id: str, payload: ApprovalRequest, request: Request) -> dict[str, Any]:
+        result = application.state.document_versions.confirm(
             version_id, actor=payload.actor, note=payload.note, human_confirmed=payload.human_confirmed
         )
+        if result.get("doc_type") == "prd":
+            record_product_event(request, "prd_version_confirmed", {"doc_type": "prd", "version_no": result.get("version", 1)}, project_id=result.get("project_id"))
+        return result
 
     @application.post("/api/documents/{version_id}/approve", deprecated=True)
     def approve_document(version_id: str, payload: ApprovalRequest) -> dict[str, Any]:

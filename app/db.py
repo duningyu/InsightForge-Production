@@ -591,6 +591,12 @@ CREATE TABLE IF NOT EXISTS beta_consents (
     consent_version INTEGER NOT NULL, consented_at TEXT NOT NULL,
     UNIQUE(participant_id, beta_release_id, consent_version)
 );
+CREATE TABLE IF NOT EXISTS beta_sessions (
+    id TEXT PRIMARY KEY, participant_id TEXT NOT NULL, beta_release_id TEXT NOT NULL,
+    started_at TEXT NOT NULL, last_activity_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_beta_sessions_participant
+    ON beta_sessions(participant_id, beta_release_id, last_activity_at);
 CREATE TABLE IF NOT EXISTS product_events (
     id TEXT PRIMARY KEY, participant_id TEXT NOT NULL, session_id TEXT NOT NULL,
     project_id TEXT, event_name TEXT NOT NULL, properties_json TEXT NOT NULL,

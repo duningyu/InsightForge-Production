@@ -8,6 +8,18 @@
   <link rel="stylesheet" href="/static/styles.css?v=3.0.0&amp;build=user-feedback-complete.1">
 </head>
 <body>
+  <dialog id="beta-consent-dialog" class="beta-consent-dialog" aria-labelledby="beta-consent-title">
+    <div class="beta-consent-card">
+      <p class="eyebrow">CLOSED BETA</p>
+      <h1 id="beta-consent-title">InsightForge Closed Beta</h1>
+      <p>本版本用于产品体验研究。</p>
+      <p>可能记录：</p>
+      <ul><li>匿名 participant ID</li><li>功能使用事件与操作时间</li><li>项目阶段</li><li>是否完成测试任务</li></ul>
+      <p>不会作为产品分析数据记录：</p>
+      <ul><li>API Key 或 Authorization</li><li>完整 Idea、PRD / TechDoc 正文或 Source 原文</li><li>Prompt、模型回答正文或 reasoning_content</li></ul>
+      <button id="beta-consent-accept" class="button button-primary" type="button">我了解并继续</button>
+    </div>
+  </dialog>
   <div class="app-frame">
     <header class="global-header">
       <a id="home-button" class="brand" href="#" aria-label="InsightForge 首页">

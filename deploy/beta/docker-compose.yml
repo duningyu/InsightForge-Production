@@ -8,6 +8,10 @@ services:
       BETA_PARTICIPANT_ID: beta_001
       INSIGHTFORGE_DATABASE_PATH: /data/insightforge.sqlite3
       RUNTIME_DIR: /runtime
+      INSIGHTFORGE_QWEN_API_KEY: ${INSIGHTFORGE_QWEN_API_KEY:?required}
+      INSIGHTFORGE_KIMI_API_KEY: ${INSIGHTFORGE_KIMI_API_KEY:?required}
+      INSIGHTFORGE_DEEPSEEK_API_KEY: ${INSIGHTFORGE_DEEPSEEK_API_KEY:?required}
+      INSIGHTFORGE_GLM_API_KEY: ${INSIGHTFORGE_GLM_API_KEY:?required}
     volumes: [beta001_data:/data, beta001_runtime:/runtime]
     ports: ["8001:8000"]
   beta002:
@@ -18,6 +22,10 @@ services:
       BETA_PARTICIPANT_ID: beta_002
       INSIGHTFORGE_DATABASE_PATH: /data/insightforge.sqlite3
       RUNTIME_DIR: /runtime
+      INSIGHTFORGE_QWEN_API_KEY: ${INSIGHTFORGE_QWEN_API_KEY:?required}
+      INSIGHTFORGE_KIMI_API_KEY: ${INSIGHTFORGE_KIMI_API_KEY:?required}
+      INSIGHTFORGE_DEEPSEEK_API_KEY: ${INSIGHTFORGE_DEEPSEEK_API_KEY:?required}
+      INSIGHTFORGE_GLM_API_KEY: ${INSIGHTFORGE_GLM_API_KEY:?required}
     volumes: [beta002_data:/data, beta002_runtime:/runtime]
     ports: ["8002:8000"]
 volumes:

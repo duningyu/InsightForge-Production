@@ -291,6 +291,9 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             "llm_mode": getattr(application.state, "llm_mode", "local"),
             "structured_runtime_mode": getattr(application.state.structured_runtime, "mode", None),
             "max_loop_rounds": settings.max_loop_rounds,
+            "beta_mode": settings.beta_mode,
+            "beta_release_id": settings.beta_release_id,
+            "participant_id": settings.beta_participant_id if settings.beta_mode else None,
         }
 
     @application.get("/api/projects")

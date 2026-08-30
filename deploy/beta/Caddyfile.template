@@ -1,0 +1,8 @@
+beta001.{{PUBLIC_IP}}.nip.io {
+  basicauth { USER_HASH }
+  reverse_proxy 127.0.0.1:8001
+}
+beta002.{{PUBLIC_IP}}.nip.io {
+  basicauth { USER_HASH }
+  reverse_proxy 127.0.0.1:8002
+}

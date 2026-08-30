@@ -15,6 +15,10 @@ class Settings:
     openai_model: str = "gpt-5.6"
     access_username: str | None = None
     access_password: str | None = None
+    beta_mode: bool = False
+    beta_release_id: str = "insightforge_closed_beta_20260830_v1"
+    beta_participant_id: str | None = None
+    runtime_dir: Path = Path("runtime")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -27,6 +31,10 @@ class Settings:
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6"),
             access_username=os.getenv("INSIGHTFORGE_ACCESS_USERNAME") or None,
             access_password=os.getenv("INSIGHTFORGE_ACCESS_PASSWORD") or None,
+            beta_mode=os.getenv("BETA_MODE", "false").strip().lower() in {"1", "true", "yes"},
+            beta_release_id=os.getenv("BETA_RELEASE_ID", "insightforge_closed_beta_20260830_v1"),
+            beta_participant_id=os.getenv("BETA_PARTICIPANT_ID") or None,
+            runtime_dir=Path(os.getenv("RUNTIME_DIR", "runtime")),
         )
         if not 1 <= settings.max_loop_rounds <= 5:
             raise ValueError("INSIGHTFORGE_MAX_LOOP_ROUNDS must be in [1, 5]")

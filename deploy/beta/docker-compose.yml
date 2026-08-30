@@ -1,0 +1,27 @@
+services:
+  beta001:
+    build: { context: ../.., dockerfile: deploy/beta/Dockerfile }
+    image: insightforge-beta:closed-beta-v1
+    environment:
+      BETA_MODE: "true"
+      BETA_RELEASE_ID: insightforge_closed_beta_20260830_v1
+      BETA_PARTICIPANT_ID: beta_001
+      INSIGHTFORGE_DATABASE_PATH: /data/insightforge.sqlite3
+      RUNTIME_DIR: /runtime
+    volumes: [beta001_data:/data, beta001_runtime:/runtime]
+    ports: ["8001:8000"]
+  beta002:
+    image: insightforge-beta:closed-beta-v1
+    environment:
+      BETA_MODE: "true"
+      BETA_RELEASE_ID: insightforge_closed_beta_20260830_v1
+      BETA_PARTICIPANT_ID: beta_002
+      INSIGHTFORGE_DATABASE_PATH: /data/insightforge.sqlite3
+      RUNTIME_DIR: /runtime
+    volumes: [beta002_data:/data, beta002_runtime:/runtime]
+    ports: ["8002:8000"]
+volumes:
+  beta001_data: {}
+  beta001_runtime: {}
+  beta002_data: {}
+  beta002_runtime: {}

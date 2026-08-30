@@ -6,6 +6,7 @@ import pytest
 from app.services.credential_store import (
     CredentialBackendUnavailable,
     CredentialStore,
+    EnvironmentCredentialBackend,
 )
 
 
@@ -99,3 +100,13 @@ def test_configured_none_and_invalid_reference_are_false():
     store = CredentialStore(backend=MemoryBackend())
     assert not store.configured(None)
     assert not store.configured("not-an-insightforge-reference")
+
+
+def test_environment_backend_reads_profile_secret_without_exposing_it(monkeypatch):
+    ref = "insightforge:model-profile:beta001"
+    monkeypatch.setenv("INSIGHTFORGE_MODEL_PROFILE_BETA001_API_KEY", "sentinel-secret")
+    store = CredentialStore(backend=EnvironmentCredentialBackend())
+    assert store.configured(ref)
+    assert store.resolve(ref) == "sentinel-secret"
+    with pytest.raises(CredentialBackendUnavailable):
+        store.delete(ref)

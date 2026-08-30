@@ -8,6 +8,7 @@ keyring-compatible backend explicitly.
 from __future__ import annotations
 
 from typing import Any, Protocol
+import os
 
 
 SERVICE_NAME = "InsightForge"
@@ -26,23 +27,43 @@ class CredentialBackendUnavailable(RuntimeError):
     """Raised when the configured credential backend cannot be reached."""
 
 
+class EnvironmentCredentialBackend:
+    """Read-only container backend; secrets are supplied per profile by environment."""
+
+    def _name(self, username: str) -> str:
+        profile = username.removeprefix(REFERENCE_PREFIX)
+        if not profile or not profile.replace("_", "").replace("-", "").isalnum():
+            raise KeyError(username)
+        return "INSIGHTFORGE_MODEL_PROFILE_" + profile.upper().replace("-", "_") + "_API_KEY"
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        raise CredentialBackendUnavailable("environment credential backend is read-only")
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return os.getenv(self._name(username))
+
+    def delete_password(self, service: str, username: str) -> None:
+        raise CredentialBackendUnavailable("environment credential backend is read-only")
+
+
 class KeyringCredentialStore:
     """Store credentials using a keyring-compatible backend only."""
 
     def __init__(self, backend: CredentialBackend | None = None) -> None:
         if backend is None:
-            imported_backend: CredentialBackend | None = None
-            try:
-                import keyring
-            except Exception:
-                pass
+            if os.getenv("INSIGHTFORGE_CREDENTIAL_BACKEND", "").strip().lower() == "environment":
+                backend = EnvironmentCredentialBackend()
             else:
-                imported_backend = keyring
-            if imported_backend is None:
-                raise CredentialBackendUnavailable(
-                    "credential backend is unavailable"
-                )
-            backend = imported_backend
+                imported_backend: CredentialBackend | None = None
+                try:
+                    import keyring
+                except Exception:
+                    pass
+                else:
+                    imported_backend = keyring
+                if imported_backend is None:
+                    raise CredentialBackendUnavailable("credential backend is unavailable")
+                backend = imported_backend
         self._backend = backend
 
     @staticmethod

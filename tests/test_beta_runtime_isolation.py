@@ -37,3 +37,22 @@ def test_runtime_paths_reject_traversal_and_validate_participant():
         shutil.rmtree(paths.root, ignore_errors=True)
     for value in ("beta_001", "beta_999"):
         assert validate_participant_id(value) == value
+
+
+def test_runtime_and_database_persist_across_app_restart(monkeypatch, tmp_path):
+    with _new_instance(monkeypatch, tmp_path, "beta_001") as first:
+        created = first.post("/api/projects/quick-start", json={"idea": "帮助小型便利店减少补货遗漏", "target_user": None, "resources": [], "priority": "fast_mvp"})
+        assert created.status_code == 201, created.text
+    with _new_instance(monkeypatch, tmp_path, "beta_001") as restarted:
+        assert restarted.get("/api/projects").status_code == 200
+        assert restarted.app.state.db.fetch_one("SELECT id FROM projects WHERE id = ?", (created.json()["project_id"],)) is not None
+
+
+def test_runtime_roots_are_independent(tmp_path):
+    from app.services.beta_runtime import RuntimePaths
+    a = RuntimePaths.from_root(tmp_path / "beta_001" / "runtime")
+    b = RuntimePaths.from_root(tmp_path / "beta_002" / "runtime")
+    a_file = a.child("source.txt", area="uploads")
+    a_file.write_text("synthetic source", encoding="utf-8")
+    assert a_file.exists()
+    assert not b.child("source.txt", area="uploads").exists()

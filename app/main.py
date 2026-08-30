@@ -73,6 +73,7 @@ from app.services.legacy_migration import LegacyMigrationService
 from app.services.guided_project import GuidedProjectService
 from app.services.claims import ClaimService
 from app.services.handoff import HandoffService
+from app.services.beta_runtime import BetaInstanceContext
 from app.services.retrieval_service import ProjectRetrievalService
 from app.services.sources import SourceService
 from app.services.generation import LLMDocumentGenerator, build_generator
@@ -128,6 +129,7 @@ def _sanitize_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, 
 def create_app(*, database_path: str | Path | None = None, seed: bool = True) -> FastAPI:
     settings = Settings.from_env()
     db = Database(database_path or settings.database_path)
+    beta_context = BetaInstanceContext.from_settings(settings)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -138,6 +140,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         LegacyMigrationService(db).migrate_all()
         application.state.db = db
         application.state.settings = settings
+        application.state.beta_context = beta_context
         application.state.projects = ProjectService(db)
         application.state.example_copies = ExampleCopyService(db)
         application.state.model_profiles = ModelProfileService(db)

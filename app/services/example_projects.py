@@ -160,6 +160,10 @@ class ExampleProjectSeeder:
                 "INSERT INTO projects(id, title, summary, status, created_at, updated_at) VALUES (?, ?, ?, 'example', ?, ?)",
                 (project_id, example["title"], example["summary"], now, now),
             )
+        self.db.execute(
+            "UPDATE projects SET project_origin='demo', exclude_from_beta_metrics=1 WHERE id=?",
+            (project_id,),
+        )
         canvas = example["canvas"]
         if self.db.get_canvas(project_id) is None:
             self.projects.update_canvas(project_id, actor="example_seed", **canvas)

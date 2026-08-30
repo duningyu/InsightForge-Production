@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS projects (
     summary TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     current_snapshot_id TEXT,
+    project_origin TEXT NOT NULL DEFAULT 'user' CHECK(project_origin IN ('user','demo','qa')),
+    exclude_from_beta_metrics INTEGER NOT NULL DEFAULT 0 CHECK(exclude_from_beta_metrics IN (0,1)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -673,6 +675,8 @@ class Database:
     @classmethod
     def _migrate_schema(cls, connection: sqlite3.Connection) -> None:
         cls._ensure_column(connection, "projects", "current_snapshot_id", "TEXT")
+        cls._ensure_column(connection, "projects", "project_origin", "TEXT NOT NULL DEFAULT 'user'")
+        cls._ensure_column(connection, "projects", "exclude_from_beta_metrics", "INTEGER NOT NULL DEFAULT 0")
         source_columns = {
             "source_url": "TEXT",
             "publisher": "TEXT",
@@ -893,6 +897,10 @@ class Database:
                     now,
                     now,
                 ),
+            )
+            connection.execute(
+                "UPDATE projects SET project_origin='demo', exclude_from_beta_metrics=1 WHERE id=?",
+                (project_id,),
             )
             connection.execute(
                 """

@@ -618,6 +618,16 @@ CREATE TABLE IF NOT EXISTS beta_feedback (
 );
 CREATE INDEX IF NOT EXISTS idx_beta_feedback_participant
     ON beta_feedback(participant_id, beta_release_id, created_at);
+CREATE TABLE IF NOT EXISTS beta_daily_usage (
+    participant_id TEXT NOT NULL,
+    usage_date TEXT NOT NULL,
+    operation_type TEXT NOT NULL CHECK(operation_type IN (
+        'solution_generation', 'document_generation', 'evidence_analysis'
+    )),
+    request_count INTEGER NOT NULL CHECK(request_count >= 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(participant_id, usage_date, operation_type)
+);
 """
 
 

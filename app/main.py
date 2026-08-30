@@ -53,6 +53,7 @@ from app.schemas import (
 )
 from app.services.projects import ProjectService
 from app.errors import (
+    BetaDailyLimitReached,
     ConflictError,
     StructuredRuntimeRecoveryError,
     StructuredRuntimeUnavailableError,
@@ -80,6 +81,7 @@ from app.services.beta_runtime import BetaInstanceContext
 from app.services.beta_analytics import BetaAnalyticsService
 from app.services.beta_feedback import BetaFeedbackService
 from app.services.beta_sessions import BetaSessionService
+from app.services.beta_usage import BetaUsageService
 from app.services.retrieval_service import ProjectRetrievalService
 from app.services.sources import SourceService
 from app.services.generation import LLMDocumentGenerator, build_generator
@@ -159,6 +161,12 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             release_id=settings.beta_release_id,
             beta_mode=settings.beta_mode,
         )
+        application.state.beta_usage = BetaUsageService(
+            db,
+            participant_id=settings.beta_participant_id,
+            beta_mode=settings.beta_mode,
+            timezone_name=settings.beta_timezone,
+        )
         if settings.beta_mode:
             application.state.beta_sessions = BetaSessionService(
                 db,
@@ -175,6 +183,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             local_runtime=build_structured_runtime(
                 mode="deterministic_demo", model=settings.openai_model
             ),
+            before_provider_call=application.state.beta_usage.consume,
         )
         application.state.quick_start = QuickStartService(
             db, application.state.projects, application.state.structured_runtime
@@ -305,6 +314,10 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     @application.exception_handler(ConflictError)
     async def conflict_error_handler(_request, exc: ConflictError):
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @application.exception_handler(BetaDailyLimitReached)
+    async def beta_daily_limit_handler(_request, exc: BetaDailyLimitReached):
+        return JSONResponse(status_code=429, content=exc.as_payload())
 
     @application.exception_handler(StructuredRuntimeUnavailableError)
     async def structured_runtime_error_handler(_request, exc: StructuredRuntimeUnavailableError):

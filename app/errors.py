@@ -3,6 +3,36 @@ from __future__ import annotations
 from typing import Any
 
 
+class BetaDailyLimitReached(RuntimeError):
+    """A participant exhausted one daily closed-beta AI operation budget."""
+
+    message = "今日 Beta AI 使用额度已达到测试上限。已有项目和文档仍可继续查看和编辑。"
+
+    def __init__(
+        self,
+        *,
+        operation: str,
+        limit: int,
+        used: int,
+        reset_at: str,
+    ) -> None:
+        self.operation = operation
+        self.limit = limit
+        self.used = used
+        self.reset_at = reset_at
+        super().__init__("BETA_DAILY_LIMIT_REACHED")
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "error_code": "BETA_DAILY_LIMIT_REACHED",
+            "operation": self.operation,
+            "limit": self.limit,
+            "used": self.used,
+            "reset_at": self.reset_at,
+            "message": self.message,
+        }
+
+
 class ConflictError(RuntimeError):
     """The requested write conflicts with the current immutable/versioned state."""
 

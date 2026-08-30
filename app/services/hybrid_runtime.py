@@ -24,6 +24,11 @@ from app.services.provider_adapters import ModelAdapter, ProviderCallError
 
 
 AdapterFactory = Callable[..., ModelAdapter]
+BeforeProviderCall = Callable[[str], Any]
+PROVIDER_USAGE_OPERATIONS = {
+    "design_solutions": "solution_generation",
+    "analyze_evidence": "evidence_analysis",
+}
 SCHEMA_ERROR_CODES = {
     "invalid_content",
     "malformed_response",
@@ -180,6 +185,7 @@ class _ProfileStructuredRuntime:
         adapter_factory: AdapterFactory,
         max_model_rounds: int,
         max_tool_rounds: int,
+        before_provider_call: BeforeProviderCall | None = None,
     ) -> None:
         self.provider = profile["provider"]
         self.model = profile["model_id"]
@@ -191,6 +197,7 @@ class _ProfileStructuredRuntime:
         self.max_model_rounds = max_model_rounds
         self.max_tool_rounds = max_tool_rounds
         self.model_rounds_used = 0
+        self._before_provider_call = before_provider_call
 
     def _credential(self, preserved_input: Any) -> str:
         credential_ref = self._profile.get("credential_ref")
@@ -253,6 +260,11 @@ class _ProfileStructuredRuntime:
                 )
             while self.model_rounds_used < self.max_model_rounds:
                 self.model_rounds_used += 1
+                operation = PROVIDER_USAGE_OPERATIONS.get(method)
+                if operation is not None and self._before_provider_call is not None:
+                    # This is deliberately after all local profile/credential/adapter
+                    # validation and immediately before the real provider dispatch.
+                    self._before_provider_call(operation)
                 try:
                     result = adapter_method(*args, **(kwargs or {}))
                     if method == "analyze_evidence":
@@ -338,6 +350,7 @@ class HybridStructuredRuntime:
         adapter_factory: AdapterFactory = ModelAdapter,
         max_model_rounds: int = 2,
         max_tool_rounds: int = 4,
+        before_provider_call: BeforeProviderCall | None = None,
     ) -> None:
         if max_model_rounds < 1 or max_model_rounds > 2:
             raise ValueError("max_model_rounds must be in [1, 2]")
@@ -350,6 +363,7 @@ class HybridStructuredRuntime:
         self.adapter_factory = adapter_factory
         self.max_model_rounds = max_model_rounds
         self.max_tool_rounds = max_tool_rounds
+        self.before_provider_call = before_provider_call
 
     @property
     def mode(self) -> str:
@@ -392,6 +406,7 @@ class HybridStructuredRuntime:
             adapter_factory=self.adapter_factory,
             max_model_rounds=self.max_model_rounds,
             max_tool_rounds=self.max_tool_rounds,
+            before_provider_call=self.before_provider_call,
         )
 
     def analyze_evidence(

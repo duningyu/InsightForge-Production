@@ -44,6 +44,7 @@ async function api(path, options = {}) {
     try { const body = await response.json(); detail = body.detail || body.message || detail; } catch (_) {}
     const error = new Error(detail);
     error.status = response.status;
+    error.code = body?.error_code || null;
     throw error;
   }
   const contentType = response.headers.get("content-type") || "";

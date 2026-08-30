@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +22,7 @@ class Settings:
     beta_consent_version: int = 1
     beta_session_idle_timeout_minutes: int = 30
     beta_session_cookie_secure: bool = False
+    beta_timezone: str = "Asia/Shanghai"
     runtime_dir: Path = Path("runtime")
 
     @classmethod
@@ -40,6 +42,7 @@ class Settings:
             beta_consent_version=int(os.getenv("BETA_CONSENT_VERSION", "1")),
             beta_session_idle_timeout_minutes=int(os.getenv("BETA_SESSION_IDLE_TIMEOUT_MINUTES", "30")),
             beta_session_cookie_secure=os.getenv("BETA_SESSION_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes"},
+            beta_timezone=os.getenv("BETA_TIMEZONE", "Asia/Shanghai"),
             runtime_dir=Path(os.getenv("RUNTIME_DIR", "runtime")),
         )
         if not 1 <= settings.max_loop_rounds <= 5:
@@ -54,4 +57,8 @@ class Settings:
             raise ValueError("BETA_CONSENT_VERSION must be positive")
         if settings.beta_session_idle_timeout_minutes != 30:
             raise ValueError("BETA_SESSION_IDLE_TIMEOUT_MINUTES must remain 30")
+        try:
+            ZoneInfo(settings.beta_timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("BETA_TIMEZONE must name an installed IANA timezone") from exc
         return settings

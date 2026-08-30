@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 
@@ -529,6 +530,7 @@ class LLMDocumentGenerator:
         model: str | None = None,
         api_key: str | None = None,
         timeout: float = 240.0,
+        before_provider_call: Callable[[str], Any] | None = None,
     ):
         if not all(
             isinstance(value, str) and value.strip()
@@ -541,6 +543,7 @@ class LLMDocumentGenerator:
         self.model = model.strip()
         self.api_key = api_key
         self.timeout = timeout
+        self._before_provider_call = before_provider_call
         self._fallback = LocalDocumentGenerator()
         try:
             from openai import OpenAI
@@ -577,6 +580,8 @@ class LLMDocumentGenerator:
             for key, value in (canvas or {}).items()
             if isinstance(value, (str, int, float))
         )
+        if self._before_provider_call is not None:
+            self._before_provider_call("document_generation")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[

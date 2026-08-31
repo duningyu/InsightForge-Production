@@ -1,0 +1,29 @@
+# InsightForge Closed Beta Phase A — Final Acceptance Receipt
+
+- execution_id: `insightforge_closed_beta_20260830_20260830_010000`
+- acceptance_commit: `5382e06e80dffc1673926f4f718889851fecc115`
+- docker_runtime_recovery: `PASS` (`linux`, Server `29.7.2`)
+- beta001_health: `200`
+- beta002_health: `200`
+- rate_limit_ux: `PASS_BY_EXISTING_DISK_EVIDENCE`
+- network_capture: `PASS`
+- network_capture_response_bodies: `15/15`
+- network_capture_body_failures: `0`
+- network_capture_document: `PASS`
+- rate_limit_route: `POST /api/projects/{project_id}/solutions/generate`
+- rate_limit_response: `429 BETA_DAILY_LIMIT_REACHED`
+- rate_limit_response_headers: `PASS`
+- rate_limit_response_body: `PASS`
+- local_stub_request_count_before: `0`
+- local_stub_request_count_after: `0`
+- real_provider_requests: `0`
+- network_canary_match_count: `0`
+- browser_network_secret_exposure: `0`
+- fresh_full_pytest: `421 passed`
+- compileall: `PASS`
+- javascript_syntax: `PASS`
+- sqlite_integrity_and_foreign_keys: `PASS`
+- metrics_export_and_privacy: `PASS`
+- final_secret_scan: `PASS`
+- formal_directory_modified: `false`
+- real_provider_requested: `false`

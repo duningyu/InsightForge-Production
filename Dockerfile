@@ -7,6 +7,7 @@ COPY requirements.txt pyproject.toml README.md ./
 RUN python -m pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY scripts ./scripts
+COPY tests/fixtures ./tests/fixtures
 RUN useradd --create-home --uid 10001 insightforge \
     && mkdir -p /data /runtime \
     && chown -R insightforge:insightforge /app /data /runtime

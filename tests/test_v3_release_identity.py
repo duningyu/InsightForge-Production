@@ -10,7 +10,7 @@ def test_release_identity_is_3_0_0_across_runtime_package_and_static_assets():
     assert 'version = "3.0.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     html = (ROOT / "app/static/index.html").read_text(encoding="utf-8")
     assert 'href="/static/styles.css?v=3.0.0&amp;build=user-feedback-complete.1"' in html
-    assert 'src="/static/app.js?v=3.0.0&amp;build=user-feedback-complete.1"' in html
+    assert 'src="/static/app.js?v=3.0.0&amp;build=user-feedback-complete.2"' in html
 
 
 def test_verification_report_uses_current_release_identity():

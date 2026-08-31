@@ -41,7 +41,8 @@ async function api(path, options = {}) {
   });
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
-    try { const body = await response.json(); detail = body.detail || body.message || detail; } catch (_) {}
+    let body = null;
+    try { body = await response.json(); detail = body.detail || body.message || detail; } catch (_) {}
     const error = new Error(detail);
     error.status = response.status;
     error.code = body?.error_code || null;
@@ -160,7 +161,8 @@ function renderRuntimeDisclosure({failure = null} = {}) {
 }
 
 function reportError(error) {
-  console.error(error);
+  if (error?.status === 429 || isStructuredRuntimeFailure(error)) console.warn(error);
+  else console.error(error);
   if (isStructuredRuntimeFailure(error)) renderRuntimeDisclosure({failure: error.message});
   toast(error?.message || "操作失败");
 }

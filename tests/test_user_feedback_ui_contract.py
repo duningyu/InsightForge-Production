@@ -75,3 +75,13 @@ def test_feedback_completion_ui_remains_responsive():
 
 def test_document_commit_sends_selected_base_version_for_conflict_detection():
     assert "expected_base_version_id" in JS
+
+
+def test_api_preserves_structured_error_body_for_non_2xx_responses():
+    assert "let body = null;" in JS
+    assert "body = await response.json()" in JS
+    assert "error.code = body?.error_code || null" in JS
+
+
+def test_expected_quota_and_runtime_errors_do_not_pollute_blocking_console_errors():
+    assert "if (error?.status === 429 || isStructuredRuntimeFailure(error)) console.warn(error);" in JS

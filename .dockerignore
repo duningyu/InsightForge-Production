@@ -8,6 +8,10 @@ __pycache__
 *.sqlite3
 *.db
 tests
+!tests/
+tests/*
+!tests/fixtures/
+!tests/fixtures/v3_golden_cases.json
 artifacts
 .env
 .env.*

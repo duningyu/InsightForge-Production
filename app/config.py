@@ -17,6 +17,10 @@ class Settings:
     access_username: str | None = None
     access_password: str | None = None
     beta_mode: bool = False
+    beta_managed_mode: bool = False
+    managed_qwen_model: str = "qwen3.7-flash"
+    managed_qwen_api_key: str | None = None
+    managed_qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     beta_release_id: str = "insightforge_closed_beta_20260830_v1"
     beta_participant_id: str | None = None
     beta_consent_version: int = 1
@@ -37,6 +41,10 @@ class Settings:
             access_username=os.getenv("INSIGHTFORGE_ACCESS_USERNAME") or None,
             access_password=os.getenv("INSIGHTFORGE_ACCESS_PASSWORD") or None,
             beta_mode=os.getenv("BETA_MODE", "false").strip().lower() in {"1", "true", "yes"},
+            beta_managed_mode=os.getenv("BETA_MANAGED_MODE", "false").strip().lower() in {"1", "true", "yes"},
+            managed_qwen_model=os.getenv("MANAGED_QWEN_MODEL", "qwen3.7-flash"),
+            managed_qwen_api_key=os.getenv("MANAGED_QWEN_API_KEY") or None,
+            managed_qwen_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             beta_release_id=os.getenv("BETA_RELEASE_ID", "insightforge_closed_beta_20260830_v1"),
             beta_participant_id=os.getenv("BETA_PARTICIPANT_ID") or None,
             beta_consent_version=int(os.getenv("BETA_CONSENT_VERSION", "1")),

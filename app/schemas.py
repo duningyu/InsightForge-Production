@@ -238,7 +238,7 @@ class DocumentRestoreAsNewRequest(StrictModel):
 
 
 QuickStartPriority = Literal["fast_mvp", "best_effect", "lowest_cost", "portfolio"]
-RuntimeMode = Literal["llm_structured", "deterministic_demo"]
+RuntimeMode = Literal["llm_structured", "deterministic_demo", "managed_qwen"]
 HypothesisProvenance = Literal["model_hypothesis", "user_input"]
 
 

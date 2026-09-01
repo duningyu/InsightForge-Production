@@ -51,11 +51,13 @@ class StructuredRuntimeRecoveryError(StructuredRuntimeUnavailableError):
         message: str,
         recovery_actions: list[str],
         preserved_input: Any | None = None,
+        safe_diagnostic: dict[str, Any] | None = None,
     ) -> None:
         self.error_code = error_code
         self.message = message
         self.recovery_actions = list(recovery_actions)
         self.preserved_input = preserved_input
+        self.safe_diagnostic = dict(safe_diagnostic or {})
         super().__init__(error_code)
 
     def as_payload(self, *, preserved_input: Any | None = None) -> dict[str, Any]:

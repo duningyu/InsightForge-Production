@@ -46,6 +46,7 @@ async function api(path, options = {}) {
     const error = new Error(detail);
     error.status = response.status;
     error.code = body?.error_code || null;
+    error.code = body?.code || error.code;
     throw error;
   }
   const contentType = response.headers.get("content-type") || "";
@@ -164,6 +165,17 @@ function reportError(error) {
   if (error?.status === 429 || isStructuredRuntimeFailure(error)) console.warn(error);
   else console.error(error);
   if (isStructuredRuntimeFailure(error)) renderRuntimeDisclosure({failure: error.message});
+  if (error?.code === "IDEA_BRIEF_REQUIRED" || error?.code === "IDEA_BRIEF_NOT_CONFIRMED") {
+    toast(error.message || "请先完善并确认项目定义，再生成方案。");
+    const dialog = qs("#idea-brief-dialog");
+    if (dialog && state.ideaBrief) {
+      renderIdeaBrief(true);
+      if (dialog.showModal) dialog.showModal(); else dialog.setAttribute("open", "");
+    } else {
+      activateView("idea");
+    }
+    return;
+  }
   toast(error?.message || "操作失败");
 }
 
@@ -720,8 +732,26 @@ function renderSolutions() {
   const target = qs("#solutions-content");
   if (!target) return;
   if (!state.solutions?.candidates?.length) {
-    target.innerHTML = `<div class="empty-state"><h3>还没有方案</h3><p>确认 Idea 理解后生成 2–3 个真正不同的解决路径。</p><button id="generate-solutions-button" class="button button-primary" type="button">生成方案</button></div>`;
+    const confirmed = state.ideaBrief?.confirmation_status === "confirmed";
+    const action = confirmed
+      ? `<button id="generate-solutions-button" class="button button-primary" type="button">生成方案</button>`
+      : `<button id="open-idea-brief-button" class="button button-primary" type="button">查看并确认项目定义</button>`;
+    const message = confirmed
+      ? "确认 Idea 理解后生成 2–3 个真正不同的解决路径。"
+      : state.ideaBrief
+        ? "项目定义已根据现有信息整理完成，确认后即可生成方案。"
+        : "生成方案前还需要完善并确认项目定义。";
+    target.innerHTML = `<div class="empty-state"><h3>还没有方案</h3><p>${message}</p>${action}</div>`;
     qs("#generate-solutions-button")?.addEventListener("click", generateSolutions);
+    qs("#open-idea-brief-button")?.addEventListener("click", () => {
+      if (state.ideaBrief) {
+        renderIdeaBrief(true);
+        const dialog = qs("#idea-brief-dialog");
+        if (dialog?.showModal) dialog.showModal(); else dialog?.setAttribute("open", "");
+      } else {
+        activateView("idea");
+      }
+    });
     return;
   }
   target.innerHTML = `<div class="solution-grid">${state.solutions.candidates.map((solution, index) => `

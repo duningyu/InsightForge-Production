@@ -5,12 +5,13 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
-from app.errors import StructuredRuntimeUnavailableError
+from app.errors import StructuredRuntimeRecoveryError, StructuredRuntimeUnavailableError
 from app.schemas import EvidenceRelationSetDraft, IdeaBriefDraft, QuickStartRequest, SolutionSetDraft
+from app.services.provider_adapters import ModelAdapter, ProviderCallError
 
-RuntimeMode = Literal["llm_structured", "deterministic_demo"]
+RuntimeMode = Literal["llm_structured", "deterministic_demo", "managed_qwen"]
 
 
 @runtime_checkable
@@ -288,11 +289,98 @@ class OpenAIStructuredRuntime:
         return [item.model_dump(mode="json") for item in parsed.relations]
 
 
+class ManagedQwenStructuredRuntime:
+    """Use only the deployment-managed Bailian credential, never a demo fallback."""
+
+    mode: RuntimeMode = "managed_qwen"
+    provider = "qwen"
+    prompt_version = "managed-qwen-v1"
+    schema_version = "v3-p0-1"
+    max_model_rounds = 1
+    max_tool_rounds = 0
+    model_rounds_used = 0
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        adapter_factory: Any = ModelAdapter,
+        before_provider_call: Callable[[str], Any] | None = None,
+    ) -> None:
+        if not api_key.strip():
+            raise StructuredRuntimeUnavailableError("MANAGED_QWEN_API_KEY is required; no deterministic fallback was used")
+        self.model = model
+        self._api_key = api_key
+        self._base_url = base_url
+        self._adapter_factory = adapter_factory
+        self._before_provider_call = before_provider_call
+
+    def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        self.model_rounds_used = 1
+        operation = {
+            "design_solutions": "solution_generation",
+            "analyze_evidence": "evidence_analysis",
+        }.get(method)
+        if operation is not None and self._before_provider_call is not None:
+            # Managed mode bypasses profile resolution; enforce quota at the
+            # final boundary before the real provider adapter is constructed.
+            self._before_provider_call(operation)
+        try:
+            adapter = self._adapter_factory(
+                provider="qwen", model=self.model, api_key=self._api_key,
+                base_url=self._base_url,
+            )
+        except Exception as exc:
+            raise StructuredRuntimeUnavailableError("MANAGED_QWEN_CONFIGURATION_INVALID") from exc
+        try:
+            result = getattr(adapter, method)(*args, **kwargs)
+            self.last_provider_diagnostic = dict(getattr(adapter, "last_safe_diagnostic", {}))
+            return result
+        except ProviderCallError as exc:
+            self.last_provider_diagnostic = dict(exc.safe_diagnostic)
+            raise StructuredRuntimeRecoveryError(
+                error_code=f"MODEL_{exc.code.upper()}",
+                message=(
+                    "AI 服务暂时繁忙，你的项目内容已保存，请稍后重试。"
+                    if exc.safe_diagnostic.get("provider_error_source") == "UPSTREAM_HTTP_503"
+                    else "AI 服务暂时不可用；你的输入已保存，可以稍后重试。"
+                ),
+                recovery_actions=["检查托管模型服务状态", "稍后重试"],
+                preserved_input=kwargs.get("claim") if method == "analyze_evidence" else (args[0] if args else {}),
+                safe_diagnostic=exc.safe_diagnostic,
+            ) from None
+        except StructuredRuntimeRecoveryError:
+            raise
+        except Exception as exc:
+            raise StructuredRuntimeUnavailableError("MANAGED_QWEN_REQUEST_FAILED") from exc
+        finally:
+            try:
+                adapter.close()
+            except Exception:
+                pass
+
+    def interpret_idea(self, request: QuickStartRequest) -> IdeaBriefDraft:
+        return self._call("interpret_idea", request)
+
+    def design_solutions(self, brief: IdeaBriefDraft) -> SolutionSetDraft:
+        return self._call("design_solutions", brief)
+
+    def analyze_evidence(
+        self, *, claim: dict[str, Any], chunks: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return self._call("analyze_evidence", claim=claim, chunks=chunks)
+
+
 def build_structured_runtime(
     *,
     mode: RuntimeMode | None = None,
     fixture_path: str | Path | None = None,
     model: str | None = None,
+    api_key: str | None = None,
+    before_provider_call: Callable[[str], Any] | None = None,
+    base_url: str | None = None,
 ) -> StructuredAIRuntime:
     selected = mode or os.getenv("INSIGHTFORGE_STRUCTURED_AI_MODE", "deterministic_demo")
     if selected == "llm_structured":
@@ -310,4 +398,16 @@ def build_structured_runtime(
             "INSIGHTFORGE_DEMO_FIXTURE_PATH", "tests/fixtures/v3_golden_cases.json"
         )
         return DeterministicDemoRuntime(fixture_path=path)
+    if selected == "managed_qwen":
+        resolved_key = api_key or os.getenv("MANAGED_QWEN_API_KEY")
+        if not resolved_key:
+            raise StructuredRuntimeUnavailableError(
+                "MANAGED_QWEN_API_KEY is required; no deterministic fallback was used"
+            )
+        return ManagedQwenStructuredRuntime(
+            model=model or os.getenv("MANAGED_QWEN_MODEL", "qwen3.7-flash"),
+            api_key=resolved_key,
+            before_provider_call=before_provider_call,
+            base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
     raise StructuredRuntimeUnavailableError(f"UNKNOWN_STRUCTURED_AI_MODE: {selected}")

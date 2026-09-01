@@ -31,6 +31,14 @@ class LegacyMigrationService:
         "next_action",
     )
 
+    @staticmethod
+    def _has_migratable_canvas(canvas: dict[str, Any]) -> bool:
+        return bool(
+            str(canvas.get("problem") or "").strip()
+            and str(canvas.get("target_users") or "").strip()
+            and any(str(goal).strip() for goal in (canvas.get("goals") or []))
+        )
+
     def __init__(self, db: Database):
         self.db = db
         self.health = ArtifactHealthService(db)
@@ -100,7 +108,7 @@ class LegacyMigrationService:
                 known_resources_json,constraints_json,unknowns_json,provenance_json,
                 clarification_required,clarification_question,confirmation_status,
                 created_at,confirmed_at,supersedes_id
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,NULL,'confirmed',?,?,NULL)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,NULL,'inferred',?,NULL,NULL)
             """,
             (
                 brief_id,
@@ -115,7 +123,6 @@ class LegacyMigrationService:
                 json.dumps(unknowns, ensure_ascii=False),
                 json.dumps(provenance, ensure_ascii=False, sort_keys=True),
                 now,
-                canvas.get("updated_at") or now,
             ),
         )
         return dict(connection.execute("SELECT * FROM idea_briefs WHERE id=?", (brief_id,)).fetchone())
@@ -274,6 +281,8 @@ class LegacyMigrationService:
             canvas = dict(canvas_row)
             for field in ("goals", "non_goals", "success_metrics", "constraints"):
                 canvas[field] = json.loads(canvas.pop(f"{field}_json"))
+            if not self._has_migratable_canvas(canvas):
+                return None
             now = utc_now()
             brief = self._ensure_idea_brief_tx(connection, project=project, canvas=canvas, now=now)
             decision = self._ensure_decision_tx(connection, project_id=project_id, now=now)

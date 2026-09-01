@@ -229,6 +229,44 @@ def test_interpret_idea_translates_openai_wire_protocol_and_parses_schema():
     assert isinstance(actual, IdeaBriefDraft)
 
 
+def test_qwen_structured_generation_uses_strict_json_schema():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["enable_thinking"] is False
+        response_format = body["response_format"]
+        assert response_format["type"] == "json_schema"
+        assert response_format["json_schema"]["strict"] is True
+        assert response_format["json_schema"]["name"] == "IdeaBriefDraft"
+        assert response_format["json_schema"]["schema"]["type"] == "object"
+        return _chat_response(_brief_payload())
+
+    actual = _provider_adapter(
+        provider="qwen",
+        model="qwen3.7-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        handler=handler,
+    ).interpret_idea(QuickStartRequest(idea="Predict failures"))
+    assert isinstance(actual, IdeaBriefDraft)
+
+
+def test_qwen_live_check_disables_thinking():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["enable_thinking"] is False
+        assert body["max_tokens"] == 8
+        assert len(body["messages"]) == 1
+        assert body["messages"][0]["role"] == "user"
+        return httpx.Response(200, json={"model": "qwen3.7-flash", "choices": [{"message": {"content": "OK"}}]})
+
+    result = _provider_adapter(
+        provider="qwen",
+        model="qwen3.7-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        handler=handler,
+    ).live_check()
+    assert result.status == "PASS"
+
+
 def test_design_solutions_parses_schema():
     actual = _adapter(lambda request: _chat_response(_solution_payload())).design_solutions(
         IdeaBriefDraft.model_validate(_brief_payload())
@@ -317,6 +355,49 @@ def test_http_errors_are_safely_classified_without_response_body_leakage(status_
     assert (caught.value.code, caught.value.retryable) == (code, retryable)
     assert "secret" not in str(caught.value).lower()
     assert "provider body" not in caught.value.safe_message.lower()
+
+
+def test_upstream_503_preserves_safe_failure_source_metadata_without_body():
+    from app.services.provider_adapters import ProviderCallError
+
+    response = httpx.Response(
+        503,
+        headers={"content-type": "application/json", "retry-after": "7"},
+        json={"error": {"code": "upstream_busy", "message": "do not persist this body"}},
+    )
+    with pytest.raises(ProviderCallError) as caught:
+        _adapter(lambda _request: response).interpret_idea(
+            QuickStartRequest(idea="Predict failures")
+        )
+
+    error = caught.value
+    assert error.code == "provider_error"
+    assert error.retryable is True
+    assert error.safe_diagnostic == {
+        "provider_error_source": "UPSTREAM_HTTP_503",
+        "provider_error_code": "upstream_busy",
+        "provider_http_status": 503,
+        "provider_exception_class": None,
+        "provider_failure_stage": "provider_http_response",
+        "provider_retryable": True,
+        "provider_retry_after_seconds_if_present": 7,
+        "response_content_type": "application/json",
+        "response_body_length": response.content.__len__(),
+    }
+    assert "do not persist" not in repr(error)
+
+
+def test_missing_upstream_error_code_is_explicit_and_safe():
+    from app.services.provider_adapters import ProviderCallError
+
+    with pytest.raises(ProviderCallError) as caught:
+        _adapter(lambda _request: httpx.Response(503, text="opaque provider body")).interpret_idea(
+            QuickStartRequest(idea="Predict failures")
+        )
+
+    assert caught.value.safe_diagnostic["provider_error_source"] == "UPSTREAM_HTTP_503"
+    assert caught.value.safe_diagnostic["provider_error_code"] == "NO_UPSTREAM_ERROR_CODE"
+    assert "opaque provider body" not in repr(caught.value)
 
 
 def test_timeout_is_retryable_and_safe():

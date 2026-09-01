@@ -105,6 +105,7 @@ def _recovery_for_provider_error(
         message=message,
         recovery_actions=actions,
         preserved_input=_input_payload(preserved_input),
+        safe_diagnostic=error.safe_diagnostic,
     )
 
 
@@ -351,6 +352,7 @@ class HybridStructuredRuntime:
         max_model_rounds: int = 2,
         max_tool_rounds: int = 4,
         before_provider_call: BeforeProviderCall | None = None,
+        managed_runtime: StructuredAIRuntime | None = None,
     ) -> None:
         if max_model_rounds < 1 or max_model_rounds > 2:
             raise ValueError("max_model_rounds must be in [1, 2]")
@@ -364,6 +366,9 @@ class HybridStructuredRuntime:
         self.max_model_rounds = max_model_rounds
         self.max_tool_rounds = max_tool_rounds
         self.before_provider_call = before_provider_call
+        if managed_runtime is not None and managed_runtime.mode != "managed_qwen":
+            raise ValueError("managed_runtime must use managed_qwen")
+        self.managed_runtime = managed_runtime
 
     @property
     def mode(self) -> str:
@@ -393,6 +398,8 @@ class HybridStructuredRuntime:
         )
 
     def for_project(self, project_id: str | None) -> StructuredAIRuntime:
+        if self.managed_runtime is not None:
+            return self.managed_runtime
         profile = self._selected_profile(project_id)
         if profile is None:
             return _LocalGuidanceRuntime(

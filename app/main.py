@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, Header, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -139,6 +139,35 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     db = Database(database_path or settings.database_path)
     beta_context = BetaInstanceContext.from_settings(settings)
 
+    def managed_settings_read_only() -> None:
+        if settings.beta_mode and settings.beta_managed_mode:
+            raise HTTPException(status_code=409, detail="MANAGED_MODEL_CONFIGURATION_READ_ONLY")
+
+    def managed_profile() -> dict[str, Any]:
+        return {
+            "id": "managed_qwen",
+            "display_name": "阿里云百炼官方 Qwen 服务",
+            "provider": "qwen",
+            "protocol": "openai_chat_completions",
+            "base_url": settings.managed_qwen_base_url,
+            "model_id": settings.managed_qwen_model,
+            "credential_status": "configured" if settings.managed_qwen_api_key else "missing",
+            "enabled": True,
+            "is_default": True,
+            "capabilities": {},
+            "capabilities_checked_at": None,
+            "last_test_status": None,
+            "last_tested_at": None,
+            "last_live_test_status": None,
+            "last_live_tested_at": None,
+            "last_live_latency_ms": None,
+            "last_live_error_code": None,
+            "last_live_model_returned": None,
+            "revision": 1,
+            "created_at": "managed",
+            "updated_at": "managed",
+        }
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         db.init_schema()
@@ -166,6 +195,11 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             participant_id=settings.beta_participant_id,
             beta_mode=settings.beta_mode,
             timezone_name=settings.beta_timezone,
+            limits=(
+                {"solution_generation": 3, "document_generation": 3, "evidence_analysis": 5}
+                if settings.beta_managed_mode
+                else None
+            ),
         )
         if settings.beta_mode:
             application.state.beta_sessions = BetaSessionService(
@@ -184,6 +218,17 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                 mode="deterministic_demo", model=settings.openai_model
             ),
             before_provider_call=application.state.beta_usage.consume,
+            managed_runtime=(
+                build_structured_runtime(
+                    mode="managed_qwen",
+                    model=settings.managed_qwen_model,
+                    api_key=settings.managed_qwen_api_key,
+                    base_url=settings.managed_qwen_base_url,
+                    before_provider_call=application.state.beta_usage.consume,
+                )
+                if settings.beta_mode and settings.beta_managed_mode
+                else None
+            ),
         )
         application.state.quick_start = QuickStartService(
             db, application.state.projects, application.state.structured_runtime
@@ -313,7 +358,35 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
 
     @application.exception_handler(ConflictError)
     async def conflict_error_handler(_request, exc: ConflictError):
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        detail = str(exc)
+        if detail.startswith("IDEA_BRIEF_REQUIRED"):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "生成方案前还需要完善并确认项目定义。",
+                    "code": "IDEA_BRIEF_REQUIRED",
+                    "action": "open_idea_brief",
+                },
+            )
+        if detail == "IDEA_BRIEF_NOT_CONFIRMED":
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "请先查看并确认项目定义，再生成方案。",
+                    "code": "IDEA_BRIEF_NOT_CONFIRMED",
+                    "action": "open_idea_brief",
+                },
+            )
+        if detail == "SOLUTION_GENERATION_NO_VALID_CANDIDATES":
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "这次没有生成可用方案，你的项目内容已经保留，请重新生成。",
+                    "code": "SOLUTION_GENERATION_NO_VALID_CANDIDATES",
+                    "action": "retry_solution_generation",
+                },
+            )
+        return JSONResponse(status_code=409, content={"detail": detail})
 
     @application.exception_handler(BetaDailyLimitReached)
     async def beta_daily_limit_handler(_request, exc: BetaDailyLimitReached):
@@ -437,7 +510,20 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         "/api/settings/model-profiles", response_model=list[ModelProfileResponse]
     )
     def list_model_profiles() -> list[dict[str, Any]]:
+        if settings.beta_mode and settings.beta_managed_mode:
+            return [managed_profile()]
         return application.state.model_profiles.list()
+
+    @application.get("/api/settings/mode")
+    def get_settings_mode() -> dict[str, Any]:
+        return {
+            "managed_beta_mode": settings.beta_mode and settings.beta_managed_mode,
+            "provider": "qwen" if settings.beta_mode and settings.beta_managed_mode else None,
+            "model": settings.managed_qwen_model if settings.beta_mode and settings.beta_managed_mode else None,
+            "status": (
+                "configured" if settings.managed_qwen_api_key else "missing"
+            ) if settings.beta_mode and settings.beta_managed_mode else "local",
+        }
 
     @application.post(
         "/api/settings/model-profiles", status_code=201, response_model=ModelProfileResponse
@@ -446,6 +532,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         payload: ModelProfileCreateRequest,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
+        managed_settings_read_only()
         return application.state.model_profiles.create(
             display_name=payload.display_name,
             provider=payload.provider,
@@ -466,6 +553,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         payload: ModelProfileUpdateRequest,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
+        managed_settings_read_only()
         changes = payload.model_dump(exclude_unset=True)
         if "api_key" in changes and changes["api_key"] is not None:
             changes["api_key"] = changes["api_key"].get_secret_value()
@@ -478,6 +566,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         profile_id: str,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> Response:
+        managed_settings_read_only()
         application.state.model_profiles.delete(profile_id, actor=x_actor)
         return Response(status_code=204)
 
@@ -488,6 +577,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         profile_id: str,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
+        managed_settings_read_only()
         return application.state.model_profiles.test_connection(profile_id, actor=x_actor)
 
 
@@ -500,6 +590,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         payload: LiveProviderTestRequest,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
+        managed_settings_read_only()
         return application.state.model_profiles.live_test_connection(
             profile_id, actor=x_actor
         )
@@ -512,6 +603,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         profile_id: str,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
+        managed_settings_read_only()
         return application.state.model_profiles.set_default(profile_id, actor=x_actor)
 
     @application.get(
@@ -530,6 +622,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         payload: ProjectModelProfileRequest,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
     ) -> dict[str, Any]:
+        managed_settings_read_only()
         return application.state.model_profiles.set_project_override(
             project_id, payload.profile_id, actor=x_actor
         )
@@ -675,6 +768,18 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     ) -> dict[str, Any]:
         result = application.state.solution_design.generate(project_id, actor=x_actor)
         candidates = result.get("candidates") or []
+        if "error_code" in result and not candidates:
+            return JSONResponse(status_code=503, content=result)
+        if not candidates:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error_code": "SOLUTION_GENERATION_NO_VALID_CANDIDATES",
+                    "message": "这次没有生成可用方案，你的项目内容已经保留，请重新生成。",
+                    "recovery_actions": ["重新生成"],
+                    "preserved_input": None,
+                },
+            )
         record_product_event(request, "solutions_generated", {"solution_count": len(candidates), "mechanisms": [item["mechanism"] for item in candidates]}, project_id=project_id)
         return result
 

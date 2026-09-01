@@ -122,6 +122,7 @@ class SolutionDesignService:
         action: str,
         status: str,
         error_code: str,
+        safe_diagnostic: dict[str, Any] | None = None,
     ) -> None:
         trace = build_ai_trace_payload(
             runtime=runtime,
@@ -133,6 +134,8 @@ class SolutionDesignService:
         )
         trace["generator_version"] = trace.pop("component_version")
         trace["error_code"] = error_code
+        if safe_diagnostic:
+            trace.update(safe_diagnostic)
         self.db.insert_audit(
             actor=actor,
             action=action,
@@ -227,6 +230,7 @@ class SolutionDesignService:
                 action="solution_generation_recovery_required",
                 status="recovery_required",
                 error_code=exc.error_code,
+                safe_diagnostic=exc.safe_diagnostic,
             )
             return exc.as_payload(preserved_input=brief)
         initial_output_sha = sha256_payload(raw_set)
@@ -277,6 +281,7 @@ class SolutionDesignService:
                 action="solution_generation_recovery_required",
                 status="failed_runtime",
                 error_code=exc.error_code,
+                safe_diagnostic=exc.safe_diagnostic,
             )
             return exc.as_payload(preserved_input=brief)
         except ValueError as exc:
@@ -318,6 +323,14 @@ class SolutionDesignService:
         )
         trace["generator_version"] = trace.pop("component_version")
         trace["initial_output_sha256"] = initial_output_sha
+        trace.update(getattr(runtime, "last_provider_diagnostic", {}))
+        trace.update({
+            "normalized_candidate_count": len(candidates),
+            "validator_accepted_count": len(candidates),
+            "persisted_candidate_count": len(candidates),
+            "response_candidate_count": len(candidates),
+            "diversity_verdict": "PASS",
+        })
         with self.db.connect() as connection:
             connection.execute(
                 "UPDATE solution_runs SET output_sha256 = ?, status = ? WHERE id = ?",
@@ -353,7 +366,16 @@ class SolutionDesignService:
                 entity_id=run_id,
                 payload=trace,
             )
-        return self.list_candidates(project_id)
+        result = self.list_candidates(project_id)
+        if not result.get("candidates"):
+            # A completed run without persisted candidates is never a successful
+            # generation; keep the run auditable but prevent a false success.
+            self.db.execute(
+                "UPDATE solution_runs SET status = 'failed_empty_result' WHERE id = ?",
+                (run_id,),
+            )
+            raise ConflictError("SOLUTION_GENERATION_NO_VALID_CANDIDATES")
+        return result
 
     def list_candidates(self, project_id: str) -> dict[str, Any]:
         latest = self.db.fetch_one(

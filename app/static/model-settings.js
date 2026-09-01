@@ -4,6 +4,7 @@
   const API_ROOT = "/api/settings/model-profiles";
   const providerNames = {qwen: "Qwen", kimi: "Kimi", deepseek: "DeepSeek", glm: "GLM", openai: "OpenAI", custom: "Custom"};
   let profiles = [];
+  let managedBetaMode = false;
 
   const ui = () => window.InsightForgeUi;
   const qs = (selector, root = document) => root.querySelector(selector);
@@ -62,6 +63,14 @@
 
   function renderProfiles() {
     const target = qs("#model-profile-list");
+    const form = qs("#model-profile-form");
+    const status = qs("#managed-model-service-status");
+    form.classList.toggle("hidden", managedBetaMode);
+    status.classList.toggle("hidden", !managedBetaMode);
+    if (managedBetaMode) {
+      const profile = profiles[0] || {};
+      status.innerHTML = `<strong>托管模型服务</strong><p>当前 Closed Beta 使用阿里云百炼官方 API 的 Qwen3.7-Flash（${escapeHtml(profile.model_id || "qwen3.7-flash")}）。模型配置由部署管理员维护；此页面不提供 API 密钥、Provider 或 Base URL 编辑入口。</p><p class="muted">状态：${escapeHtml(credentialLabel(profile))}</p>`;
+    }
     qs("#model-profile-count").textContent = profiles.length ? `${profiles.length} 个配置` : "";
     if (!profiles.length) {
       target.innerHTML = '<div class="empty-state"><p>尚未保存模型配置。新增后可设为默认配置。</p></div>';
@@ -72,7 +81,7 @@
         <div class="model-profile-card-head"><div><strong>${escapeHtml(profile.display_name)}</strong><span>${escapeHtml(providerNames[profile.provider] || profile.provider)} · ${escapeHtml(profile.model_id)}</span></div><span class="pill">${profile.enabled ? "已启用" : "已停用"}${profile.is_default ? " · 默认" : ""}</span></div>
         <div class="model-profile-meta"><span>${credentialLabel(profile)}</span><span>协议：${escapeHtml(profile.protocol)}</span><span>${capabilityLabel(profile)}</span><span>${connectionStatusLabel(profile)}</span><span>${liveConnectionStatusLabel(profile)}</span></div>
         <p class="model-test-notice">能力测试会检查基础对话与结构化输出，可能产生用量或费用；真实连接测试只发送 1 次最小真实请求。</p>
-        <div class="model-profile-actions">
+        <div class="model-profile-actions${managedBetaMode ? " hidden" : ""}">
           <button class="button button-secondary" type="button" data-model-action="edit">编辑</button>
           <button class="button button-secondary" type="button" data-model-action="test">能力测试</button>
           <button class="button button-secondary" type="button" data-model-action="live-test">真实连接测试</button>
@@ -90,6 +99,7 @@
 
   async function loadProfiles() {
     profiles = await ui().api(API_ROOT);
+    managedBetaMode = profiles.some((profile) => profile.id === "managed_qwen");
     renderProfiles();
   }
 

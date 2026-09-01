@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Literal, TypeVar
@@ -23,10 +24,14 @@ from app.services.model_providers import ProviderConfigurationError, ProviderReg
 class ProviderCallError(RuntimeError):
     """A deliberately body-free error safe to surface to an API client or log."""
 
-    def __init__(self, code: str, safe_message: str, retryable: bool) -> None:
+    def __init__(
+        self, code: str, safe_message: str, retryable: bool, *,
+        safe_diagnostic: dict[str, Any] | None = None,
+    ) -> None:
         self.code = code
         self.safe_message = safe_message
         self.retryable = retryable
+        self.safe_diagnostic = dict(safe_diagnostic or {})
         super().__init__(f"{code}: {safe_message}")
 
 
@@ -94,6 +99,7 @@ class ModelAdapter:
         self._use_response_format = True
         self._owns_client = client is None
         self._client = client or httpx.Client(timeout=timeout)
+        self.last_safe_diagnostic: dict[str, Any] = {}
 
     @property
     def is_closed(self) -> bool:
@@ -169,8 +175,8 @@ class ModelAdapter:
         started = perf_counter()
         try:
             body = self._request(
-                system="You are performing a connectivity check.",
-                user="Reply with exactly OK.",
+                system="" if self.provider == "qwen" else "You are performing a connectivity check.",
+                user="OK" if self.provider == "qwen" else "Reply with exactly OK.",
                 structured=False,
                 max_tokens=8,
                 live=True,
@@ -259,7 +265,12 @@ class ModelAdapter:
         return "supported"
 
     def _generate(self, *, output_model: type[_Model], system: str, user: str) -> _Model:
-        body = self._request(system=system, user=user, structured=True)
+        body = self._request(
+            system=system,
+            user=user,
+            structured=True,
+            output_model=output_model,
+        )
         content = self._content_from_response(body)
         malformed = False
         parsed: Any = None
@@ -267,6 +278,10 @@ class ModelAdapter:
             parsed = json.loads(content)
         except (TypeError, json.JSONDecodeError):
             malformed = True
+        self.last_safe_diagnostic.update({
+            "structured_payload_found": isinstance(parsed, (dict, list)),
+            "json_parse_success": not malformed,
+        })
         if malformed:
             raise ProviderCallError(
                 "malformed_response", "Provider returned invalid JSON.", False
@@ -277,6 +292,7 @@ class ModelAdapter:
             validated = output_model.model_validate(parsed)
         except ValidationError:
             invalid = True
+        self.last_safe_diagnostic["schema_validation_success"] = not invalid
         if invalid:
             raise ProviderCallError(
                 "invalid_content",
@@ -284,11 +300,13 @@ class ModelAdapter:
                 False,
             )
         assert validated is not None
+        if isinstance(parsed, dict) and isinstance(parsed.get("candidates"), list):
+            self.last_safe_diagnostic["raw_candidate_count"] = len(parsed["candidates"])
         return validated
 
     def _request(
         self, *, system: str, user: str, structured: bool, max_tokens: int | None = None,
-        live: bool = False,
+        live: bool = False, output_model: type[_Model] | None = None,
     ) -> dict[str, Any]:
         used_response_format = False
         if self.protocol == "openai_chat_completions":
@@ -296,12 +314,17 @@ class ModelAdapter:
             headers = {"Authorization": f"Bearer {self._api_key}"}
             payload: dict[str, Any] = {
                 "model": self.model,
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                "messages": ([{"role": "user", "content": user}] if not system.strip() else [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ]),
             }
             if max_tokens is not None:
                 payload["max_tokens"] = max_tokens
             if live:
                 payload["stream"] = False
+                if self.provider == "qwen":
+                    payload["enable_thinking"] = False
                 if self.provider in {"kimi", "glm"}:
                     payload["thinking"] = {"type": "disabled"}
                 if self.provider in {"deepseek", "glm"}:
@@ -313,8 +336,20 @@ class ModelAdapter:
                 if self.provider == "kimi":
                     payload.pop("max_tokens", None)
                     payload["max_completion_tokens"] = 16
+            if structured and self.provider == "qwen":
+                payload["enable_thinking"] = False
             if structured and self._use_response_format:
-                payload["response_format"] = {"type": "json_object"}
+                if self.provider == "qwen" and output_model is not None:
+                    payload["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": output_model.__name__,
+                            "strict": True,
+                            "schema": output_model.model_json_schema(),
+                        },
+                    }
+                else:
+                    payload["response_format"] = {"type": "json_object"}
                 used_response_format = True
         elif self.protocol == "anthropic_messages":
             endpoint = "/messages"
@@ -322,19 +357,32 @@ class ModelAdapter:
             payload = {"model": self.model, "max_tokens": max_tokens or 1024, "system": system, "messages": [{"role": "user", "content": user}]}
         else:  # ProviderRegistry prevents this, retained as a wire-protocol boundary.
             raise ProviderCallError("unsupported_protocol", "Configured provider protocol is unsupported.", False)
-        transport_failure: tuple[str, str, bool] | None = None
+        transport_failure: tuple[str, str, bool, str] | None = None
         try:
             response = self._client.post(f"{self.base_url}{endpoint}", headers=headers, json=payload)
         except httpx.TimeoutException:
-            transport_failure = ("timeout", "Provider request timed out.", True)
+            transport_failure = ("timeout", "Provider request timed out.", True, "UPSTREAM_TIMEOUT")
         except httpx.RequestError:
             transport_failure = (
                 "network_error",
                 "Provider request could not be completed.",
                 True,
+                "UPSTREAM_CONNECTION_FAILURE",
             )
         if transport_failure is not None:
-            raise ProviderCallError(*transport_failure)
+            code, message, retryable, source = transport_failure
+            raise ProviderCallError(
+                code, message, retryable,
+                safe_diagnostic={
+                    "provider_error_source": source,
+                    "provider_error_code": "NO_UPSTREAM_ERROR_CODE",
+                    "provider_http_status": None,
+                    "provider_exception_class": "TimeoutException" if code == "timeout" else "RequestError",
+                    "provider_failure_stage": "provider_transport",
+                    "provider_retryable": retryable,
+                    "provider_retry_after_seconds_if_present": None,
+                },
+            )
         if used_response_format and response.status_code in {400, 422}:
             # The caller owns retry accounting.  Mark this adapter instance so
             # its next globally-budgeted attempt uses plain completion.
@@ -343,9 +391,28 @@ class ModelAdapter:
                 "structured_output_unsupported",
                 "Provider rejected native structured output.",
                 True,
+                safe_diagnostic=self._response_diagnostic(
+                    response, source="UPSTREAM_HTTP_ERROR", provider_error_code="NO_UPSTREAM_ERROR_CODE"
+                ),
             )
         if response.status_code >= 400:
-            raise self._error_for_status(response.status_code)
+            raise self._error_for_status(response)
+        self.last_safe_diagnostic = {
+            "provider_request_started": True,
+            "provider_request_completed": True,
+            "upstream_response_received": True,
+            "upstream_http_status": response.status_code,
+            "upstream_request_id": next(
+                (response.headers[name][:120] for name in ("x-request-id", "request-id") if response.headers.get(name)),
+                None,
+            ),
+            "upstream_error_code": "NO_UPSTREAM_ERROR_CODE",
+            "provider_exception_class": None,
+            "provider_failure_stage": None,
+            "retry_after_present": "retry-after" in response.headers,
+            "response_content_type": response.headers.get("content-type", "").split(";", 1)[0].strip() or None,
+            "response_body_length": len(response.content),
+        }
         malformed_json = False
         body: Any = None
         try:
@@ -360,10 +427,21 @@ class ModelAdapter:
             raise ProviderCallError("malformed_response", "Provider returned an invalid response shape.", False)
         # Internal transport metadata used only for safe diagnostics; never persisted verbatim.
         body["_http_status"] = response.status_code
+        if isinstance(body.get("choices"), list) and body["choices"]:
+            first = body["choices"][0]
+            message = first.get("message") if isinstance(first, dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            self.last_safe_diagnostic.update({
+                "finish_reason": first.get("finish_reason") if isinstance(first, dict) else None,
+                "choices_count": len(body["choices"]),
+                "content_present": isinstance(content, str) and bool(content),
+                "content_length": len(content) if isinstance(content, str) else 0,
+            })
         return body
 
     @staticmethod
-    def _error_for_status(status_code: int) -> ProviderCallError:
+    def _error_for_status(response: httpx.Response) -> ProviderCallError:
+        status_code = response.status_code
         mapping = {
             400: ("invalid_request", "Provider rejected the request format.", False),
             401: ("unauthorized", "Provider authentication was rejected.", False),
@@ -372,7 +450,57 @@ class ModelAdapter:
             429: ("rate_limited", "Provider rate limit was reached; retry later.", True),
         }
         code, message, retryable = mapping.get(status_code, ("provider_error", "Provider request failed.", status_code >= 500))
-        return ProviderCallError(code, message, retryable)
+        return ProviderCallError(
+            code, message, retryable,
+            safe_diagnostic=ModelAdapter._response_diagnostic(
+                response,
+                source=f"UPSTREAM_HTTP_{status_code}" if status_code == 503 else "UPSTREAM_HTTP_ERROR",
+                provider_error_code=ModelAdapter._safe_error_code(response),
+            ),
+        )
+
+    @staticmethod
+    def _safe_error_code(response: httpx.Response) -> str:
+        """Extract a bounded scalar code without retaining provider body content."""
+        try:
+            payload = response.json()
+        except (ValueError, json.JSONDecodeError):
+            return "NO_UPSTREAM_ERROR_CODE"
+        values: list[Any] = []
+        if isinstance(payload, dict):
+            values.extend([payload.get("code"), payload.get("error_code")])
+            error = payload.get("error")
+            if isinstance(error, dict):
+                values.extend([error.get("code"), error.get("type")])
+        for value in values:
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", value):
+                return value
+        return "NO_UPSTREAM_ERROR_CODE"
+
+    @staticmethod
+    def _response_diagnostic(
+        response: httpx.Response, *, source: str, provider_error_code: str
+    ) -> dict[str, Any]:
+        retry_after: int | float | None = None
+        raw_retry_after = response.headers.get("retry-after")
+        if raw_retry_after:
+            try:
+                value = float(raw_retry_after.strip())
+                if 0 <= value <= 86400:
+                    retry_after = int(value) if value.is_integer() else value
+            except ValueError:
+                pass
+        return {
+            "provider_error_source": source,
+            "provider_error_code": provider_error_code,
+            "provider_http_status": response.status_code,
+            "provider_exception_class": None,
+            "provider_failure_stage": "provider_http_response",
+            "provider_retryable": response.status_code >= 500 or response.status_code == 429,
+            "provider_retry_after_seconds_if_present": retry_after,
+            "response_content_type": response.headers.get("content-type", "").split(";", 1)[0].strip() or None,
+            "response_body_length": len(response.content),
+        }
 
     def _content_from_response(self, body: dict[str, Any]) -> str:
         malformed = False

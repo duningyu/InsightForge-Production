@@ -150,6 +150,14 @@ class ExampleProjectSeeder:
         migration = LegacyMigrationService(self.db)
         for example in _EXAMPLES:
             migration.migrate_project(example["id"])
+            # Canonical synthetic examples are curated fixtures, not user legacy data.
+            # Their brief is intentionally confirmed so the fixture enrichment can
+            # generate its deterministic solution/document graph.
+            self.db.execute(
+                """UPDATE idea_briefs SET confirmation_status='confirmed', confirmed_at=COALESCE(confirmed_at, created_at)
+                   WHERE project_id=? AND confirmation_status='inferred'""",
+                (example["id"],),
+            )
             self._enrich_one(example)
 
     def _seed_one(self, example: dict[str, Any]) -> None:

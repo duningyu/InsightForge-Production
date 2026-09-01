@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 PARTICIPANT_RE = re.compile(r"^beta_[0-9]{3}$")
 
@@ -36,7 +36,13 @@ class RuntimePaths:
         root = getattr(self, area, None)
         if not isinstance(root, Path):
             raise ValueError("unknown runtime area")
-        candidate = (root / relative_name).resolve()
+        # Treat Windows separators as separators even when acceptance tests run
+        # on POSIX.  Reject drive-qualified/absolute Windows paths before the
+        # native resolve check so the boundary is platform-independent.
+        windows_name = PureWindowsPath(relative_name)
+        if windows_name.is_absolute() or windows_name.drive:
+            raise ValueError("runtime child name must be relative")
+        candidate = (root / relative_name.replace("\\", "/")).resolve()
         if root.resolve() != candidate and root.resolve() not in candidate.parents:
             raise ValueError("runtime path escapes participant root")
         return candidate

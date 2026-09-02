@@ -333,7 +333,18 @@ function parseGuidanceAction(action) {
   };
 }
 
-function createGuidanceNavigator({hasProject, loadProject, activateView, setEvidenceTab, showHome, focusControl}) {
+function openIdeaBriefReview() {
+  if (!state.ideaBrief) {
+    activateView("idea");
+    return false;
+  }
+  renderIdeaBrief(true);
+  const dialog = qs("#idea-brief-dialog");
+  if (dialog?.showModal) dialog.showModal(); else dialog?.setAttribute("open", "");
+  return true;
+}
+
+function createGuidanceNavigator({hasProject, loadProject, activateView, setEvidenceTab, showHome, focusControl, openIdeaBriefReview: openReview}) {
   return async (action) => {
     const target = parseGuidanceAction(action);
     if (target.projectId) {
@@ -343,7 +354,8 @@ function createGuidanceNavigator({hasProject, loadProject, activateView, setEvid
     if (target.workspaceView) activateView(target.workspaceView);
     else if (!target.projectId) showHome();
     if (target.evidenceTab) setEvidenceTab(target.evidenceTab);
-    focusControl(target.controlId);
+    if (action.code === "confirm_idea_brief" && openReview) openReview();
+    else focusControl(target.controlId);
   };
 }
 
@@ -361,6 +373,7 @@ async function applyGuidanceAction(action) {
     setEvidenceTab,
     showHome: showQuickStart,
     focusControl: focusGuidanceControl,
+    openIdeaBriefReview,
   });
   return navigate(action);
 }
@@ -715,6 +728,18 @@ function renderIdeaBrief(dialog = false) {
   const brief = state.ideaBrief;
   const target = dialog ? qs("#idea-brief-dialog-content") : qs("#idea-brief-content");
   if (!target) return;
+  if (dialog) {
+    const unknowns = (brief.unknowns || []).join("\n");
+    target.innerHTML = `
+      <p class="muted">请检查并补充以下理解；确认前不会生成方案。</p>
+      <label>目标用户<input id="idea-brief-target-user" value="${escapeHtml(brief.target_user)}" /></label>
+      <small class="muted">${escapeHtml(brief.provenance?.target_user === "user_input" ? "用户明确输入" : "AI 推断 · 待验证")}</small>
+      <label>核心问题<input id="idea-brief-problem" value="${escapeHtml(brief.problem)}" /></label>
+      <small class="muted">${escapeHtml(brief.provenance?.problem === "user_input" ? "用户明确输入" : "AI 推断 · 待验证")}</small>
+      <label>希望结果<input id="idea-brief-desired-outcome" value="${escapeHtml(brief.desired_outcome)}" /></label>
+      <label>目前不知道<textarea id="idea-brief-unknowns" rows="3">${escapeHtml(unknowns)}</textarea></label>`;
+    return;
+  }
   target.innerHTML = `
     <div class="brief-grid">
       <article><span>目标用户</span><strong>${escapeHtml(brief.target_user)}</strong><small>${escapeHtml(brief.provenance?.target_user === "user_input" ? "用户明确输入" : "AI 推断 · 待验证")}</small></article>
@@ -743,15 +768,7 @@ function renderSolutions() {
         : "生成方案前还需要完善并确认项目定义。";
     target.innerHTML = `<div class="empty-state"><h3>还没有方案</h3><p>${message}</p>${action}</div>`;
     qs("#generate-solutions-button")?.addEventListener("click", generateSolutions);
-    qs("#open-idea-brief-button")?.addEventListener("click", () => {
-      if (state.ideaBrief) {
-        renderIdeaBrief(true);
-        const dialog = qs("#idea-brief-dialog");
-        if (dialog?.showModal) dialog.showModal(); else dialog?.setAttribute("open", "");
-      } else {
-        activateView("idea");
-      }
-    });
+    qs("#open-idea-brief-button")?.addEventListener("click", openIdeaBriefReview);
     return;
   }
   target.innerHTML = `<div class="solution-grid">${state.solutions.candidates.map((solution, index) => `
@@ -1171,9 +1188,7 @@ async function quickStart(event) {
     state.runtimeMode = result.runtime_mode || result.ai_trace?.runtime_mode || state.runtimeMode;
     renderRuntimeDisclosure();
     await Promise.all([loadProjects(), loadHistory(), loadHomeNextAction()]);
-    renderIdeaBrief(true);
-    const dialog = qs("#idea-brief-dialog");
-    if (dialog.showModal) dialog.showModal(); else dialog.setAttribute("open", "");
+    openIdeaBriefReview();
   } catch (error) { reportError(error); }
 }
 
@@ -1185,13 +1200,29 @@ async function confirmIdeaBrief(event) {
     return;
   }
   try {
+    const values = {
+      target_user: qs("#idea-brief-target-user")?.value.trim() || "",
+      problem: qs("#idea-brief-problem")?.value.trim() || "",
+      desired_outcome: qs("#idea-brief-desired-outcome")?.value.trim() || "",
+      unknowns: (qs("#idea-brief-unknowns")?.value || "").split(/\n+/).map((item) => item.trim()).filter(Boolean),
+    };
+    const changed = ["target_user", "problem", "desired_outcome"].some((key) => values[key] !== String(state.ideaBrief[key] || ""))
+      || JSON.stringify(values.unknowns) !== JSON.stringify(state.ideaBrief.unknowns || []);
+    if (changed) {
+      state.ideaBrief = await api(`/api/projects/${state.currentProjectId}/idea-brief/refine`, {method: "POST", body: JSON.stringify(values)});
+    }
     state.ideaBrief = await api(`/api/projects/${state.currentProjectId}/idea-brief/confirm`, {method: "POST", body: JSON.stringify({human_confirmed: true, note: "UI confirmation"})});
     qs("#idea-brief-dialog").close();
     showProjectShell();
     renderIdeaBrief();
     activateView("solutions");
-    await generateSolutions();
-  } catch (error) { reportError(error); }
+    renderSolutions();
+    await loadProjectNextAction();
+    toast("项目理解已确认，现在可以生成项目方案。");
+  } catch (error) {
+    console.error(error);
+    toast("项目理解暂时无法保存，请重试。");
+  }
 }
 
 async function generateSolutions() {
@@ -1382,7 +1413,7 @@ function wireEvents() {
   qs("#home-button").addEventListener("click", (event) => { event.preventDefault(); showQuickStart(); });
   qs("#quick-start-form").addEventListener("submit", quickStart);
   qs("#idea-brief-form").addEventListener("submit", confirmIdeaBrief);
-  qs("#idea-brief-edit").addEventListener("click", () => { toast("当前可重新输入 Idea；不会把未确认修改自动写入正式版本。"); qs("#idea-brief-dialog").close(); });
+  qs("#idea-brief-edit").addEventListener("click", (event) => { event.preventDefault(); qs("#idea-brief-target-user")?.focus(); toast("可以直接修改以上项目理解，确认后才会保存。"); });
   qs("#new-idea-button").addEventListener("click", showQuickStart);
   qs("#settings-button").addEventListener("click", showModelSettings);
   qs("#settings-back").addEventListener("click", showQuickStart);
@@ -1429,6 +1460,8 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     state,
     quickStart,
     confirmIdeaBrief,
+    openIdeaBriefReview,
+    renderIdeaBrief,
     generateSolutions,
     isRecoveryPayload,
     renderRuntimeDisclosure,

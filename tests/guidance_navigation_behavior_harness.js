@@ -29,6 +29,8 @@ function element(selector) {
       setAttribute() {},
       querySelectorAll() { return []; },
       addEventListener() {},
+      showModal() { this.open = true; },
+      close() { this.open = false; },
     });
   }
   return elements.get(selector);
@@ -93,6 +95,7 @@ async function main() {
     setEvidenceTab: (tab) => projectTrace.push(`tab:${tab}`),
     showHome: () => projectTrace.push("home"),
     focusControl: (id) => projectTrace.push(`focus:${id}`),
+    openIdeaBriefReview: () => projectTrace.push("open:idea-brief-review"),
   });
   await projectNavigator({
     code: "continue_project",
@@ -139,6 +142,44 @@ async function main() {
   assert.equal(hooks.state.activeView, "evidence", "production navigation opens the Evidence view");
   assert.equal(hooks.state.evidenceTab, "impact", "production navigation opens the Impact tab");
   assert.equal(priorityControl.focused, true, "production navigation focuses the exact selected proposal");
+
+  projectTrace.length = 0;
+  const confirmationNavigator = hooks.createGuidanceNavigator({
+    hasProject: () => true,
+    loadProject: async () => {},
+    activateView: (view) => projectTrace.push(`view:${view}`),
+    setEvidenceTab: () => {},
+    showHome: () => {},
+    focusControl: (id) => projectTrace.push(`focus:${id}`),
+    openIdeaBriefReview: () => projectTrace.push("open:idea-brief-review"),
+  });
+  await confirmationNavigator({
+    code: "confirm_idea_brief",
+    title: "确认或修改 Idea 理解",
+    reason: "先确认系统理解。",
+    view: "solutions",
+    control_id: "idea-brief-confirm",
+  });
+  assert.deepEqual(
+    projectTrace,
+    ["view:solutions", "open:idea-brief-review"],
+    "confirm IdeaBrief guidance opens the review UI instead of only focusing a submit control",
+  );
+
+  hooks.state.ideaBrief = {
+    confirmation_status: "draft",
+    target_user: "硕士研究生",
+    problem: "确定研究方向后难以选择合适的论文问题",
+    desired_outcome: "形成可执行的论文选题方向",
+    unknowns: ["当前不知道可获得哪些数据"],
+    provenance: {target_user: "model_hypothesis", problem: "model_hypothesis"},
+  };
+  hooks.renderIdeaBrief(true);
+  const briefReviewHtml = element("#idea-brief-dialog-content").innerHTML;
+  assert.match(briefReviewHtml, /id="idea-brief-target-user"[^>]*value="硕士研究生"/, "review UI prefills target user for editing");
+  assert.match(briefReviewHtml, /id="idea-brief-problem"[^>]*确定研究方向后难以选择合适的论文问题/, "review UI prefills problem for editing");
+  assert.match(briefReviewHtml, /id="idea-brief-desired-outcome"[^>]*形成可执行的论文选题方向/, "review UI prefills desired outcome for editing");
+  assert.match(briefReviewHtml, /id="idea-brief-unknowns"[^>]*>[\s\S]*当前不知道可获得哪些数据/, "review UI prefills unknowns for editing");
 
   apiCalls.length = 0;
   hooks.state.currentProjectId = "project-current";

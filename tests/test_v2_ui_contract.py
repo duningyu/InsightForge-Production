@@ -68,4 +68,4 @@ def test_css_is_intrinsically_responsive_and_retains_reduced_motion_support():
 def test_static_assets_are_versioned_to_avoid_cross_product_browser_cache_collisions():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert 'href="/static/styles.css?v=3.0.0&amp;build=user-feedback-complete.1"' in html
-    assert 'src="/static/app.js?v=3.0.0&amp;build=user-feedback-complete.2"' in html
+    assert 'src="/static/app.js?v=3.0.0&amp;build=user-feedback-complete.3"' in html

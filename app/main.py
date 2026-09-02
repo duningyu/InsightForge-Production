@@ -217,7 +217,8 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             local_runtime=build_structured_runtime(
                 mode="deterministic_demo", model=settings.openai_model
             ),
-            before_provider_call=application.state.beta_usage.consume,
+                before_provider_call=application.state.beta_usage.consume,
+                after_provider_failure=lambda operation, decision: application.state.beta_usage.release(decision),
             managed_runtime=(
                 build_structured_runtime(
                     mode="managed_qwen",
@@ -225,6 +226,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                     api_key=settings.managed_qwen_api_key,
                     base_url=settings.managed_qwen_base_url,
                     before_provider_call=application.state.beta_usage.consume,
+                    after_provider_failure=lambda operation, decision: application.state.beta_usage.release(decision),
                 )
                 if settings.beta_mode and settings.beta_managed_mode
                 else None

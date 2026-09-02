@@ -106,3 +106,28 @@ class BetaUsageService:
                 (self.participant_id, usage_date, operation, used, updated_at),
             )
         return UsageDecision(True, True, operation, limit, used, reset_at)
+
+    def release(self, decision: UsageDecision) -> None:
+        """Release a reservation when the provider did not deliver a result."""
+        if not self.beta_mode or not decision.counted or not self.participant_id:
+            return
+        local_now = self._local_now()
+        usage_date = local_now.date().isoformat()
+        updated_at = local_now.astimezone(timezone.utc).isoformat(timespec="microseconds")
+        with self.db.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT request_count FROM beta_daily_usage WHERE participant_id=? AND usage_date=? AND operation_type=?",
+                (self.participant_id, usage_date, decision.operation),
+            ).fetchone()
+            used = int(row[0]) if row else 0
+            if used <= 1:
+                connection.execute(
+                    "DELETE FROM beta_daily_usage WHERE participant_id=? AND usage_date=? AND operation_type=?",
+                    (self.participant_id, usage_date, decision.operation),
+                )
+            else:
+                connection.execute(
+                    "UPDATE beta_daily_usage SET request_count=?, updated_at=? WHERE participant_id=? AND usage_date=? AND operation_type=?",
+                    (used - 1, updated_at, self.participant_id, usage_date, decision.operation),
+                )

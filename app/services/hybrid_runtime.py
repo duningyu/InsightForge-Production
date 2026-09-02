@@ -25,6 +25,7 @@ from app.services.provider_adapters import ModelAdapter, ProviderCallError
 
 AdapterFactory = Callable[..., ModelAdapter]
 BeforeProviderCall = Callable[[str], Any]
+AfterProviderFailure = Callable[[str, Any], Any]
 PROVIDER_USAGE_OPERATIONS = {
     "design_solutions": "solution_generation",
     "analyze_evidence": "evidence_analysis",
@@ -187,6 +188,7 @@ class _ProfileStructuredRuntime:
         max_model_rounds: int,
         max_tool_rounds: int,
         before_provider_call: BeforeProviderCall | None = None,
+        after_provider_failure: AfterProviderFailure | None = None,
     ) -> None:
         self.provider = profile["provider"]
         self.model = profile["model_id"]
@@ -199,6 +201,7 @@ class _ProfileStructuredRuntime:
         self.max_tool_rounds = max_tool_rounds
         self.model_rounds_used = 0
         self._before_provider_call = before_provider_call
+        self._after_provider_failure = after_provider_failure
 
     def _credential(self, preserved_input: Any) -> str:
         credential_ref = self._profile.get("credential_ref")
@@ -262,10 +265,11 @@ class _ProfileStructuredRuntime:
             while self.model_rounds_used < self.max_model_rounds:
                 self.model_rounds_used += 1
                 operation = PROVIDER_USAGE_OPERATIONS.get(method)
+                reservation = None
                 if operation is not None and self._before_provider_call is not None:
                     # This is deliberately after all local profile/credential/adapter
                     # validation and immediately before the real provider dispatch.
-                    self._before_provider_call(operation)
+                    reservation = self._before_provider_call(operation)
                 try:
                     result = adapter_method(*args, **(kwargs or {}))
                     if method == "analyze_evidence":
@@ -286,6 +290,8 @@ class _ProfileStructuredRuntime:
                         return [item.model_dump(mode="json") for item in parsed.relations]
                     return result
                 except ProviderCallError as error:
+                    if operation is not None and self._after_provider_failure is not None:
+                        self._after_provider_failure(operation, reservation)
                     can_retry = error.code in SCHEMA_ERROR_CODES or error.retryable
                     if can_retry and self.model_rounds_used < self.max_model_rounds:
                         continue
@@ -293,8 +299,12 @@ class _ProfileStructuredRuntime:
                         error, preserved_input=preserved_input
                     ) from None
                 except StructuredRuntimeRecoveryError:
+                    if operation is not None and self._after_provider_failure is not None:
+                        self._after_provider_failure(operation, reservation)
                     raise
                 except Exception:
+                    if operation is not None and self._after_provider_failure is not None:
+                        self._after_provider_failure(operation, reservation)
                     raise StructuredRuntimeRecoveryError(
                         error_code="MODEL_PROVIDER_ERROR",
                         message="所选模型暂时无法完成生成；你的输入已保留。",
@@ -352,6 +362,7 @@ class HybridStructuredRuntime:
         max_model_rounds: int = 2,
         max_tool_rounds: int = 4,
         before_provider_call: BeforeProviderCall | None = None,
+        after_provider_failure: AfterProviderFailure | None = None,
         managed_runtime: StructuredAIRuntime | None = None,
     ) -> None:
         if max_model_rounds < 1 or max_model_rounds > 2:
@@ -366,6 +377,7 @@ class HybridStructuredRuntime:
         self.max_model_rounds = max_model_rounds
         self.max_tool_rounds = max_tool_rounds
         self.before_provider_call = before_provider_call
+        self.after_provider_failure = after_provider_failure
         if managed_runtime is not None and managed_runtime.mode != "managed_qwen":
             raise ValueError("managed_runtime must use managed_qwen")
         self.managed_runtime = managed_runtime
@@ -414,6 +426,7 @@ class HybridStructuredRuntime:
             max_model_rounds=self.max_model_rounds,
             max_tool_rounds=self.max_tool_rounds,
             before_provider_call=self.before_provider_call,
+            after_provider_failure=self.after_provider_failure,
         )
 
     def analyze_evidence(

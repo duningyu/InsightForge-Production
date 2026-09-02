@@ -221,6 +221,7 @@ def _profile_runtime(usage_db, clock, adapter: OneShotAdapter, *, with_key: bool
         local_runtime=DeterministicDemoRuntime(fixture_path=FIXTURE_PATH),
         adapter_factory=OneShotFactory(adapter),
         before_provider_call=usage.consume,
+        after_provider_failure=lambda _operation, decision: usage.release(decision),
     ).for_project(None)
     brief = IdeaBriefDraft(
         original_idea="测试限额",
@@ -265,8 +266,20 @@ def test_local_validation_failure_does_not_consume(usage_db, clock):
     assert _count(usage_db, "beta_001", "solution_generation") == 0
 
 
-def test_provider_failure_after_request_still_consumes(usage_db, clock):
+def test_provider_failure_releases_reserved_quota(usage_db, clock):
     adapter = OneShotAdapter(error=ProviderCallError("provider_error", "safe", False))
+    runtime, brief, _usage_service = _profile_runtime(usage_db, clock, adapter)
+
+    with pytest.raises(StructuredRuntimeRecoveryError):
+        runtime.design_solutions(brief)
+
+    assert _count(usage_db, "beta_001", "solution_generation") == 0
+
+
+def test_provider_failure_does_not_burn_existing_successful_quota(usage_db, clock):
+    adapter = OneShotAdapter(error=ProviderCallError("provider_error", "safe", False))
+    usage = _usage(usage_db, clock, limits={"solution_generation": 3})
+    usage.consume("solution_generation")
     runtime, brief, _usage_service = _profile_runtime(usage_db, clock, adapter)
 
     with pytest.raises(StructuredRuntimeRecoveryError):

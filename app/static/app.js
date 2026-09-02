@@ -23,6 +23,7 @@ const state = {
   walkthrough: null,
   modelProfiles: [],
   projectModelProfileId: null,
+  generationInFlight: null,
   betaMode: false,
   betaConsented: false,
   betaConsentVersion: 1,
@@ -187,6 +188,14 @@ function reportError(error) {
     } else {
       toast("还需要补充一项信息，请先打开项目定义。");
     }
+    return;
+  }
+  if (error?.code === "SOLUTION_GENERATION_IN_PROGRESS") {
+    toast("正在生成方案，请稍候。");
+    return;
+  }
+  if (error?.status === 503 && error?.code === "MODEL_TIMEOUT") {
+    toast("AI 服务本次响应超时，你的输入已保留，请稍后重试。");
     return;
   }
   toast(error?.message || "操作失败");
@@ -779,7 +788,7 @@ function renderSolutions() {
     const action = clarificationRequired
       ? `<button id="open-idea-brief-button" class="button button-primary" type="button">补充信息</button>`
       : confirmed
-      ? `<button id="generate-solutions-button" class="button button-primary" type="button">生成方案</button>`
+      ? `<button id="generate-solutions-button" class="button button-primary" type="button" aria-disabled="false">生成方案</button>`
       : `<button id="open-idea-brief-button" class="button button-primary" type="button">查看并确认项目定义</button>`;
     const message = clarificationRequired
       ? "还需要补充一项信息，完成澄清后才能确认项目理解并生成方案。"
@@ -1259,18 +1268,46 @@ async function confirmIdeaBrief(event) {
 }
 
 async function generateSolutions() {
-  try {
-    const result = await api(`/api/projects/${state.currentProjectId}/solutions/generate`, {method: "POST"});
-    if (isRecoveryPayload(result)) {
-      state.solutions = null;
+  if (state.generationInFlight) return state.generationInFlight;
+  const button = qs("#generate-solutions-button");
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-disabled", "true");
+    button.textContent = "正在生成方案…";
+  }
+  const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const attemptId = `solution:${state.currentProjectId}:${suffix}`;
+  let request;
+  request = (async () => {
+    try {
+      const result = await api(`/api/projects/${state.currentProjectId}/solutions/generate`, {
+        method: "POST",
+        headers: {"X-Idempotency-Key": attemptId},
+      });
+      if (isRecoveryPayload(result)) {
+        state.solutions = null;
+        renderSolutions();
+        showRecoveryPayload(result);
+        return result;
+      }
+      state.solutions = result;
       renderSolutions();
-      showRecoveryPayload(result);
+      await loadProjectNextAction();
       return result;
+    } catch (error) {
+      reportError(error);
+      return null;
+    } finally {
+      if (state.generationInFlight === request) state.generationInFlight = null;
+      if (button?.isConnected && !state.solutions?.candidates?.length) {
+        button.disabled = false;
+        button.setAttribute("aria-disabled", "false");
+        button.textContent = "生成方案";
+      }
     }
-    state.solutions = result;
-    renderSolutions();
-    await loadProjectNextAction();
-  } catch (error) { reportError(error); }
+  })();
+  state.generationInFlight = request;
+  return request;
 }
 
 async function selectSolution(candidateId) {

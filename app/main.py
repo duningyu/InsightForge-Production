@@ -82,6 +82,7 @@ from app.services.beta_analytics import BetaAnalyticsService
 from app.services.beta_feedback import BetaFeedbackService
 from app.services.beta_sessions import BetaSessionService
 from app.services.beta_usage import BetaUsageService
+from app.services.solution_generation_guard import SolutionGenerationGuard
 from app.services.retrieval_service import ProjectRetrievalService
 from app.services.sources import SourceService
 from app.services.generation import LLMDocumentGenerator, build_generator
@@ -178,6 +179,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         application.state.db = db
         application.state.settings = settings
         application.state.beta_context = beta_context
+        application.state.solution_generation_guard = SolutionGenerationGuard()
         application.state.beta_analytics = BetaAnalyticsService(
             db, participant_id=settings.beta_participant_id,
             release_id=settings.beta_release_id, beta_mode=settings.beta_mode,
@@ -782,23 +784,47 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         project_id: str,
         request: Request,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
+        x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
     ) -> dict[str, Any]:
-        result = application.state.solution_design.generate(project_id, actor=x_actor)
-        candidates = result.get("candidates") or []
-        if "error_code" in result and not candidates:
-            return JSONResponse(status_code=503, content=result)
-        if not candidates:
-            return JSONResponse(
-                status_code=503,
-                content={
+        attempt_id = x_idempotency_key or f"web:{uuid.uuid4().hex}"
+        participant_id = application.state.beta_context.participant_id
+        claim = application.state.solution_generation_guard.begin(
+            participant_id, project_id, attempt_id
+        )
+        if not claim.owner:
+            if claim.error_code == "SOLUTION_GENERATION_ALREADY_COMPLETED":
+                return JSONResponse(status_code=claim.status_code or 201, content=claim.payload or {})
+            return JSONResponse(status_code=claim.status_code or 409, content=claim.payload or {})
+        try:
+            result = application.state.solution_design.generate(project_id, actor=x_actor)
+            candidates = result.get("candidates") or []
+            if "error_code" in result and not candidates:
+                response = JSONResponse(status_code=503, content=result)
+                application.state.solution_generation_guard.complete(
+                    participant_id, project_id, attempt_id, result, status_code=503
+                )
+                return response
+            if not candidates:
+                result = {
                     "error_code": "SOLUTION_GENERATION_NO_VALID_CANDIDATES",
                     "message": "这次没有生成可用方案，你的项目内容已经保留，请重新生成。",
                     "recovery_actions": ["重新生成"],
                     "preserved_input": None,
-                },
+                }
+                application.state.solution_generation_guard.complete(
+                    participant_id, project_id, attempt_id, result, status_code=503
+                )
+                return JSONResponse(status_code=503, content=result)
+            record_product_event(request, "solutions_generated", {"solution_count": len(candidates), "mechanisms": [item["mechanism"] for item in candidates]}, project_id=project_id)
+            application.state.solution_generation_guard.complete(
+                participant_id, project_id, attempt_id, result
             )
-        record_product_event(request, "solutions_generated", {"solution_count": len(candidates), "mechanisms": [item["mechanism"] for item in candidates]}, project_id=project_id)
-        return result
+            return result
+        except Exception:
+            application.state.solution_generation_guard.fail(
+                participant_id, project_id, attempt_id
+            )
+            raise
 
     @application.get("/api/projects/{project_id}/solutions")
     def list_solutions(project_id: str) -> dict[str, Any]:

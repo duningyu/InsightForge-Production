@@ -55,7 +55,16 @@ class SolutionGenerationGuard:
             return safe
         return payload
 
-    def begin(self, participant_id: str | None, project_id: str, attempt_id: str) -> GenerationClaim:
+    def begin(
+        self,
+        participant_id: str | None,
+        project_id: str,
+        attempt_id: str,
+        *,
+        requested_model_preference: str | None = None,
+        resolved_model_family: str | None = None,
+        resolved_model_id: str | None = None,
+    ) -> GenerationClaim:
         if self._database is None:
             return self._begin_process_local(participant_id, project_id, attempt_id)
 
@@ -65,7 +74,8 @@ class SolutionGenerationGuard:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT status, response_json, status_code
+                SELECT status, response_json, status_code, requested_model_preference,
+                       resolved_model_family, resolved_model_id
                 FROM solution_generation_intents
                 WHERE participant_id = ? AND project_id = ?
                   AND operation_type = ? AND idempotency_key = ?
@@ -77,10 +87,16 @@ class SolutionGenerationGuard:
                     """
                     INSERT INTO solution_generation_intents(
                         id, participant_id, project_id, operation_type,
-                        idempotency_key, status, quota_reservation_id, created_at
-                    ) VALUES (?, ?, ?, ?, ?, 'IN_PROGRESS', ?, ?)
+                        idempotency_key, status, quota_reservation_id,
+                        requested_model_preference, resolved_model_family,
+                        resolved_model_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?, 'IN_PROGRESS', ?, ?, ?, ?, ?)
                     """,
-                    (intent_id, participant, project_id, self._operation_type, attempt_id, intent_id, self._now()),
+                    (
+                        intent_id, participant, project_id, self._operation_type, attempt_id,
+                        intent_id, requested_model_preference, resolved_model_family,
+                        resolved_model_id, self._now(),
+                    ),
                 )
                 return GenerationClaim(owner=True)
 
@@ -93,6 +109,18 @@ class SolutionGenerationGuard:
                 """,
                 (participant, project_id, self._operation_type, attempt_id),
             )
+            stored_model_id = row[5]
+            if stored_model_id and resolved_model_id and stored_model_id != resolved_model_id:
+                return GenerationClaim(
+                    owner=False,
+                    error_code="IDEMPOTENCY_MODEL_MISMATCH",
+                    payload={
+                        "error_code": "IDEMPOTENCY_MODEL_MISMATCH",
+                        "message": "同一生成操作不能切换模型，请点击重新生成。",
+                        "retryable": False,
+                    },
+                    status_code=409,
+                )
             if row[0] == "IN_PROGRESS":
                 return GenerationClaim(
                     owner=False,

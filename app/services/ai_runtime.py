@@ -306,6 +306,7 @@ class ManagedQwenStructuredRuntime:
         model: str,
         api_key: str,
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider: str = "qwen",
         adapter_factory: Any = ModelAdapter,
         before_provider_call: Callable[[str], Any] | None = None,
         after_provider_failure: Callable[[str, Any], Any] | None = None,
@@ -313,6 +314,7 @@ class ManagedQwenStructuredRuntime:
         if not api_key.strip():
             raise StructuredRuntimeUnavailableError("MANAGED_QWEN_API_KEY is required; no deterministic fallback was used")
         self.model = model
+        self.provider = provider
         self._api_key = api_key
         self._base_url = base_url
         self._adapter_factory = adapter_factory
@@ -332,7 +334,7 @@ class ManagedQwenStructuredRuntime:
             reservation = self._before_provider_call(operation)
         try:
             adapter = self._adapter_factory(
-                provider="qwen", model=self.model, api_key=self._api_key,
+                provider=self.provider, model=self.model, api_key=self._api_key,
                 base_url=self._base_url,
             )
         except Exception as exc:
@@ -384,6 +386,27 @@ class ManagedQwenStructuredRuntime:
         return self._call("analyze_evidence", claim=claim, chunks=chunks)
 
 
+class ManagedModelStructuredRuntime(ManagedQwenStructuredRuntime):
+    """Managed Bailian runtime for one already-resolved model selection."""
+
+    mode: RuntimeMode = "managed_model"
+
+    def __init__(self, *, model: str, provider: str, api_key: str,
+                 base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                 adapter_factory: Any = ModelAdapter,
+                 before_provider_call: Callable[[str], Any] | None = None,
+                 after_provider_failure: Callable[[str, Any], Any] | None = None) -> None:
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            provider=provider,
+            adapter_factory=adapter_factory,
+            before_provider_call=before_provider_call,
+            after_provider_failure=after_provider_failure,
+        )
+
+
 def build_structured_runtime(
     *,
     mode: RuntimeMode | None = None,
@@ -418,6 +441,20 @@ def build_structured_runtime(
             )
         return ManagedQwenStructuredRuntime(
             model=model or os.getenv("MANAGED_QWEN_MODEL", "qwen3.7-flash"),
+            api_key=resolved_key,
+            before_provider_call=before_provider_call,
+            after_provider_failure=after_provider_failure,
+            base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+    if selected == "managed_model":
+        resolved_key = api_key or os.getenv("MANAGED_BAILIAN_API_KEY") or os.getenv("MANAGED_QWEN_API_KEY")
+        if not resolved_key:
+            raise StructuredRuntimeUnavailableError(
+                "MANAGED_BAILIAN_API_KEY is required; no deterministic fallback was used"
+            )
+        return ManagedModelStructuredRuntime(
+            model=model or os.getenv("MANAGED_MODEL_ID", "qwen3.7-flash"),
+            provider=os.getenv("MANAGED_MODEL_PROVIDER", "qwen"),
             api_key=resolved_key,
             before_provider_call=before_provider_call,
             after_provider_failure=after_provider_failure,

@@ -59,6 +59,8 @@ from app.errors import (
     StructuredRuntimeUnavailableError,
 )
 from app.services.ai_runtime import build_structured_runtime
+from app.services.ai_runtime import ManagedModelStructuredRuntime
+from app.services.managed_models import ManagedModelPreference, ManagedModelRegistry, ManagedModelRouter
 from app.services.quick_start import QuickStartService
 from app.services.solution_design import SolutionDesignService
 from app.services.decisions import DecisionService
@@ -144,30 +146,30 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         if settings.beta_mode and settings.beta_managed_mode:
             raise HTTPException(status_code=409, detail="MANAGED_MODEL_CONFIGURATION_READ_ONLY")
 
-    def managed_profile() -> dict[str, Any]:
-        return {
-            "id": "managed_qwen",
-            "display_name": "阿里云百炼官方 Qwen 服务",
-            "provider": "qwen",
-            "protocol": "openai_chat_completions",
-            "base_url": settings.managed_qwen_base_url,
-            "model_id": settings.managed_qwen_model,
-            "credential_status": "configured" if settings.managed_qwen_api_key else "missing",
-            "enabled": True,
-            "is_default": True,
-            "capabilities": {},
-            "capabilities_checked_at": None,
-            "last_test_status": None,
-            "last_tested_at": None,
-            "last_live_test_status": None,
-            "last_live_tested_at": None,
-            "last_live_latency_ms": None,
-            "last_live_error_code": None,
-            "last_live_model_returned": None,
-            "revision": 1,
-            "created_at": "managed",
-            "updated_at": "managed",
-        }
+    def managed_profiles() -> list[dict[str, Any]]:
+        registry = application.state.managed_model_registry
+        default_id = settings.managed_pilot_default_model
+        profiles = []
+        labels = {"qwen": "Qwen3.7-Flash", "glm": "GLM-5.2", "deepseek": "DeepSeek V4 Flash"}
+        for selection in registry.list_models():
+            profiles.append({
+                "id": f"managed_{selection.family}",
+                "display_name": f"{labels[selection.family]}（阿里云百炼官方 API）",
+                "provider": selection.family,
+                "protocol": "openai_chat_completions",
+                "base_url": settings.managed_qwen_base_url,
+                "model_id": selection.model_id,
+                "credential_status": "configured" if settings.managed_bailian_api_key else "missing",
+                "enabled": True,
+                "is_default": selection.model_id == default_id,
+                "capabilities": {}, "capabilities_checked_at": None,
+                "last_test_status": None, "last_tested_at": None,
+                "last_live_test_status": None, "last_live_tested_at": None,
+                "last_live_latency_ms": None, "last_live_error_code": None,
+                "last_live_model_returned": None, "revision": 1,
+                "created_at": "managed", "updated_at": "managed",
+            })
+        return profiles
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -213,7 +215,23 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         application.state.projects = ProjectService(db)
         application.state.example_copies = ExampleCopyService(db)
         application.state.model_profiles = ModelProfileService(db)
+        application.state.managed_model_registry = ManagedModelRegistry(
+            default_model_id=settings.managed_pilot_default_model
+        )
+        application.state.managed_model_router = ManagedModelRouter(
+            application.state.managed_model_registry
+        )
         application.state.guidance = GuidanceService(db)
+        def managed_runtime_factory(selection: Any) -> ManagedModelStructuredRuntime:
+            provider = {"qwen": "qwen", "glm": "glm", "deepseek": "deepseek"}[selection.family]
+            return ManagedModelStructuredRuntime(
+                model=selection.model_id, provider=provider,
+                api_key=settings.managed_bailian_api_key or "",
+                base_url=settings.managed_qwen_base_url,
+                before_provider_call=application.state.beta_usage.consume,
+                after_provider_failure=lambda operation, decision: application.state.beta_usage.release(decision),
+            )
+
         application.state.structured_runtime = HybridStructuredRuntime(
             application.state.model_profiles,
             local_runtime=build_structured_runtime(
@@ -233,6 +251,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                 if settings.beta_mode and settings.beta_managed_mode
                 else None
             ),
+            managed_runtime_factory=managed_runtime_factory if settings.beta_mode and settings.beta_managed_mode else None,
         )
         application.state.quick_start = QuickStartService(
             db, application.state.projects, application.state.structured_runtime
@@ -530,17 +549,21 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
     )
     def list_model_profiles() -> list[dict[str, Any]]:
         if settings.beta_mode and settings.beta_managed_mode:
-            return [managed_profile()]
+            return managed_profiles()
         return application.state.model_profiles.list()
 
     @application.get("/api/settings/mode")
     def get_settings_mode() -> dict[str, Any]:
         return {
             "managed_beta_mode": settings.beta_mode and settings.beta_managed_mode,
-            "provider": "qwen" if settings.beta_mode and settings.beta_managed_mode else None,
-            "model": settings.managed_qwen_model if settings.beta_mode and settings.beta_managed_mode else None,
+            "provider": "bailian" if settings.beta_mode and settings.beta_managed_mode else None,
+            "model": settings.managed_pilot_default_model if settings.beta_mode and settings.beta_managed_mode else None,
+            "available_models": [
+                {"family": item.family, "model_id": item.model_id}
+                for item in application.state.managed_model_registry.list_models()
+            ] if settings.beta_mode and settings.beta_managed_mode else [],
             "status": (
-                "configured" if settings.managed_qwen_api_key else "missing"
+                "configured" if settings.managed_bailian_api_key else "missing"
             ) if settings.beta_mode and settings.beta_managed_mode else "local",
         }
 
@@ -785,11 +808,26 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         request: Request,
         x_actor: str = Header(default="web_user", alias="X-Actor"),
         x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+        x_managed_model_preference: str | None = Header(default=None, alias="X-Managed-Model-Preference"),
     ) -> dict[str, Any]:
         attempt_id = x_idempotency_key or f"web:{uuid.uuid4().hex}"
         participant_id = application.state.beta_context.participant_id
+        selection = None
+        if settings.beta_mode and settings.beta_managed_mode:
+            try:
+                selection = application.state.managed_model_router.resolve_for_operation(
+                    "solutions", x_managed_model_preference or ManagedModelPreference.AUTO.value
+                )
+            except ValueError:
+                return JSONResponse(status_code=422, content={
+                    "error_code": "UNKNOWN_MANAGED_MODEL",
+                    "message": "请选择受支持的托管模型。",
+                })
         claim = application.state.solution_generation_guard.begin(
-            participant_id, project_id, attempt_id
+            participant_id, project_id, attempt_id,
+            requested_model_preference=selection.preference.value if selection else None,
+            resolved_model_family=selection.family if selection else None,
+            resolved_model_id=selection.model_id if selection else None,
         )
         if not claim.owner:
             if claim.error_code == "SOLUTION_GENERATION_ALREADY_COMPLETED":
@@ -799,7 +837,12 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             application.state.solution_generation_guard.mark_provider_call(
                 participant_id, project_id, attempt_id
             )
-            result = application.state.solution_design.generate(project_id, actor=x_actor)
+            result = application.state.solution_design.generate(
+                project_id, actor=x_actor, managed_selection=selection
+            )
+            if selection:
+                result = {**result, "requested_model_preference": selection.preference.value,
+                          "resolved_model_family": selection.family, "resolved_model_id": selection.model_id}
             candidates = result.get("candidates") or []
             if "error_code" in result and not candidates:
                 response = JSONResponse(status_code=503, content=result)

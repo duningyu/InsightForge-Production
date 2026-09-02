@@ -211,11 +211,15 @@ class SolutionDesignService:
             payload[field] = bool(payload[field])
         return payload
 
-    def generate(self, project_id: str, *, actor: str) -> dict[str, Any]:
+    def generate(self, project_id: str, *, actor: str, managed_selection: Any | None = None) -> dict[str, Any]:
         brief_row = self._confirmed_brief_row(project_id)
         brief = self._brief_from_row(brief_row)
         resolver = getattr(self.runtime, "for_project", None)
-        runtime = resolver(project_id) if callable(resolver) else self.runtime
+        runtime = (
+            resolver(project_id, managed_selection=managed_selection)
+            if callable(resolver) and managed_selection is not None
+            else resolver(project_id) if callable(resolver) else self.runtime
+        )
         started = time.perf_counter()
         try:
             raw_set = runtime.design_solutions(brief)

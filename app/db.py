@@ -424,6 +424,9 @@ CREATE TABLE IF NOT EXISTS solution_generation_intents (
     request_count INTEGER NOT NULL DEFAULT 1,
     replay_count INTEGER NOT NULL DEFAULT 0,
     provider_call_count INTEGER NOT NULL DEFAULT 0,
+    requested_model_preference TEXT,
+    resolved_model_family TEXT,
+    resolved_model_id TEXT,
     created_at TEXT NOT NULL,
     completed_at TEXT,
     UNIQUE(participant_id, project_id, operation_type, idempotency_key)
@@ -761,6 +764,13 @@ class Database:
         }
         for column, definition in model_profile_live_columns.items():
             cls._ensure_column(connection, "model_profiles", column, definition)
+        generation_intent_columns = {
+            "requested_model_preference": "TEXT",
+            "resolved_model_family": "TEXT",
+            "resolved_model_id": "TEXT",
+        }
+        for column, definition in generation_intent_columns.items():
+            cls._ensure_column(connection, "solution_generation_intents", column, definition)
         cls._ensure_column(
             connection,
             "generation_runs",

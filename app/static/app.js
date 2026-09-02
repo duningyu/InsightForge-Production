@@ -16,6 +16,8 @@ const state = {
   documents: [],
   handoff: null,
   runtimeMode: null,
+  managedModelMode: false,
+  managedModelPreference: "AUTO",
   showAllProjects: false,
   examples: [],
   homeNextAction: null,
@@ -728,6 +730,9 @@ async function loadProjectModelProfile() {
     ]);
     state.modelProfiles = profiles || [];
     state.projectModelProfileId = override?.profile_id || null;
+    const managed = state.managedModelMode || state.modelProfiles.some((profile) => String(profile.id || "").startsWith("managed_"));
+    select.closest(".project-model-field")?.classList.toggle("hidden", managed);
+    if (managed) return;
     select.innerHTML = `<option value="">继承全局模型</option>${state.modelProfiles.filter((profile) => profile.enabled).map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.display_name)} · ${escapeHtml(profile.provider)}</option>`).join("")}`;
     select.value = state.projectModelProfileId || "";
   } catch (error) {
@@ -790,7 +795,7 @@ function renderSolutions() {
     const action = clarificationRequired
       ? `<button id="open-idea-brief-button" class="button button-primary" type="button">补充信息</button>`
       : confirmed
-      ? `<button id="generate-solutions-button" class="button button-primary" type="button" aria-disabled="false">${state.generationTerminalFailure ? "重新生成" : "生成方案"}</button>`
+      ? `<label class="managed-model-choice" for="managed-model-preference">模型<select id="managed-model-preference"><option value="AUTO">自动（默认 Qwen3.7-Flash）</option><option value="QWEN">Qwen3.7-Flash</option><option value="GLM">GLM-5.2</option><option value="DEEPSEEK">DeepSeek V4 Flash</option></select></label><button id="generate-solutions-button" class="button button-primary" type="button" aria-disabled="false">${state.generationTerminalFailure ? "重新生成" : "生成方案"}</button>`
       : `<button id="open-idea-brief-button" class="button button-primary" type="button">查看并确认项目定义</button>`;
     const message = clarificationRequired
       ? "还需要补充一项信息，完成澄清后才能确认项目理解并生成方案。"
@@ -801,6 +806,11 @@ function renderSolutions() {
         : "生成方案前还需要完善并确认项目定义。";
     target.innerHTML = `<div class="empty-state"><h3>还没有方案</h3><p>${message}</p>${action}</div>`;
     qs("#generate-solutions-button")?.addEventListener("click", () => generateSolutions({newIntent: state.generationTerminalFailure}));
+    const modelChoice = qs("#managed-model-preference");
+    if (modelChoice) {
+      modelChoice.value = state.managedModelPreference;
+      modelChoice.addEventListener("change", (event) => { state.managedModelPreference = event.target.value; });
+    }
     qs("#open-idea-brief-button")?.addEventListener("click", openIdeaBriefReview);
     return;
   }
@@ -1287,7 +1297,7 @@ async function generateSolutions({newIntent = false} = {}) {
     try {
       const result = await api(`/api/projects/${state.currentProjectId}/solutions/generate`, {
         method: "POST",
-        headers: {"X-Idempotency-Key": attemptId},
+        headers: {"X-Idempotency-Key": attemptId, "X-Managed-Model-Preference": state.managedModelPreference || "AUTO"},
       });
       if (isRecoveryPayload(result)) {
         state.solutions = null;
@@ -1563,6 +1573,8 @@ async function bootstrap() {
     await ensureBetaConsent();
     const health = await api("/api/health");
     state.runtimeMode = health.structured_runtime_mode || health.runtime_mode || health.llm_mode || null;
+    const mode = await api("/api/settings/mode");
+    state.managedModelMode = Boolean(mode.managed_beta_mode);
     renderRuntimeDisclosure();
     await Promise.all([loadProjects(), loadExamples(), loadHistory(), loadHomeNextAction()]);
     showQuickStart();

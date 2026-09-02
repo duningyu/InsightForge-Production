@@ -20,6 +20,8 @@ class Settings:
     beta_managed_mode: bool = False
     managed_qwen_model: str = "qwen3.7-flash"
     managed_qwen_api_key: str | None = None
+    managed_bailian_api_key: str | None = None
+    managed_pilot_default_model: str = "qwen3.7-flash"
     managed_qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     beta_release_id: str = "insightforge_closed_beta_20260830_v1"
     beta_participant_id: str | None = None
@@ -44,6 +46,8 @@ class Settings:
             beta_managed_mode=os.getenv("BETA_MANAGED_MODE", "false").strip().lower() in {"1", "true", "yes"},
             managed_qwen_model=os.getenv("MANAGED_QWEN_MODEL", "qwen3.7-flash"),
             managed_qwen_api_key=os.getenv("MANAGED_QWEN_API_KEY") or None,
+            managed_bailian_api_key=(os.getenv("MANAGED_BAILIAN_API_KEY") or os.getenv("MANAGED_QWEN_API_KEY") or None),
+            managed_pilot_default_model=os.getenv("MANAGED_PILOT_DEFAULT_MODEL", "qwen3.7-flash"),
             managed_qwen_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             beta_release_id=os.getenv("BETA_RELEASE_ID", "insightforge_closed_beta_20260830_v1"),
             beta_participant_id=os.getenv("BETA_PARTICIPANT_ID") or None,

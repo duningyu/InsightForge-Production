@@ -364,6 +364,7 @@ class HybridStructuredRuntime:
         before_provider_call: BeforeProviderCall | None = None,
         after_provider_failure: AfterProviderFailure | None = None,
         managed_runtime: StructuredAIRuntime | None = None,
+        managed_runtime_factory: Callable[[Any], StructuredAIRuntime] | None = None,
     ) -> None:
         if max_model_rounds < 1 or max_model_rounds > 2:
             raise ValueError("max_model_rounds must be in [1, 2]")
@@ -378,9 +379,10 @@ class HybridStructuredRuntime:
         self.max_tool_rounds = max_tool_rounds
         self.before_provider_call = before_provider_call
         self.after_provider_failure = after_provider_failure
-        if managed_runtime is not None and managed_runtime.mode != "managed_qwen":
-            raise ValueError("managed_runtime must use managed_qwen")
+        if managed_runtime is not None and managed_runtime.mode not in {"managed_qwen", "managed_model"}:
+            raise ValueError("managed_runtime must use a managed runtime")
         self.managed_runtime = managed_runtime
+        self.managed_runtime_factory = managed_runtime_factory
 
     @property
     def mode(self) -> str:
@@ -409,7 +411,9 @@ class HybridStructuredRuntime:
             """
         )
 
-    def for_project(self, project_id: str | None) -> StructuredAIRuntime:
+    def for_project(self, project_id: str | None, managed_selection: Any | None = None) -> StructuredAIRuntime:
+        if self.managed_runtime_factory is not None and managed_selection is not None:
+            return self.managed_runtime_factory(managed_selection)
         if self.managed_runtime is not None:
             return self.managed_runtime
         profile = self._selected_profile(project_id)

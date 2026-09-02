@@ -68,8 +68,9 @@
     form.classList.toggle("hidden", managedBetaMode);
     status.classList.toggle("hidden", !managedBetaMode);
     if (managedBetaMode) {
-      const profile = profiles[0] || {};
-      status.innerHTML = `<strong>托管模型服务</strong><p>当前 Closed Beta 使用阿里云百炼官方 API 的 Qwen3.7-Flash（${escapeHtml(profile.model_id || "qwen3.7-flash")}）。模型配置由部署管理员维护；此页面不提供 API 密钥、Provider 或 Base URL 编辑入口。</p><p class="muted">状态：${escapeHtml(credentialLabel(profile))}</p>`;
+      const models = profiles.map((profile) => `${escapeHtml(profile.display_name)}（${escapeHtml(profile.model_id)}）`).join("、");
+      const configured = profiles.every((profile) => profile.credential_status === "configured");
+      status.innerHTML = `<strong>托管模型服务</strong><p>当前 Closed Beta 使用阿里云百炼官方 API：${models}。每次生成可在方案页选择模型；模型配置由部署管理员维护，此页面不提供 API 密钥、Provider 或 Base URL 编辑入口。</p><p class="muted">状态：${configured ? "托管服务已配置" : "托管服务配置中"}</p>`;
     }
     qs("#model-profile-count").textContent = profiles.length ? `${profiles.length} 个配置` : "";
     if (!profiles.length) {
@@ -99,7 +100,7 @@
 
   async function loadProfiles() {
     profiles = await ui().api(API_ROOT);
-    managedBetaMode = profiles.some((profile) => profile.id === "managed_qwen");
+    managedBetaMode = profiles.some((profile) => String(profile.id || "").startsWith("managed_"));
     renderProfiles();
   }
 

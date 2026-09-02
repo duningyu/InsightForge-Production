@@ -108,9 +108,9 @@ def test_managed_beta_settings_are_read_only_and_do_not_expose_provider_controls
         settings = test_client.get("/api/settings/model-profiles")
         assert settings.status_code == 200
         body = settings.json()
-        assert len(body) == 1
-        assert body[0]["provider"] == "qwen"
-        assert body[0]["model_id"] == "qwen3.7-flash"
+        assert {item["id"] for item in body} == {"managed_qwen", "managed_glm", "managed_deepseek"}
+        assert {item["model_id"] for item in body} == {"qwen3.7-flash", "glm-5.2", "deepseek-v4-flash-0731"}
+        assert all(item["provider"] in {"qwen", "glm", "deepseek"} for item in body)
         assert "api_key" not in json.dumps(body)
     assert test_client.post(
             "/api/settings/model-profiles",
@@ -129,7 +129,7 @@ def test_zero_candidate_recovery_is_not_reported_as_201_success(client, monkeypa
     monkeypatch.setattr(
         client.app.state.solution_design,
         "generate",
-        lambda _project_id, actor: recovery,
+        lambda _project_id, actor, managed_selection=None: recovery,
     )
 
     response = client.post(f"/api/projects/{project_id}/solutions/generate")

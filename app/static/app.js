@@ -24,6 +24,8 @@ const state = {
   modelProfiles: [],
   projectModelProfileId: null,
   generationInFlight: null,
+  generationIntentId: null,
+  generationTerminalFailure: false,
   betaMode: false,
   betaConsented: false,
   betaConsentVersion: 1,
@@ -788,7 +790,7 @@ function renderSolutions() {
     const action = clarificationRequired
       ? `<button id="open-idea-brief-button" class="button button-primary" type="button">补充信息</button>`
       : confirmed
-      ? `<button id="generate-solutions-button" class="button button-primary" type="button" aria-disabled="false">生成方案</button>`
+      ? `<button id="generate-solutions-button" class="button button-primary" type="button" aria-disabled="false">${state.generationTerminalFailure ? "重新生成" : "生成方案"}</button>`
       : `<button id="open-idea-brief-button" class="button button-primary" type="button">查看并确认项目定义</button>`;
     const message = clarificationRequired
       ? "还需要补充一项信息，完成澄清后才能确认项目理解并生成方案。"
@@ -798,7 +800,7 @@ function renderSolutions() {
         ? "项目定义已根据现有信息整理完成，确认后即可生成方案。"
         : "生成方案前还需要完善并确认项目定义。";
     target.innerHTML = `<div class="empty-state"><h3>还没有方案</h3><p>${message}</p>${action}</div>`;
-    qs("#generate-solutions-button")?.addEventListener("click", generateSolutions);
+    qs("#generate-solutions-button")?.addEventListener("click", () => generateSolutions({newIntent: state.generationTerminalFailure}));
     qs("#open-idea-brief-button")?.addEventListener("click", openIdeaBriefReview);
     return;
   }
@@ -1267,16 +1269,19 @@ async function confirmIdeaBrief(event) {
   }
 }
 
-async function generateSolutions() {
+async function generateSolutions({newIntent = false} = {}) {
   if (state.generationInFlight) return state.generationInFlight;
+  if (newIntent || !state.generationIntentId) {
+    state.generationIntentId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+  state.generationTerminalFailure = false;
   const button = qs("#generate-solutions-button");
   if (button) {
     button.disabled = true;
     button.setAttribute("aria-disabled", "true");
     button.textContent = "正在生成方案…";
   }
-  const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const attemptId = `solution:${state.currentProjectId}:${suffix}`;
+  const attemptId = state.generationIntentId;
   let request;
   request = (async () => {
     try {
@@ -1286,15 +1291,19 @@ async function generateSolutions() {
       });
       if (isRecoveryPayload(result)) {
         state.solutions = null;
+        state.generationTerminalFailure = true;
         renderSolutions();
         showRecoveryPayload(result);
         return result;
       }
       state.solutions = result;
+      state.generationIntentId = null;
+      state.generationTerminalFailure = false;
       renderSolutions();
       await loadProjectNextAction();
       return result;
     } catch (error) {
+      state.generationTerminalFailure = true;
       reportError(error);
       return null;
     } finally {
@@ -1302,7 +1311,7 @@ async function generateSolutions() {
       if (button?.isConnected && !state.solutions?.candidates?.length) {
         button.disabled = false;
         button.setAttribute("aria-disabled", "false");
-        button.textContent = "生成方案";
+        button.textContent = state.generationTerminalFailure ? "重新生成" : "生成方案";
       }
     }
   })();
@@ -1326,6 +1335,10 @@ async function loadProjects() {
 }
 
 async function loadProject(projectId) {
+  if (state.currentProjectId !== projectId) {
+    state.generationIntentId = null;
+    state.generationTerminalFailure = false;
+  }
   state.currentProjectId = projectId;
   state.documentWorkspace = {...state.documentWorkspace, versions: [], selectedVersionId: null, compareVersionId: null, draft: null, dirty: false};
   renderProjectPicker();

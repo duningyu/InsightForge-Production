@@ -405,6 +405,32 @@ CREATE TABLE IF NOT EXISTS solution_candidates (
 CREATE INDEX IF NOT EXISTS idx_solution_candidates_run
     ON solution_candidates(run_id, created_at, id);
 
+-- Durable authority for one logical solution-generation intent.  This ledger
+-- deliberately stores only safe response metadata, never prompts or provider
+-- responses, and survives worker/process restarts.
+CREATE TABLE IF NOT EXISTS solution_generation_intents (
+    id TEXT PRIMARY KEY,
+    participant_id TEXT NOT NULL,
+    -- The endpoint remains responsible for project existence/authorization;
+    -- the ledger must not mask its established error contract.
+    project_id TEXT NOT NULL,
+    operation_type TEXT NOT NULL CHECK(operation_type = 'solution_generation'),
+    idempotency_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('IN_PROGRESS', 'SUCCEEDED', 'FAILED')),
+    response_json TEXT,
+    status_code INTEGER,
+    solution_run_id TEXT REFERENCES solution_runs(id),
+    quota_reservation_id TEXT,
+    request_count INTEGER NOT NULL DEFAULT 1,
+    replay_count INTEGER NOT NULL DEFAULT 0,
+    provider_call_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(participant_id, project_id, operation_type, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_solution_generation_intents_lookup
+    ON solution_generation_intents(participant_id, project_id, operation_type, idempotency_key);
+
 CREATE TABLE IF NOT EXISTS project_claims (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),

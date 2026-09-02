@@ -11,6 +11,9 @@ STATIC = Path(__file__).resolve().parents[1] / "app" / "static"
 def test_client_generation_has_inflight_loading_guard():
     js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "generationInFlight" in js
+    assert "generationIntentId" in js
+    assert "newIntent" in js
+    assert "重新生成" in js
     assert "正在生成方案" in js
     assert "aria-disabled" in js
 

@@ -179,7 +179,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         application.state.db = db
         application.state.settings = settings
         application.state.beta_context = beta_context
-        application.state.solution_generation_guard = SolutionGenerationGuard()
+        application.state.solution_generation_guard = SolutionGenerationGuard(db)
         application.state.beta_analytics = BetaAnalyticsService(
             db, participant_id=settings.beta_participant_id,
             release_id=settings.beta_release_id, beta_mode=settings.beta_mode,
@@ -796,6 +796,9 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                 return JSONResponse(status_code=claim.status_code or 201, content=claim.payload or {})
             return JSONResponse(status_code=claim.status_code or 409, content=claim.payload or {})
         try:
+            application.state.solution_generation_guard.mark_provider_call(
+                participant_id, project_id, attempt_id
+            )
             result = application.state.solution_design.generate(project_id, actor=x_actor)
             candidates = result.get("candidates") or []
             if "error_code" in result and not candidates:

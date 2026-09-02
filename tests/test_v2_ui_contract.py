@@ -68,4 +68,12 @@ def test_css_is_intrinsically_responsive_and_retains_reduced_motion_support():
 def test_static_assets_are_versioned_to_avoid_cross_product_browser_cache_collisions():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert 'href="/static/styles.css?v=3.0.0&amp;build=user-feedback-complete.1"' in html
-    assert 'src="/static/app.js?v=3.0.0&amp;build=user-feedback-complete.3"' in html
+    assert 'src="/static/app.js?v=3.0.0&amp;build=prelaunch-self-audit-p0f.1"' in html
+
+
+def test_clarification_state_has_a_user_facing_frontend_contract():
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "IDEA_BRIEF_CLARIFICATION_REQUIRED" in js
+    assert "idea-brief-clarification-answer" in js
+    assert "还需要补充一项信息" in js
+    assert "clarificationQuestion" in js

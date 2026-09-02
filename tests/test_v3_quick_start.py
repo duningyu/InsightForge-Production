@@ -88,6 +88,40 @@ def test_ambiguous_quick_start_returns_only_one_clarification_question(client):
     assert body["clarification_question"]
 
 
+def test_clarification_required_solution_attempt_returns_mapped_user_error(client):
+    response = client.post(
+        "/api/projects/quick-start",
+        json={"idea": "帮学生选学校", "target_user": None, "resources": [], "priority": "fast_mvp"},
+    )
+    project_id = response.json()["project_id"]
+    blocked = client.post(f"/api/projects/{project_id}/solutions/generate")
+    assert blocked.status_code == 409
+    assert blocked.json() == {
+        "detail": "为了生成更准确的方案，还需要补充一项信息。",
+        "code": "IDEA_BRIEF_CLARIFICATION_REQUIRED",
+        "action": "open_idea_brief_clarification",
+        "clarification_question": response.json()["clarification_question"],
+    }
+
+
+def test_clarification_answer_requires_explicit_confirmation_before_solutions(client):
+    response = client.post(
+        "/api/projects/quick-start",
+        json={"idea": "帮学生选学校", "target_user": None, "resources": [], "priority": "fast_mvp"},
+    )
+    project_id = response.json()["project_id"]
+    refined = client.post(
+        f"/api/projects/{project_id}/idea-brief/refine",
+        json={"clarification_answer": "筛选已有论文阅读路径"},
+    )
+    assert refined.status_code == 200
+    assert refined.json()["clarification_required"] is False
+    assert refined.json()["confirmation_status"] == "inferred"
+    blocked = client.post(f"/api/projects/{project_id}/solutions/generate")
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "IDEA_BRIEF_NOT_CONFIRMED"
+
+
 def test_refine_brief_creates_new_version_and_marks_user_patch_provenance(client):
     project_id = create_quick_project(client)
     response = client.post(

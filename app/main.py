@@ -377,6 +377,21 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                     "action": "open_idea_brief",
                 },
             )
+        if detail == "IDEA_BRIEF_CLARIFICATION_REQUIRED":
+            project_id = getattr(_request, "path_params", {}).get("project_id")
+            question = None
+            if project_id:
+                brief = application.state.quick_start.get_brief(project_id)
+                question = brief.get("clarification_question")
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "为了生成更准确的方案，还需要补充一项信息。",
+                    "code": "IDEA_BRIEF_CLARIFICATION_REQUIRED",
+                    "action": "open_idea_brief_clarification",
+                    "clarification_question": question,
+                },
+            )
         if detail == "SOLUTION_GENERATION_NO_VALID_CANDIDATES":
             return JSONResponse(
                 status_code=503,

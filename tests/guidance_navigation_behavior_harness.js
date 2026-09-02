@@ -181,6 +181,23 @@ async function main() {
   assert.match(briefReviewHtml, /id="idea-brief-desired-outcome"[^>]*形成可执行的论文选题方向/, "review UI prefills desired outcome for editing");
   assert.match(briefReviewHtml, /id="idea-brief-unknowns"[^>]*>[\s\S]*当前不知道可获得哪些数据/, "review UI prefills unknowns for editing");
 
+  hooks.state.ideaBrief = {
+    confirmation_status: "inferred",
+    clarification_required: true,
+    clarification_question: "请选择已有论文筛选还是新的选题推荐？",
+    target_user: "硕士研究生", problem: "需要明确论文方向", desired_outcome: "形成阅读路径", unknowns: [], provenance: {},
+  };
+  hooks.renderIdeaBrief(true);
+  const clarificationHtml = element("#idea-brief-dialog-content").innerHTML;
+  assert.match(clarificationHtml, /还需要补充一项信息/, "clarification state has a visible user-facing prompt");
+  assert.match(clarificationHtml, /id="idea-brief-clarification-answer"/, "clarification state has an answer control");
+  hooks.state.solutions = null;
+  hooks.renderSolutions();
+  assert.match(element("#solutions-content").innerHTML, /还需要补充一项信息/, "clarification state does not present Generate Solutions");
+  assert.doesNotMatch(element("#solutions-content").innerHTML, /id="generate-solutions-button"/, "clarification state hides the generate CTA");
+  window.InsightForgeUi.reportError({code: "IDEA_BRIEF_CLARIFICATION_REQUIRED", clarificationQuestion: "请选择一个方向", message: "internal code"});
+  assert.equal(element("#idea-brief-dialog").open, true, "clarification error opens the review UI");
+
   apiCalls.length = 0;
   hooks.state.currentProjectId = "project-current";
   hooks.state.snapshot = {

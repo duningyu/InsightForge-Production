@@ -47,6 +47,7 @@ async function api(path, options = {}) {
     error.status = response.status;
     error.code = body?.error_code || null;
     error.code = body?.code || error.code;
+    error.clarificationQuestion = body?.clarification_question || null;
     throw error;
   }
   const contentType = response.headers.get("content-type") || "";
@@ -173,6 +174,18 @@ function reportError(error) {
       if (dialog.showModal) dialog.showModal(); else dialog.setAttribute("open", "");
     } else {
       activateView("idea");
+    }
+    return;
+  }
+  if (error?.code === "IDEA_BRIEF_CLARIFICATION_REQUIRED") {
+    if (state.ideaBrief) {
+      state.ideaBrief = {...state.ideaBrief, clarification_required: true, clarification_question: error.clarificationQuestion || state.ideaBrief.clarification_question};
+      renderIdeaBrief(true);
+      const dialog = qs("#idea-brief-dialog");
+      if (dialog && dialog.showModal) dialog.showModal(); else dialog?.setAttribute("open", "");
+      toast("还需要补充一项信息，请回答后再确认项目理解。");
+    } else {
+      toast("还需要补充一项信息，请先打开项目定义。");
     }
     return;
   }
@@ -730,8 +743,12 @@ function renderIdeaBrief(dialog = false) {
   if (!target) return;
   if (dialog) {
     const unknowns = (brief.unknowns || []).join("\n");
+    const clarification = brief.clarification_required
+      ? `<div class="clarification-panel"><strong>还需要补充一项信息</strong><p>${escapeHtml(brief.clarification_question || "请补充当前项目的关键范围。")} </p><label>你的回答<textarea id="idea-brief-clarification-answer" rows="3" required placeholder="请直接回答上面的澄清问题"></textarea></label><small class="muted">回答后仍需点击“确认项目理解”，系统不会自动生成方案。</small></div>`
+      : "";
     target.innerHTML = `
       <p class="muted">请检查并补充以下理解；确认前不会生成方案。</p>
+      ${clarification}
       <label>目标用户<input id="idea-brief-target-user" value="${escapeHtml(brief.target_user)}" /></label>
       <small class="muted">${escapeHtml(brief.provenance?.target_user === "user_input" ? "用户明确输入" : "AI 推断 · 待验证")}</small>
       <label>核心问题<input id="idea-brief-problem" value="${escapeHtml(brief.problem)}" /></label>
@@ -758,10 +775,15 @@ function renderSolutions() {
   if (!target) return;
   if (!state.solutions?.candidates?.length) {
     const confirmed = state.ideaBrief?.confirmation_status === "confirmed";
-    const action = confirmed
+    const clarificationRequired = Boolean(state.ideaBrief?.clarification_required);
+    const action = clarificationRequired
+      ? `<button id="open-idea-brief-button" class="button button-primary" type="button">补充信息</button>`
+      : confirmed
       ? `<button id="generate-solutions-button" class="button button-primary" type="button">生成方案</button>`
       : `<button id="open-idea-brief-button" class="button button-primary" type="button">查看并确认项目定义</button>`;
-    const message = confirmed
+    const message = clarificationRequired
+      ? "还需要补充一项信息，完成澄清后才能确认项目理解并生成方案。"
+      : confirmed
       ? "确认 Idea 理解后生成 2–3 个真正不同的解决路径。"
       : state.ideaBrief
         ? "项目定义已根据现有信息整理完成，确认后即可生成方案。"
@@ -1200,6 +1222,17 @@ async function confirmIdeaBrief(event) {
     return;
   }
   try {
+    const clarificationAnswer = qs("#idea-brief-clarification-answer")?.value.trim() || "";
+    if (state.ideaBrief.clarification_required) {
+      if (!clarificationAnswer) {
+        toast("请先回答澄清问题。");
+        return;
+      }
+      state.ideaBrief = await api(`/api/projects/${state.currentProjectId}/idea-brief/refine`, {method: "POST", body: JSON.stringify({clarification_answer: clarificationAnswer})});
+      renderIdeaBrief(true);
+      toast("澄清信息已保存，请检查并确认项目理解。" );
+      return;
+    }
     const values = {
       target_user: qs("#idea-brief-target-user")?.value.trim() || "",
       problem: qs("#idea-brief-problem")?.value.trim() || "",
@@ -1462,6 +1495,7 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     confirmIdeaBrief,
     openIdeaBriefReview,
     renderIdeaBrief,
+    renderSolutions,
     generateSolutions,
     isRecoveryPayload,
     renderRuntimeDisclosure,

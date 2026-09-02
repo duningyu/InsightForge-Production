@@ -166,10 +166,10 @@ class SolutionDesignService:
         )
         if row is None:
             raise ConflictError("IDEA_BRIEF_REQUIRED: quick-start IdeaBrief does not exist")
-        if row["confirmation_status"] != "confirmed":
-            raise ConflictError("IDEA_BRIEF_NOT_CONFIRMED")
         if bool(row.get("clarification_required", 0)):
             raise ConflictError("IDEA_BRIEF_CLARIFICATION_REQUIRED")
+        if row["confirmation_status"] != "confirmed":
+            raise ConflictError("IDEA_BRIEF_NOT_CONFIRMED")
         return row
 
     @staticmethod

@@ -434,6 +434,62 @@ CREATE TABLE IF NOT EXISTS solution_generation_intents (
 CREATE INDEX IF NOT EXISTS idx_solution_generation_intents_lookup
     ON solution_generation_intents(participant_id, project_id, operation_type, idempotency_key);
 
+-- Safe, durable provider-attempt telemetry.  This table intentionally has no
+-- request/response body or credential columns.
+CREATE TABLE IF NOT EXISTS provider_attempts (
+    provider_attempt_id TEXT PRIMARY KEY,
+    generation_intent_id TEXT,
+    generation_run_id TEXT,
+    model_id TEXT NOT NULL,
+    request_body_bytes INTEGER NOT NULL CHECK(request_body_bytes >= 0),
+    message_count INTEGER NOT NULL CHECK(message_count >= 0),
+    schema_bytes INTEGER NOT NULL CHECK(schema_bytes >= 0),
+    structured_output_mode TEXT NOT NULL,
+    effective_timeout_json TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    exception_at TEXT,
+    elapsed_ms INTEGER NOT NULL CHECK(elapsed_ms >= 0),
+    response_headers_observed INTEGER NOT NULL CHECK(response_headers_observed IN (0,1)),
+    exception_class TEXT,
+    failure_stage TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provider_attempts_generation
+    ON provider_attempts(generation_intent_id, generation_run_id, started_at);
+
+-- Durable queue for the non-blocking generation transport.  The queue stores
+-- safe state and result metadata only; prompts and provider bodies stay out.
+CREATE TABLE IF NOT EXISTS async_solution_generation_runs (
+    generation_run_id TEXT PRIMARY KEY,
+    generation_intent_id TEXT NOT NULL UNIQUE,
+    participant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    operation_type TEXT NOT NULL CHECK(operation_type = 'solution_generation'),
+    idempotency_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('PENDING','RUNNING','SUCCEEDED','FAILED')),
+    requested_model_preference TEXT,
+    resolved_model_family TEXT,
+    resolved_model_id TEXT,
+    response_json TEXT,
+    status_code INTEGER,
+    solution_run_id TEXT REFERENCES solution_runs(id),
+    quota_reservation_id TEXT,
+    quota_status TEXT NOT NULL DEFAULT 'RESERVED'
+        CHECK(quota_status IN ('RESERVED','RELEASED','CHARGED')),
+    provider_call_count INTEGER NOT NULL DEFAULT 0,
+    request_count INTEGER NOT NULL DEFAULT 1,
+    replay_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    worker_heartbeat_at TEXT,
+    CHECK(provider_call_count BETWEEN 0 AND 1)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_async_solution_generation_identity
+    ON async_solution_generation_runs(participant_id, project_id, operation_type, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_async_solution_generation_pending
+    ON async_solution_generation_runs(status, created_at);
+
 CREATE TABLE IF NOT EXISTS project_claims (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -696,6 +752,55 @@ class Database:
                 """
             )
 
+    def insert_provider_attempt(self, record: dict[str, Any]) -> str:
+        """Persist only the provider-attempt safe metadata contract."""
+        required = (
+            "provider_attempt_id", "model_id", "request_body_bytes", "message_count",
+            "schema_bytes", "structured_output_mode", "effective_timeout", "started_at",
+            "exception_at", "elapsed_ms", "response_headers_observed",
+        )
+        missing = [key for key in required if key not in record]
+        if missing:
+            raise ValueError(f"provider attempt metadata missing: {','.join(missing)}")
+        attempt_id = str(record["provider_attempt_id"])
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO provider_attempts(
+                    provider_attempt_id, generation_intent_id, generation_run_id, model_id,
+                    request_body_bytes, message_count, schema_bytes, structured_output_mode,
+                    effective_timeout_json, started_at, exception_at, elapsed_ms,
+                    response_headers_observed, exception_class, failure_stage, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_attempt_id) DO UPDATE SET
+                    generation_intent_id=excluded.generation_intent_id,
+                    generation_run_id=excluded.generation_run_id,
+                    model_id=excluded.model_id,
+                    request_body_bytes=excluded.request_body_bytes,
+                    message_count=excluded.message_count,
+                    schema_bytes=excluded.schema_bytes,
+                    structured_output_mode=excluded.structured_output_mode,
+                    effective_timeout_json=excluded.effective_timeout_json,
+                    started_at=excluded.started_at,
+                    exception_at=excluded.exception_at,
+                    elapsed_ms=excluded.elapsed_ms,
+                    response_headers_observed=excluded.response_headers_observed,
+                    exception_class=excluded.exception_class,
+                    failure_stage=excluded.failure_stage
+                """,
+                (
+                    attempt_id, record.get("generation_intent_id"), record.get("generation_run_id"),
+                    str(record["model_id"]), int(record["request_body_bytes"]),
+                    int(record["message_count"]), int(record["schema_bytes"]),
+                    str(record["structured_output_mode"]),
+                    json.dumps(record["effective_timeout"], sort_keys=True, separators=(",", ":")),
+                    str(record["started_at"]), record.get("exception_at"), int(record["elapsed_ms"]),
+                    1 if bool(record["response_headers_observed"]) else 0,
+                    record.get("exception_class"), record.get("failure_stage"), utc_now(),
+                ),
+            )
+        return attempt_id
+
     @staticmethod
     def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
         return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -765,6 +870,7 @@ class Database:
         for column, definition in model_profile_live_columns.items():
             cls._ensure_column(connection, "model_profiles", column, definition)
         generation_intent_columns = {
+            "generation_run_id": "TEXT",
             "requested_model_preference": "TEXT",
             "resolved_model_family": "TEXT",
             "resolved_model_id": "TEXT",

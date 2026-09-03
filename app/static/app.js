@@ -1297,8 +1297,11 @@ async function generateSolutions({newIntent = false} = {}) {
     try {
       const result = await api(`/api/projects/${state.currentProjectId}/solutions/generate`, {
         method: "POST",
-        headers: {"X-Idempotency-Key": attemptId, "X-Managed-Model-Preference": state.managedModelPreference || "AUTO"},
+        headers: {"X-Idempotency-Key": attemptId, "X-Generation-Mode": "async", "X-Managed-Model-Preference": state.managedModelPreference || "AUTO"},
       });
+      if (["PENDING", "RUNNING"].includes(result.status) && result.generation_run_id) {
+        return await pollSolutionGeneration(result.generation_run_id);
+      }
       if (isRecoveryPayload(result)) {
         state.solutions = null;
         state.generationTerminalFailure = true;
@@ -1327,6 +1330,29 @@ async function generateSolutions({newIntent = false} = {}) {
   })();
   state.generationInFlight = request;
   return request;
+}
+
+async function pollSolutionGeneration(runId) {
+  while (true) {
+    const result = await api(`/api/projects/${state.currentProjectId}/solutions/generate/${encodeURIComponent(runId)}`);
+    if (["PENDING", "RUNNING"].includes(result.status)) {
+      await new Promise((resolve) => setTimeout(resolve, Number(result.poll_after_ms || 2000)));
+      continue;
+    }
+    if (isRecoveryPayload(result) || result.status === "FAILED") {
+      state.solutions = null;
+      state.generationTerminalFailure = true;
+      renderSolutions();
+      showRecoveryPayload(result);
+      return result;
+    }
+    state.solutions = result;
+    state.generationIntentId = null;
+    state.generationTerminalFailure = false;
+    renderSolutions();
+    await loadProjectNextAction();
+    return result;
+  }
 }
 
 async function selectSolution(candidateId) {

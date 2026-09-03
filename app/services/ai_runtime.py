@@ -310,6 +310,7 @@ class ManagedQwenStructuredRuntime:
         adapter_factory: Any = ModelAdapter,
         before_provider_call: Callable[[str], Any] | None = None,
         after_provider_failure: Callable[[str, Any], Any] | None = None,
+        attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
         if not api_key.strip():
             raise StructuredRuntimeUnavailableError("MANAGED_QWEN_API_KEY is required; no deterministic fallback was used")
@@ -320,6 +321,7 @@ class ManagedQwenStructuredRuntime:
         self._adapter_factory = adapter_factory
         self._before_provider_call = before_provider_call
         self._after_provider_failure = after_provider_failure
+        self._attempt_observer = attempt_observer
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         self.model_rounds_used = 1
@@ -333,10 +335,13 @@ class ManagedQwenStructuredRuntime:
             # final boundary before the real provider adapter is constructed.
             reservation = self._before_provider_call(operation)
         try:
-            adapter = self._adapter_factory(
+            adapter_kwargs = dict(
                 provider=self.provider, model=self.model, api_key=self._api_key,
                 base_url=self._base_url,
             )
+            if self._attempt_observer is not None:
+                adapter_kwargs["attempt_observer"] = self._attempt_observer
+            adapter = self._adapter_factory(**adapter_kwargs)
         except Exception as exc:
             if operation is not None and self._after_provider_failure is not None:
                 self._after_provider_failure(operation, reservation)
@@ -395,7 +400,8 @@ class ManagedModelStructuredRuntime(ManagedQwenStructuredRuntime):
                  base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
                  adapter_factory: Any = ModelAdapter,
                  before_provider_call: Callable[[str], Any] | None = None,
-                 after_provider_failure: Callable[[str, Any], Any] | None = None) -> None:
+                 after_provider_failure: Callable[[str, Any], Any] | None = None,
+                 attempt_observer: Callable[[dict[str, Any]], Any] | None = None) -> None:
         super().__init__(
             model=model,
             api_key=api_key,
@@ -404,6 +410,7 @@ class ManagedModelStructuredRuntime(ManagedQwenStructuredRuntime):
             adapter_factory=adapter_factory,
             before_provider_call=before_provider_call,
             after_provider_failure=after_provider_failure,
+            attempt_observer=attempt_observer,
         )
 
 
@@ -415,6 +422,7 @@ def build_structured_runtime(
     api_key: str | None = None,
     before_provider_call: Callable[[str], Any] | None = None,
     after_provider_failure: Callable[[str, Any], Any] | None = None,
+    attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
     base_url: str | None = None,
 ) -> StructuredAIRuntime:
     selected = mode or os.getenv("INSIGHTFORGE_STRUCTURED_AI_MODE", "deterministic_demo")
@@ -445,6 +453,7 @@ def build_structured_runtime(
             before_provider_call=before_provider_call,
             after_provider_failure=after_provider_failure,
             base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            attempt_observer=attempt_observer,
         )
     if selected == "managed_model":
         resolved_key = api_key or os.getenv("MANAGED_BAILIAN_API_KEY") or os.getenv("MANAGED_QWEN_API_KEY")
@@ -459,5 +468,6 @@ def build_structured_runtime(
             before_provider_call=before_provider_call,
             after_provider_failure=after_provider_failure,
             base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            attempt_observer=attempt_observer,
         )
     raise StructuredRuntimeUnavailableError(f"UNKNOWN_STRUCTURED_AI_MODE: {selected}")

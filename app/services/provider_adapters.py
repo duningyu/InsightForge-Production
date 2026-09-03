@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from time import perf_counter
-from typing import Any, Literal, TypeVar
+from typing import Any, Callable, Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -85,6 +87,9 @@ class ModelAdapter:
         base_url: str | None = None,
         client: httpx.Client | None = None,
         timeout: float = 30.0,
+        attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
+        generation_intent_id: str | None = None,
+        generation_run_id: str | None = None,
     ) -> None:
         self.preset = ProviderRegistry.resolve(provider, protocol=protocol, base_url=base_url)
         if not str(model).strip():
@@ -96,6 +101,10 @@ class ModelAdapter:
         self.base_url = self.preset.default_base_url
         self.model = model.strip()
         self._api_key = api_key
+        self._timeout_seconds = float(timeout)
+        self._attempt_observer = attempt_observer
+        self._generation_intent_id = generation_intent_id
+        self._generation_run_id = generation_run_id
         self._use_response_format = True
         self._owns_client = client is None
         self._client = client or httpx.Client(timeout=timeout)
@@ -309,6 +318,9 @@ class ModelAdapter:
         live: bool = False, output_model: type[_Model] | None = None,
     ) -> dict[str, Any]:
         used_response_format = False
+        attempt_id = str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc)
+        started_clock = perf_counter()
         if self.protocol == "openai_chat_completions":
             endpoint = "/chat/completions"
             headers = {"Authorization": f"Bearer {self._api_key}"}
@@ -357,32 +369,72 @@ class ModelAdapter:
             payload = {"model": self.model, "max_tokens": max_tokens or 1024, "system": system, "messages": [{"role": "user", "content": user}]}
         else:  # ProviderRegistry prevents this, retained as a wire-protocol boundary.
             raise ProviderCallError("unsupported_protocol", "Configured provider protocol is unsupported.", False)
-        transport_failure: tuple[str, str, bool, str] | None = None
+        request_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        response_format = payload.get("response_format")
+        schema_bytes = len(json.dumps(response_format, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) if response_format else 0
+        structured_output_mode = (
+            "json_schema" if isinstance(response_format, dict) and response_format.get("type") == "json_schema"
+            else "json_object" if response_format else "none"
+        )
+        transport_failure: tuple[str, str, bool, str, BaseException] | None = None
         try:
             response = self._client.post(f"{self.base_url}{endpoint}", headers=headers, json=payload)
-        except httpx.TimeoutException:
-            transport_failure = ("timeout", "Provider request timed out.", True, "UPSTREAM_TIMEOUT")
+        except httpx.TimeoutException as exc:
+            subtype = type(exc).__name__
+            stage = {
+                "ConnectTimeout": "connect",
+                "ReadTimeout": "read",
+                "WriteTimeout": "write",
+                "PoolTimeout": "pool",
+            }.get(subtype, "unknown")
+            # Rebuild a body-free concrete timeout so the cause chain preserves
+            # the transport class without retaining httpx.Request headers.
+            safe_cause = type(exc)("Provider transport timeout.")
+            transport_failure = ("timeout", "Provider request timed out.", True, f"UPSTREAM_TIMEOUT_{stage.upper()}", safe_cause)
         except httpx.RequestError:
             transport_failure = (
                 "network_error",
                 "Provider request could not be completed.",
                 True,
                 "UPSTREAM_CONNECTION_FAILURE",
+                RuntimeError("Provider transport request failed."),
             )
         if transport_failure is not None:
-            code, message, retryable, source = transport_failure
+            code, message, retryable, source, safe_cause = transport_failure
+            diagnostic = {
+                "provider_request_started": True,
+                "provider_request_completed": False,
+                "upstream_response_received": False,
+                "provider_error_source": source,
+                "provider_error_code": "NO_UPSTREAM_ERROR_CODE",
+                "provider_http_status": None,
+                "provider_exception_class": type(safe_cause).__name__ if code == "timeout" else "RequestError",
+                "provider_failure_stage": "provider_transport" if code != "timeout" else f"provider_transport_{source.removeprefix('UPSTREAM_TIMEOUT_').lower()}",
+                "provider_retryable": retryable,
+                "provider_retry_after_seconds_if_present": None,
+            }
+            self.last_safe_diagnostic = diagnostic
+            self._emit_attempt(
+                attempt_id=attempt_id, started_at=started_at, started_clock=started_clock,
+                request_bytes=request_bytes, message_count=len(payload.get("messages", [])),
+                schema_bytes=schema_bytes, structured_output_mode=structured_output_mode,
+                exception_at=datetime.now(timezone.utc), response_headers_observed=False,
+                exception_class=type(safe_cause).__name__ if code == "timeout" else "RequestError",
+                failure_stage=diagnostic["provider_failure_stage"],
+            )
             raise ProviderCallError(
                 code, message, retryable,
-                safe_diagnostic={
-                    "provider_error_source": source,
-                    "provider_error_code": "NO_UPSTREAM_ERROR_CODE",
-                    "provider_http_status": None,
-                    "provider_exception_class": "TimeoutException" if code == "timeout" else "RequestError",
-                    "provider_failure_stage": "provider_transport",
-                    "provider_retryable": retryable,
-                    "provider_retry_after_seconds_if_present": None,
-                },
-            )
+                safe_diagnostic=diagnostic,
+            ) from safe_cause
+        # Record the transport boundary before parsing or domain validation. The
+        # record contains only bounded request/response metadata and no bodies.
+        self._emit_attempt(
+            attempt_id=attempt_id, started_at=started_at, started_clock=started_clock,
+            request_bytes=request_bytes, message_count=len(payload.get("messages", [])),
+            schema_bytes=schema_bytes, structured_output_mode=structured_output_mode,
+            exception_at=None, response_headers_observed=True,
+            exception_class=None, failure_stage=("provider_http_response" if response.status_code >= 400 else None),
+        )
         if used_response_format and response.status_code in {400, 422}:
             # The caller owns retry accounting.  Mark this adapter instance so
             # its next globally-budgeted attempt uses plain completion.
@@ -438,6 +490,38 @@ class ModelAdapter:
                 "content_length": len(content) if isinstance(content, str) else 0,
             })
         return body
+
+    def _emit_attempt(
+        self, *, attempt_id: str, started_at: datetime, started_clock: float,
+        request_bytes: int, message_count: int, schema_bytes: int,
+        structured_output_mode: str, exception_at: datetime | None,
+        response_headers_observed: bool, exception_class: str | None,
+        failure_stage: str | None,
+    ) -> None:
+        record = {
+            "generation_intent_id": self._generation_intent_id,
+            "generation_run_id": self._generation_run_id,
+            "provider_attempt_id": attempt_id,
+            "model_id": self.model,
+            "request_body_bytes": request_bytes,
+            "message_count": message_count,
+            "schema_bytes": schema_bytes,
+            "structured_output_mode": structured_output_mode,
+            "effective_timeout": {"timeout_seconds": self._timeout_seconds},
+            "started_at": started_at.isoformat(),
+            "exception_at": exception_at.isoformat() if exception_at else None,
+            "elapsed_ms": max(0, int(round((perf_counter() - started_clock) * 1000))),
+            "response_headers_observed": response_headers_observed,
+            "exception_class": exception_class,
+            "failure_stage": failure_stage,
+        }
+        if self._attempt_observer is not None:
+            try:
+                self._attempt_observer(record)
+            except Exception:
+                # Observability must never turn a provider failure into a secret-
+                # bearing exception or alter the established user-facing error.
+                pass
 
     @staticmethod
     def _error_for_status(response: httpx.Response) -> ProviderCallError:

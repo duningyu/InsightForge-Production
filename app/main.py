@@ -63,6 +63,7 @@ from app.services.ai_runtime import ManagedModelStructuredRuntime
 from app.services.managed_models import ManagedModelPreference, ManagedModelRegistry, ManagedModelRouter
 from app.services.quick_start import QuickStartService
 from app.services.solution_design import SolutionDesignService
+from app.services.async_generation import AsyncGenerationRepository, AsyncGenerationWorker, AsyncRun
 from app.services.decisions import DecisionService
 from app.services.canvas_projection import CanvasProjectionService
 from app.services.project_claims import ProjectClaimService
@@ -230,6 +231,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                 base_url=settings.managed_qwen_base_url,
                 before_provider_call=application.state.beta_usage.consume,
                 after_provider_failure=lambda operation, decision: application.state.beta_usage.release(decision),
+                attempt_observer=db.insert_provider_attempt,
             )
 
         application.state.structured_runtime = HybridStructuredRuntime(
@@ -247,6 +249,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                     base_url=settings.managed_qwen_base_url,
                     before_provider_call=application.state.beta_usage.consume,
                     after_provider_failure=lambda operation, decision: application.state.beta_usage.release(decision),
+                    attempt_observer=db.insert_provider_attempt,
                 )
                 if settings.beta_mode and settings.beta_managed_mode
                 else None
@@ -259,6 +262,33 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         application.state.solution_design = SolutionDesignService(
             db, application.state.structured_runtime
         )
+        application.state.async_generation_repository = AsyncGenerationRepository(db)
+
+        def execute_async_solution_generation(run: AsyncRun) -> dict[str, Any]:
+            selection = None
+            if settings.beta_mode and settings.beta_managed_mode:
+                selection = application.state.managed_model_router.resolve_for_operation(
+                    "solutions", run.requested_model_preference or ManagedModelPreference.AUTO.value
+                )
+            result = application.state.solution_design.generate(
+                run.project_id, actor="async_worker", managed_selection=selection
+            )
+            if selection:
+                result = {
+                    **result,
+                    "requested_model_preference": selection.preference.value,
+                    "resolved_model_family": selection.family,
+                    "resolved_model_id": selection.model_id,
+                }
+            if result.get("error_code") or not (result.get("candidates") or []):
+                return result
+            return result
+
+        application.state.async_generation_worker = AsyncGenerationWorker(
+            application.state.async_generation_repository,
+            execute_async_solution_generation,
+        )
+        application.state.async_generation_worker.start()
         application.state.decisions = DecisionService()
         application.state.retrieval = ProjectRetrievalService(db)
         application.state.project_claims = ProjectClaimService(
@@ -302,7 +332,10 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             structured_runtime=application.state.structured_runtime,
         )
         application.state.llm_mode = "llm" if isinstance(generator, LLMDocumentGenerator) else "local"
-        yield
+        try:
+            yield
+        finally:
+            application.state.async_generation_worker.stop()
 
     application = FastAPI(
         title=settings.app_name,
@@ -809,7 +842,40 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         x_actor: str = Header(default="web_user", alias="X-Actor"),
         x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
         x_managed_model_preference: str | None = Header(default=None, alias="X-Managed-Model-Preference"),
+        x_generation_mode: str | None = Header(default=None, alias="X-Generation-Mode"),
     ) -> dict[str, Any]:
+        if x_generation_mode == "async":
+            participant_id = application.state.beta_context.participant_id
+            managed_preference = x_managed_model_preference
+            selection = None
+            if settings.beta_mode and settings.beta_managed_mode:
+                try:
+                    selection = application.state.managed_model_router.resolve_for_operation(
+                        "solutions", managed_preference or ManagedModelPreference.AUTO.value
+                    )
+                except ValueError:
+                    return JSONResponse(status_code=422, content={
+                        "error_code": "UNKNOWN_MANAGED_MODEL",
+                        "message": "请选择受支持的托管模型。",
+                    })
+            idempotency_key = x_idempotency_key or f"web:{uuid.uuid4().hex}"
+            try:
+                run = application.state.async_generation_repository.create_or_replay(
+                    participant_id, project_id, idempotency_key,
+                    requested_model_preference=selection.preference.value if selection else managed_preference,
+                    resolved_model_family=selection.family if selection else None,
+                    resolved_model_id=selection.model_id if selection else None,
+                )
+            except ValueError as error:
+                if str(error) == "IDEMPOTENCY_MODEL_MISMATCH":
+                    return JSONResponse(status_code=409, content={
+                        "error_code": "IDEMPOTENCY_MODEL_MISMATCH",
+                        "message": "该生成请求已绑定其他模型，请重新生成。",
+                    })
+                raise
+            if run.status in {"SUCCEEDED", "FAILED"}:
+                return JSONResponse(status_code=200, content=run.public())
+            return JSONResponse(status_code=202, content=run.public())
         attempt_id = x_idempotency_key or f"web:{uuid.uuid4().hex}"
         participant_id = application.state.beta_context.participant_id
         selection = None
@@ -871,6 +937,15 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                 participant_id, project_id, attempt_id
             )
             raise
+
+    @application.get("/api/projects/{project_id}/solutions/generate/{generation_run_id}")
+    def get_async_solution_generation(project_id: str, generation_run_id: str) -> dict[str, Any]:
+        run = application.state.async_generation_repository.get(
+            application.state.beta_context.participant_id, project_id, generation_run_id
+        )
+        if run is None:
+            raise HTTPException(status_code=404, detail="生成任务不存在。")
+        return run.public()
 
     @application.get("/api/projects/{project_id}/solutions")
     def list_solutions(project_id: str) -> dict[str, Any]:

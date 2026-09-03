@@ -426,7 +426,7 @@ def test_transport_failure_does_not_retain_authorization_header_in_exception_cha
 
     error = caught.value
     assert type(error).__name__ == "ProviderCallError"
-    assert error.__cause__ is None
+    assert type(error.__cause__).__name__ == "ReadTimeout"
     assert error.__context__ is None
     assert sentinel not in repr(error)
 

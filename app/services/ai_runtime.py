@@ -9,7 +9,7 @@ from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 from app.errors import StructuredRuntimeRecoveryError, StructuredRuntimeUnavailableError
 from app.schemas import EvidenceRelationSetDraft, IdeaBriefDraft, QuickStartRequest, SolutionSetDraft
-from app.services.provider_adapters import ModelAdapter, ProviderCallError
+from app.services.provider_adapters import AsyncModelAdapter, DEFAULT_PROVIDER_TIMEOUT, ModelAdapter, ProviderCallError
 
 RuntimeMode = Literal["llm_structured", "deterministic_demo", "managed_qwen"]
 
@@ -308,9 +308,11 @@ class ManagedQwenStructuredRuntime:
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
         provider: str = "qwen",
         adapter_factory: Any = ModelAdapter,
+        async_adapter_factory: Any = AsyncModelAdapter,
         before_provider_call: Callable[[str], Any] | None = None,
         after_provider_failure: Callable[[str, Any], Any] | None = None,
         attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
+        timeout: Any = DEFAULT_PROVIDER_TIMEOUT,
     ) -> None:
         if not api_key.strip():
             raise StructuredRuntimeUnavailableError("MANAGED_QWEN_API_KEY is required; no deterministic fallback was used")
@@ -319,9 +321,11 @@ class ManagedQwenStructuredRuntime:
         self._api_key = api_key
         self._base_url = base_url
         self._adapter_factory = adapter_factory
+        self._async_adapter_factory = async_adapter_factory
         self._before_provider_call = before_provider_call
         self._after_provider_failure = after_provider_failure
         self._attempt_observer = attempt_observer
+        self._timeout = timeout
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         self.model_rounds_used = 1
@@ -341,6 +345,7 @@ class ManagedQwenStructuredRuntime:
             )
             if self._attempt_observer is not None:
                 adapter_kwargs["attempt_observer"] = self._attempt_observer
+            adapter_kwargs["timeout"] = self._timeout
             adapter = self._adapter_factory(**adapter_kwargs)
         except Exception as exc:
             if operation is not None and self._after_provider_failure is not None:
@@ -364,7 +369,7 @@ class ManagedQwenStructuredRuntime:
                 recovery_actions=["检查托管模型服务状态", "稍后重试"],
                 preserved_input=kwargs.get("claim") if method == "analyze_evidence" else (args[0] if args else {}),
                 safe_diagnostic=exc.safe_diagnostic,
-            ) from None
+            ) from exc
         except StructuredRuntimeRecoveryError:
             if operation is not None and self._after_provider_failure is not None:
                 self._after_provider_failure(operation, reservation)
@@ -379,6 +384,54 @@ class ManagedQwenStructuredRuntime:
             except Exception:
                 pass
 
+    async def _call_async(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        self.model_rounds_used = 1
+        operation = {"design_solutions": "solution_generation", "analyze_evidence": "evidence_analysis"}.get(method)
+        reservation = None
+        if operation is not None and self._before_provider_call is not None:
+            reservation = self._before_provider_call(operation)
+        adapter = None
+        try:
+            generation_intent_id = kwargs.pop("_generation_intent_id", None)
+            generation_run_id = kwargs.pop("_generation_run_id", None)
+            adapter_kwargs = dict(provider=self.provider, model=self.model, api_key=self._api_key, base_url=self._base_url, timeout=self._timeout)
+            if generation_intent_id is not None:
+                adapter_kwargs["generation_intent_id"] = generation_intent_id
+            if generation_run_id is not None:
+                adapter_kwargs["generation_run_id"] = generation_run_id
+            if self._attempt_observer is not None:
+                adapter_kwargs["attempt_observer"] = self._attempt_observer
+            adapter = self._async_adapter_factory(**adapter_kwargs)
+            async_method = getattr(adapter, f"{method}_async")
+            result = await async_method(*args, **kwargs)
+            self.last_provider_diagnostic = dict(getattr(adapter, "last_safe_diagnostic", {}))
+            return result
+        except ProviderCallError as exc:
+            if operation is not None and self._after_provider_failure is not None:
+                self._after_provider_failure(operation, reservation)
+            self.last_provider_diagnostic = dict(exc.safe_diagnostic)
+            raise StructuredRuntimeRecoveryError(
+                error_code=f"MODEL_{exc.code.upper()}",
+                message=("AI 服务暂时繁忙，你的项目内容已保存，请稍后重试。" if exc.safe_diagnostic.get("provider_error_source") == "UPSTREAM_HTTP_503" else "AI 服务暂时不可用；你的输入已保存，可以稍后重试。"),
+                recovery_actions=["检查托管模型服务状态", "稍后重试"],
+                preserved_input=kwargs.get("claim") if method == "analyze_evidence" else (args[0] if args else {}),
+                safe_diagnostic=exc.safe_diagnostic,
+            ) from exc
+        except StructuredRuntimeRecoveryError:
+            if operation is not None and self._after_provider_failure is not None:
+                self._after_provider_failure(operation, reservation)
+            raise
+        except Exception as exc:
+            if operation is not None and self._after_provider_failure is not None:
+                self._after_provider_failure(operation, reservation)
+            raise StructuredRuntimeUnavailableError("MANAGED_QWEN_REQUEST_FAILED") from exc
+        finally:
+            if adapter is not None:
+                try:
+                    await adapter.aclose()
+                except Exception:
+                    pass
+
     def interpret_idea(self, request: QuickStartRequest) -> IdeaBriefDraft:
         return self._call("interpret_idea", request)
 
@@ -390,6 +443,15 @@ class ManagedQwenStructuredRuntime:
     ) -> list[dict[str, Any]]:
         return self._call("analyze_evidence", claim=claim, chunks=chunks)
 
+    async def async_design_solutions(self, brief: IdeaBriefDraft, *, generation_intent_id: str | None = None, generation_run_id: str | None = None) -> SolutionSetDraft:
+        return await self._call_async("design_solutions", brief, _generation_intent_id=generation_intent_id, _generation_run_id=generation_run_id)
+
+    async def async_interpret_idea(self, request: QuickStartRequest) -> IdeaBriefDraft:
+        return await self._call_async("interpret_idea", request)
+
+    async def async_analyze_evidence(self, *, claim: dict[str, Any], chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return await self._call_async("analyze_evidence", claim=claim, chunks=chunks)
+
 
 class ManagedModelStructuredRuntime(ManagedQwenStructuredRuntime):
     """Managed Bailian runtime for one already-resolved model selection."""
@@ -399,18 +461,22 @@ class ManagedModelStructuredRuntime(ManagedQwenStructuredRuntime):
     def __init__(self, *, model: str, provider: str, api_key: str,
                  base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
                  adapter_factory: Any = ModelAdapter,
+                 async_adapter_factory: Any = AsyncModelAdapter,
                  before_provider_call: Callable[[str], Any] | None = None,
                  after_provider_failure: Callable[[str, Any], Any] | None = None,
-                 attempt_observer: Callable[[dict[str, Any]], Any] | None = None) -> None:
+                 attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
+                 timeout: Any = DEFAULT_PROVIDER_TIMEOUT) -> None:
         super().__init__(
             model=model,
             api_key=api_key,
             base_url=base_url,
             provider=provider,
             adapter_factory=adapter_factory,
+            async_adapter_factory=async_adapter_factory,
             before_provider_call=before_provider_call,
             after_provider_failure=after_provider_failure,
             attempt_observer=attempt_observer,
+            timeout=timeout,
         )
 
 

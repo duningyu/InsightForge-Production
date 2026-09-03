@@ -394,3 +394,119 @@ class SolutionDesignService:
         )
         candidates = [self._serialize_candidate(row) for row in rows]
         return {"run": latest, "latest_run": latest, "candidates": candidates}
+
+    async def generate_async(
+        self,
+        project_id: str,
+        *,
+        actor: str,
+        managed_selection: Any | None = None,
+        generation_intent_id: str | None = None,
+        generation_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Generate through the real async provider boundary.
+
+        This deliberately performs one provider attempt.  A new attempt is
+        only legal after the caller creates a new durable generation intent.
+        """
+        brief_row = self._confirmed_brief_row(project_id)
+        brief = self._brief_from_row(brief_row)
+        resolver = getattr(self.runtime, "for_project", None)
+        runtime = (
+            resolver(project_id, managed_selection=managed_selection)
+            if callable(resolver) and managed_selection is not None
+            else resolver(project_id) if callable(resolver) else self.runtime
+        )
+        started = time.perf_counter()
+        try:
+            raw_set = await runtime.async_design_solutions(
+                brief,
+                generation_intent_id=generation_intent_id,
+                generation_run_id=generation_run_id,
+            )
+        except StructuredRuntimeRecoveryError as exc:
+            self._audit_failure(
+                runtime=runtime, brief=brief, started_at=started, actor=actor,
+                entity_type="project", entity_id=project_id,
+                action="solution_generation_recovery_required", status="recovery_required",
+                error_code=exc.error_code, safe_diagnostic=exc.safe_diagnostic,
+            )
+            return exc.as_payload(preserved_input=brief)
+
+        try:
+            candidates = validate_solution_set(
+                list(raw_set.candidates), llm_core_required=raw_set.llm_core_required
+            )
+        except ValueError as exc:
+            self._audit_failure(
+                runtime=runtime, brief=brief, started_at=started, actor=actor,
+                entity_type="project", entity_id=project_id,
+                action="solution_generation_failed", status="failed_validation",
+                error_code=str(exc).split(":", 1)[0],
+            )
+            return {
+                "error_code": "SOLUTION_GENERATION_NO_VALID_CANDIDATES",
+                "message": "这次没有生成可用方案，你的项目内容已经保留，请稍后重试。",
+                "recovery_actions": ["重新生成"], "retryable": True,
+            }
+
+        run_id = f"solution_run_{uuid.uuid4().hex}"
+        final_set = SolutionSetDraft(
+            candidates=candidates,
+            llm_core_required=raw_set.llm_core_required,
+            recommendation_candidate_id=raw_set.recommendation_candidate_id,
+            recommendation_rationale=raw_set.recommendation_rationale,
+        )
+        input_sha = sha256_payload(brief)
+        output_sha = sha256_payload(final_set)
+        now = utc_now()
+        trace = build_ai_trace_payload(
+            runtime=runtime, input_payload=brief, output_payload=final_set,
+            started_at=started,
+            status="completed_two_candidates" if len(candidates) == 2 else "completed",
+            component_version=self.GENERATOR_VERSION,
+        )
+        trace["generator_version"] = trace.pop("component_version")
+        trace.update(getattr(runtime, "last_provider_diagnostic", {}))
+        trace.update({
+            "normalized_candidate_count": len(candidates),
+            "validator_accepted_count": len(candidates),
+            "persisted_candidate_count": len(candidates),
+            "response_candidate_count": len(candidates),
+            "diversity_verdict": "PASS",
+        })
+        with self.db.connect() as connection:
+            connection.execute(
+                """INSERT INTO solution_runs(
+                    id, project_id, idea_brief_id, provider, model, prompt_version,
+                    schema_version, generator_version, input_sha256, output_sha256,
+                    status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)""",
+                (run_id, project_id, brief_row["id"], runtime.provider, runtime.model,
+                 runtime.prompt_version, runtime.schema_version, self.GENERATOR_VERSION,
+                 input_sha, output_sha, now),
+            )
+            for candidate in candidates:
+                candidate_id = f"solution_{uuid.uuid4().hex}"
+                connection.execute(
+                    """INSERT INTO solution_candidates(
+                        id, run_id, project_id, title, mechanism, summary, why_fit,
+                        user_flow_json, mvp_pages_json, features_json, inputs_json, outputs_json,
+                        decision_logic_json, data_requirements_json, technical_components_json,
+                        implementation_plan_json, acceptance_cases_json, risks_json, unknowns_json,
+                        complexity, provenance, required_data_class, automation_level, human_role,
+                        core_decision_logic, major_dependency, requires_llm_runtime,
+                        requires_rag_runtime, requires_agent_runtime, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    self._candidate_to_params(
+                        candidate_id=candidate_id, run_id=run_id, project_id=project_id,
+                        candidate=candidate, now=utc_now(),
+                    ),
+                )
+            self.db.insert_audit_tx(
+                connection, actor=actor, action="solution_candidates_generated",
+                entity_type="solution_run", entity_id=run_id, payload=trace,
+            )
+        result = self.list_candidates(project_id)
+        result["_solution_run_id"] = run_id
+        return result

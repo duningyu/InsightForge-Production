@@ -7,6 +7,7 @@ requests never wait on provider I/O; SQLite owns identity and terminal replay.
 from __future__ import annotations
 
 import json
+import asyncio
 import threading
 import time
 from dataclasses import dataclass
@@ -187,10 +188,12 @@ class AsyncGenerationRepository:
 
 
 class AsyncGenerationWorker:
-    def __init__(self, repository: AsyncGenerationRepository, executor: Callable[[AsyncRun], dict[str, Any]], *, poll_seconds: float = 0.05):
-        self.repository, self.executor, self.poll_seconds = repository, executor, poll_seconds
+    def __init__(self, repository: AsyncGenerationRepository, executor: Callable[[AsyncRun], dict[str, Any]] | None = None, *, async_executor: Callable[[AsyncRun], Any] | None = None, poll_seconds: float = 0.05):
+        self.repository, self.executor, self.async_executor, self.poll_seconds = repository, executor, async_executor, poll_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._active_loop: asyncio.AbstractEventLoop | None = None
+        self._active_task: asyncio.Task[Any] | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -205,21 +208,43 @@ class AsyncGenerationWorker:
             if run is None:
                 self._stop.wait(self.poll_seconds)
                 continue
-            self.repository.mark_provider_call(run.generation_run_id)
-            try:
+            asyncio.run(self._execute_run(run))
+
+    async def _execute_run(self, run: AsyncRun) -> None:
+        self._active_loop = asyncio.get_running_loop()
+        self._active_task = asyncio.current_task()
+        self.repository.mark_provider_call(run.generation_run_id)
+        try:
+            if self.async_executor is not None:
+                payload = await self.async_executor(run)
+            elif self.executor is not None:
+                # Compatibility for existing synchronous unit-test executors;
+                # production startup uses async_executor exclusively.
                 payload = self.executor(run)
-                # A domain/provider error (or an empty candidate set) is a
-                # controlled failure, never a successful async run.
-                status_code = 503 if payload.get("error_code") or not (payload.get("candidates") or []) else 201
-                self.repository.finish(run.generation_run_id, payload, status_code=status_code)
-            except Exception:
-                self.repository.finish(run.generation_run_id, {
-                    "error_code": "ASYNC_GENERATION_FAILED",
-                    "message": "这次生成未能完成，你的项目内容已经保留，请稍后重试。",
-                    "recovery_actions": ["重新生成"], "retryable": True,
-                }, status_code=503)
+            else:
+                raise RuntimeError("async generation executor is not configured")
+            solution_run_id = payload.pop("_solution_run_id", None)
+            status_code = 503 if payload.get("error_code") or not (payload.get("candidates") or []) else 201
+            self.repository.finish(run.generation_run_id, payload, status_code=status_code, solution_run_id=solution_run_id)
+        except asyncio.CancelledError:
+            self.repository.finish(run.generation_run_id, {
+                "error_code": "ASYNC_GENERATION_CANCELLED",
+                "message": "生成已停止，你的项目内容已经保留，请重新生成。",
+                "recovery_actions": ["重新生成"], "retryable": True,
+            }, status_code=503)
+        except Exception:
+            self.repository.finish(run.generation_run_id, {
+                "error_code": "ASYNC_GENERATION_FAILED",
+                "message": "这次生成未能完成，你的项目内容已经保留，请稍后重试。",
+                "recovery_actions": ["重新生成"], "retryable": True,
+            }, status_code=503)
+        finally:
+            self._active_task = None
+            self._active_loop = None
 
     def stop(self) -> None:
         self._stop.set()
+        if self._active_loop and self._active_task:
+            self._active_loop.call_soon_threadsafe(self._active_task.cancel)
         if self._thread:
             self._thread.join(timeout=2)

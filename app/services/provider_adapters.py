@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -38,6 +39,33 @@ class ProviderCallError(RuntimeError):
 
 
 _Model = TypeVar("_Model", bound=BaseModel)
+
+
+DEFAULT_PROVIDER_TIMEOUT = httpx.Timeout(
+    connect=10.0,
+    pool=5.0,
+    write=15.0,
+    read=60.0,
+)
+
+
+def _timeout_metadata(timeout: httpx.Timeout | float) -> dict[str, float | None]:
+    if isinstance(timeout, httpx.Timeout):
+        return {
+            "connect_timeout_seconds": timeout.connect,
+            "pool_timeout_seconds": timeout.pool,
+            "write_timeout_seconds": timeout.write,
+            "read_timeout_seconds": timeout.read,
+            "overall_timeout_seconds": 75.0,
+        }
+    value = float(timeout)
+    return {
+        "connect_timeout_seconds": value,
+        "pool_timeout_seconds": value,
+        "write_timeout_seconds": value,
+        "read_timeout_seconds": value,
+        "overall_timeout_seconds": value,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +114,7 @@ class ModelAdapter:
         protocol: str | None = None,
         base_url: str | None = None,
         client: httpx.Client | None = None,
-        timeout: float = 30.0,
+        timeout: httpx.Timeout | float | None = None,
         attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
         generation_intent_id: str | None = None,
         generation_run_id: str | None = None,
@@ -101,14 +129,25 @@ class ModelAdapter:
         self.base_url = self.preset.default_base_url
         self.model = model.strip()
         self._api_key = api_key
-        self._timeout_seconds = float(timeout)
+        effective_timeout = timeout if timeout is not None else DEFAULT_PROVIDER_TIMEOUT
+        if isinstance(effective_timeout, httpx.Timeout):
+            self._timeout = effective_timeout
+        else:
+            self._timeout = httpx.Timeout(float(effective_timeout))
+        self._effective_timeout = _timeout_metadata(effective_timeout)
+        # Kept for compatibility with existing diagnostics consumers.
+        self._timeout_seconds = self._effective_timeout["overall_timeout_seconds"]
         self._attempt_observer = attempt_observer
         self._generation_intent_id = generation_intent_id
         self._generation_run_id = generation_run_id
         self._use_response_format = True
         self._owns_client = client is None
-        self._client = client or httpx.Client(timeout=timeout)
+        self._client = client or httpx.Client(timeout=self._timeout)
         self.last_safe_diagnostic: dict[str, Any] = {}
+
+    @property
+    def effective_timeout(self) -> dict[str, float | None]:
+        return dict(self._effective_timeout)
 
     @property
     def is_closed(self) -> bool:
@@ -507,7 +546,10 @@ class ModelAdapter:
             "message_count": message_count,
             "schema_bytes": schema_bytes,
             "structured_output_mode": structured_output_mode,
-            "effective_timeout": {"timeout_seconds": self._timeout_seconds},
+            "effective_timeout": {
+                "timeout_seconds": self._timeout_seconds,
+                **self._effective_timeout,
+            },
             "started_at": started_at.isoformat(),
             "exception_at": exception_at.isoformat() if exception_at else None,
             "elapsed_ms": max(0, int(round((perf_counter() - started_clock) * 1000))),
@@ -638,3 +680,152 @@ class ModelAdapter:
             "usage_present": isinstance(body.get("usage"), dict),
             "model_returned": model.strip()[:240] if isinstance(model, str) and model.strip() else None,
         }
+
+
+class AsyncModelAdapter(ModelAdapter):
+    """Cancellable async counterpart of :class:`ModelAdapter`.
+
+    The provider transport is genuinely async; the overall deadline is owned by
+    the coroutine so cancellation reaches httpx rather than blocking a worker
+    thread around a synchronous request.
+    """
+
+    def __init__(self, *, client: httpx.AsyncClient | None = None,
+                 overall_timeout: float | None = None, **kwargs: Any) -> None:
+        # Do not construct a synchronous client as a side effect of the async
+        # adapter.  The assignments mirror ModelAdapter's validated state.
+        provider = kwargs["provider"]
+        model = kwargs["model"]
+        api_key = kwargs["api_key"]
+        protocol = kwargs.get("protocol")
+        base_url = kwargs.get("base_url")
+        self.preset = ProviderRegistry.resolve(provider, protocol=protocol, base_url=base_url)
+        if not str(model).strip():
+            raise ProviderConfigurationError("Model ID is required.")
+        if not str(api_key).strip():
+            raise ProviderConfigurationError("Provider credential is required.")
+        self.provider = self.preset.provider
+        self.protocol = self.preset.protocol
+        self.base_url = self.preset.default_base_url
+        self.model = model.strip()
+        self._api_key = api_key
+        effective_timeout = kwargs.get("timeout") or DEFAULT_PROVIDER_TIMEOUT
+        self._timeout = effective_timeout if isinstance(effective_timeout, httpx.Timeout) else httpx.Timeout(float(effective_timeout))
+        self._effective_timeout = _timeout_metadata(effective_timeout)
+        self._timeout_seconds = self._effective_timeout["overall_timeout_seconds"]
+        self._overall_timeout = float(overall_timeout if overall_timeout is not None else self._effective_timeout["overall_timeout_seconds"])
+        self._attempt_observer = kwargs.get("attempt_observer")
+        self._generation_intent_id = kwargs.get("generation_intent_id")
+        self._generation_run_id = kwargs.get("generation_run_id")
+        self._use_response_format = True
+        self._owns_client = client is None
+        self._client = client or httpx.AsyncClient(timeout=self._timeout)
+        self.last_safe_diagnostic: dict[str, Any] = {}
+
+    async def aclose(self) -> None:
+        if not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self) -> "AsyncModelAdapter":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        await self.aclose()
+
+    async def interpret_idea_async(self, request: QuickStartRequest) -> IdeaBriefDraft:
+        return await self._generate_async(
+            output_model=IdeaBriefDraft,
+            system="Interpret this product idea conservatively. Return only JSON matching the requested schema. Keep provenance explicit and do not claim market validation.",
+            user=json.dumps(request.model_dump(mode="json"), ensure_ascii=False),
+        )
+
+    async def design_solutions_async(self, brief: IdeaBriefDraft) -> SolutionSetDraft:
+        return await self._generate_async(
+            output_model=SolutionSetDraft,
+            system="Generate 2-3 materially different solutions. Return only JSON matching the requested schema. Do not make unsupported market claims.",
+            user=brief.model_dump_json(),
+        )
+
+    async def _generate_async(self, *, output_model: type[_Model], system: str, user: str) -> _Model:
+        body = await self._request_async(system=system, user=user, structured=True, output_model=output_model)
+        content = self._content_from_response(body)
+        try:
+            parsed = json.loads(content)
+        except (TypeError, json.JSONDecodeError) as exc:
+            self.last_safe_diagnostic.update({"structured_payload_found": False, "json_parse_success": False})
+            raise ProviderCallError("malformed_response", "Provider returned invalid JSON.", False) from exc
+        self.last_safe_diagnostic.update({"structured_payload_found": isinstance(parsed, (dict, list)), "json_parse_success": True})
+        try:
+            validated = output_model.model_validate(parsed)
+        except ValidationError as exc:
+            self.last_safe_diagnostic["schema_validation_success"] = False
+            raise ProviderCallError("invalid_content", "Provider response did not match the required schema.", False) from exc
+        self.last_safe_diagnostic["schema_validation_success"] = True
+        if isinstance(parsed, dict) and isinstance(parsed.get("candidates"), list):
+            self.last_safe_diagnostic["raw_candidate_count"] = len(parsed["candidates"])
+        return validated
+
+    async def _request_async(self, *, system: str, user: str, structured: bool,
+                             max_tokens: int | None = None, live: bool = False,
+                             output_model: type[_Model] | None = None) -> dict[str, Any]:
+        if self.protocol != "openai_chat_completions":
+            raise ProviderCallError("unsupported_protocol", "Configured provider protocol is unsupported.", False)
+        endpoint = "/chat/completions"
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        payload: dict[str, Any] = {"model": self.model, "messages": ([{"role": "user", "content": user}] if not system.strip() else [{"role": "system", "content": system}, {"role": "user", "content": user}])}
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if live:
+            payload["stream"] = False
+        if structured and self.provider == "qwen":
+            payload["enable_thinking"] = False
+        if structured and self._use_response_format:
+            if self.provider == "qwen" and output_model is not None:
+                payload["response_format"] = {"type": "json_schema", "json_schema": {"name": output_model.__name__, "strict": True, "schema": output_model.model_json_schema()}}
+            else:
+                payload["response_format"] = {"type": "json_object"}
+        attempt_id = str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc)
+        started_clock = perf_counter()
+        request_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        response_format = payload.get("response_format")
+        schema_bytes = len(json.dumps(response_format, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) if response_format else 0
+        structured_output_mode = "json_schema" if isinstance(response_format, dict) and response_format.get("type") == "json_schema" else "json_object" if response_format else "none"
+        try:
+            async with asyncio.timeout(self._overall_timeout):
+                response = await self._client.post(f"{self.base_url}{endpoint}", headers=headers, json=payload)
+        except asyncio.TimeoutError as exc:
+            diagnostic = {"provider_request_started": True, "provider_request_completed": False, "upstream_response_received": False, "provider_error_source": "APPLICATION_OVERALL_DEADLINE", "provider_error_code": "NO_UPSTREAM_ERROR_CODE", "provider_http_status": None, "provider_exception_class": "TimeoutError", "provider_failure_stage": "application_overall_deadline", "provider_retryable": True, "provider_retry_after_seconds_if_present": None}
+            self.last_safe_diagnostic = diagnostic
+            self._emit_attempt(attempt_id=attempt_id, started_at=started_at, started_clock=started_clock, request_bytes=request_bytes, message_count=len(payload["messages"]), schema_bytes=schema_bytes, structured_output_mode=structured_output_mode, exception_at=datetime.now(timezone.utc), response_headers_observed=False, exception_class="TimeoutError", failure_stage="application_overall_deadline")
+            raise ProviderCallError("timeout", "Provider request timed out.", True, safe_diagnostic=diagnostic) from exc
+        except httpx.TimeoutException as exc:
+            subtype = type(exc).__name__
+            stage = {"ConnectTimeout": "connect", "ReadTimeout": "read", "WriteTimeout": "write", "PoolTimeout": "pool"}.get(subtype, "unknown")
+            safe_cause = type(exc)("Provider transport timeout.")
+            diagnostic = {"provider_request_started": True, "provider_request_completed": False, "upstream_response_received": False, "provider_error_source": f"UPSTREAM_TIMEOUT_{stage.upper()}", "provider_error_code": "NO_UPSTREAM_ERROR_CODE", "provider_http_status": None, "provider_exception_class": subtype, "provider_failure_stage": f"provider_transport_{stage}", "provider_retryable": True, "provider_retry_after_seconds_if_present": None}
+            self.last_safe_diagnostic = diagnostic
+            self._emit_attempt(attempt_id=attempt_id, started_at=started_at, started_clock=started_clock, request_bytes=request_bytes, message_count=len(payload["messages"]), schema_bytes=schema_bytes, structured_output_mode=structured_output_mode, exception_at=datetime.now(timezone.utc), response_headers_observed=False, exception_class=subtype, failure_stage=f"provider_transport_{stage}")
+            raise ProviderCallError("timeout", "Provider request timed out.", True, safe_diagnostic=diagnostic) from safe_cause
+        except httpx.RequestError as exc:
+            diagnostic = {"provider_request_started": True, "provider_request_completed": False, "upstream_response_received": False, "provider_error_source": "UPSTREAM_CONNECTION_FAILURE", "provider_error_code": "NO_UPSTREAM_ERROR_CODE", "provider_http_status": None, "provider_exception_class": type(exc).__name__, "provider_failure_stage": "provider_transport", "provider_retryable": True}
+            self.last_safe_diagnostic = diagnostic
+            self._emit_attempt(attempt_id=attempt_id, started_at=started_at, started_clock=started_clock, request_bytes=request_bytes, message_count=len(payload["messages"]), schema_bytes=schema_bytes, structured_output_mode=structured_output_mode, exception_at=datetime.now(timezone.utc), response_headers_observed=False, exception_class=type(exc).__name__, failure_stage="provider_transport")
+            raise ProviderCallError("network_error", "Provider request could not be completed.", True, safe_diagnostic=diagnostic) from exc
+        self._emit_attempt(attempt_id=attempt_id, started_at=started_at, started_clock=started_clock, request_bytes=request_bytes, message_count=len(payload["messages"]), schema_bytes=schema_bytes, structured_output_mode=structured_output_mode, exception_at=None, response_headers_observed=True, exception_class=None, failure_stage="provider_http_response" if response.status_code >= 400 else None)
+        if response.status_code >= 400:
+            raise self._error_for_status(response)
+        self.last_safe_diagnostic = {"provider_request_started": True, "provider_request_completed": True, "upstream_response_received": True, "upstream_http_status": response.status_code, "upstream_request_id": next((response.headers[name][:120] for name in ("x-request-id", "request-id") if response.headers.get(name)), "NO_UPSTREAM_REQUEST_ID"), "upstream_error_code": "NO_UPSTREAM_ERROR_CODE", "provider_exception_class": None, "provider_failure_stage": None, "retry_after_present": "retry-after" in response.headers, "response_body_length": len(response.content)}
+        try:
+            body = response.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ProviderCallError("malformed_response", "Provider returned invalid JSON.", False) from exc
+        if not isinstance(body, dict):
+            raise ProviderCallError("malformed_response", "Provider returned an invalid response shape.", False)
+        body["_http_status"] = response.status_code
+        if isinstance(body.get("choices"), list) and body["choices"]:
+            first = body["choices"][0]
+            message = first.get("message") if isinstance(first, dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            self.last_safe_diagnostic.update({"finish_reason": first.get("finish_reason") if isinstance(first, dict) else None, "choices_count": len(body["choices"]), "content_present": isinstance(content, str) and bool(content), "content_length": len(content) if isinstance(content, str) else 0})
+        return body

@@ -58,6 +58,11 @@ def test_timeout_subtype_and_safe_durable_attempt_metadata(timeout_type, expecte
     assert record["schema_bytes"] > 0
     assert record["structured_output_mode"] == "json_object"
     assert record["effective_timeout"]["timeout_seconds"] == 30.0
+    assert record["effective_timeout"]["connect_timeout_seconds"] == 30.0
+    assert record["effective_timeout"]["pool_timeout_seconds"] == 30.0
+    assert record["effective_timeout"]["write_timeout_seconds"] == 30.0
+    assert record["effective_timeout"]["read_timeout_seconds"] == 30.0
+    assert record["effective_timeout"]["overall_timeout_seconds"] == 30.0
     assert record["exception_at"]
     assert record["elapsed_ms"] >= 0
     assert record["response_headers_observed"] is False

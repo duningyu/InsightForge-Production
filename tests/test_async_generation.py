@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import asyncio
 
 from app.db import Database
 from app.services.async_generation import AsyncGenerationRepository, AsyncGenerationWorker
@@ -93,3 +94,24 @@ def test_same_key_isolated_by_participant_and_project(tmp_path):
     b = repository.create_or_replay("beta002", "project-a", "same-key")
     c = repository.create_or_replay("beta001", "project-b", "same-key")
     assert len({a.generation_run_id, b.generation_run_id, c.generation_run_id}) == 3
+
+
+def test_async_worker_cancellation_finishes_run_without_sync_bridge(tmp_path):
+    _, repository = repo(tmp_path)
+    run = repository.create_or_replay("beta001", "project-cancel", "intent-cancel")
+    started = asyncio.Event()
+
+    async def executor(item):
+        started.set()
+        await asyncio.Event().wait()
+
+    worker = AsyncGenerationWorker(repository, async_executor=executor, poll_seconds=0.01)
+    worker.start()
+    deadline = time.time() + 2
+    while time.time() < deadline and not started.is_set():
+        time.sleep(0.01)
+    worker.stop()
+    completed = repository.get("beta001", "project-cancel", run.generation_run_id)
+    assert completed.status == "FAILED"
+    assert completed.status_code == 503
+    assert completed.response["error_code"] == "ASYNC_GENERATION_CANCELLED"

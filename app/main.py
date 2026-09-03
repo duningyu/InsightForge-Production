@@ -264,14 +264,16 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         )
         application.state.async_generation_repository = AsyncGenerationRepository(db)
 
-        def execute_async_solution_generation(run: AsyncRun) -> dict[str, Any]:
+        async def execute_async_solution_generation(run: AsyncRun) -> dict[str, Any]:
             selection = None
             if settings.beta_mode and settings.beta_managed_mode:
                 selection = application.state.managed_model_router.resolve_for_operation(
                     "solutions", run.requested_model_preference or ManagedModelPreference.AUTO.value
                 )
-            result = application.state.solution_design.generate(
-                run.project_id, actor="async_worker", managed_selection=selection
+            result = await application.state.solution_design.generate_async(
+                run.project_id, actor="async_worker", managed_selection=selection,
+                generation_intent_id=run.generation_intent_id,
+                generation_run_id=run.generation_run_id,
             )
             if selection:
                 result = {
@@ -286,7 +288,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
 
         application.state.async_generation_worker = AsyncGenerationWorker(
             application.state.async_generation_repository,
-            execute_async_solution_generation,
+            async_executor=execute_async_solution_generation,
         )
         application.state.async_generation_worker.start()
         application.state.decisions = DecisionService()

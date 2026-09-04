@@ -490,6 +490,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_async_solution_generation_identity
 CREATE INDEX IF NOT EXISTS idx_async_solution_generation_pending
     ON async_solution_generation_runs(status, created_at);
 
+-- Server-issued, single-use authorization for a strict beta acceptance.
+-- The client may reference an authorization, but cannot manufacture one.
+CREATE TABLE IF NOT EXISTS provider_acceptance_authorizations (
+    authorization_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    actor_scope TEXT NOT NULL,
+    beta_instance TEXT NOT NULL CHECK(beta_instance = 'beta001'),
+    provider TEXT NOT NULL CHECK(provider = 'bailian'),
+    model TEXT NOT NULL CHECK(model = 'qwen3.7-flash'),
+    forward_ledger_epoch_id TEXT NOT NULL,
+    operation_type TEXT NOT NULL CHECK(operation_type = 'solution_generation'),
+    state TEXT NOT NULL CHECK(state IN ('PENDING','REDEEMED','EXPIRED','REVOKED')),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    redeemed_at TEXT,
+    acceptance_execution_id TEXT UNIQUE,
+    authorization_evidence_hash TEXT NOT NULL,
+    created_by TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provider_acceptance_auth_scope
+    ON provider_acceptance_authorizations(project_id, actor_scope, state, expires_at);
+
 CREATE TABLE IF NOT EXISTS project_claims (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -853,6 +875,7 @@ class Database:
     @classmethod
     def _migrate_schema(cls, connection: sqlite3.Connection) -> None:
         async_dispatch_columns = {
+            "acceptance_authorization_id": "TEXT",
             "acceptance_execution_id": "TEXT",
             "forward_ledger_epoch_id": "TEXT",
             "dispatch_beta_instance": "TEXT",

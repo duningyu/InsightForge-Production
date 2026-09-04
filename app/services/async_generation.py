@@ -38,6 +38,7 @@ class AsyncRun:
     request_count: int
     replay_count: int
     provider_call_count: int
+    acceptance_authorization_id: str | None = None
     dispatch_control: DispatchControlContext | None = None
 
     def public(self) -> dict[str, Any]:
@@ -81,6 +82,7 @@ class AsyncGenerationRepository:
             resolved_model_id=row["resolved_model_id"],
             request_count=row["request_count"], replay_count=row["replay_count"],
             provider_call_count=row["provider_call_count"],
+            acceptance_authorization_id=row["acceptance_authorization_id"],
             dispatch_control=(DispatchControlContext(
                 acceptance_execution_id=row["acceptance_execution_id"],
                 forward_ledger_epoch_id=row["forward_ledger_epoch_id"],
@@ -162,7 +164,106 @@ class AsyncGenerationRepository:
                 row = connection.execute(
                     "SELECT * FROM async_solution_generation_runs WHERE generation_run_id=?", (row["generation_run_id"],)
                 ).fetchone()
-            return self._row(row)
+        return self._row(row)
+
+    def redeem_authorization_and_create(
+        self, *, authorization_id: str, participant_id: str, project_id: str,
+        actor_scope: str, idempotency_key: str,
+        requested_model_preference: str,
+        resolved_model_family: str,
+        resolved_model_id: str,
+    ) -> AsyncRun:
+        """Atomically redeem server authorization and bind the async run.
+
+        The authorization row, generated execution identity, and dispatch
+        context are committed together.  The caller never supplies dispatch
+        authority; it supplies only the opaque server-issued authorization id.
+        """
+        participant = participant_id or "default"
+        now = _now()
+        with self.db.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM async_solution_generation_runs WHERE participant_id=? AND project_id=? AND operation_type=? AND idempotency_key=?",
+                (participant, project_id, "solution_generation", idempotency_key),
+            ).fetchone()
+            if row is not None:
+                if row["acceptance_authorization_id"] != authorization_id:
+                    raise ValueError("IDEMPOTENCY_ACCEPTANCE_AUTHORIZATION_MISMATCH")
+                connection.execute(
+                    "UPDATE async_solution_generation_runs SET request_count=request_count+1,replay_count=replay_count+1 WHERE generation_run_id=?",
+                    (row["generation_run_id"],),
+                )
+                connection.execute(
+                    "UPDATE solution_generation_intents SET request_count=request_count+1,replay_count=replay_count+1 WHERE id=?",
+                    (row["generation_intent_id"],),
+                )
+                row = connection.execute(
+                    "SELECT * FROM async_solution_generation_runs WHERE generation_run_id=?",
+                    (row["generation_run_id"],),
+                ).fetchone()
+                return self._row(row)
+
+            auth = connection.execute(
+                "SELECT * FROM provider_acceptance_authorizations WHERE authorization_id=?",
+                (authorization_id,),
+            ).fetchone()
+            if auth is None:
+                raise ValueError("ACCEPTANCE_AUTHORIZATION_NOT_FOUND")
+            if auth["state"] != "PENDING":
+                raise ValueError("ACCEPTANCE_AUTHORIZATION_NOT_REDEEMABLE")
+            if auth["project_id"] != project_id or auth["actor_scope"] != actor_scope:
+                raise ValueError("ACCEPTANCE_AUTHORIZATION_SCOPE_MISMATCH")
+            if auth["beta_instance"] != "beta001" or auth["provider"] != "bailian" or auth["model"] != "qwen3.7-flash":
+                raise ValueError("ACCEPTANCE_AUTHORIZATION_TARGET_MISMATCH")
+            if auth["operation_type"] != "solution_generation":
+                raise ValueError("ACCEPTANCE_AUTHORIZATION_OPERATION_MISMATCH")
+            try:
+                expired = datetime.fromisoformat(auth["expires_at"]) <= datetime.fromisoformat(now)
+            except (TypeError, ValueError):
+                raise ValueError("ACCEPTANCE_AUTHORIZATION_EXPIRY_INVALID") from None
+            if expired:
+                raise ValueError("ACCEPTANCE_AUTHORIZATION_EXPIRED")
+
+            execution_id = str(uuid4())
+            intent_id, run_id = str(uuid4()), str(uuid4())
+            changed = connection.execute(
+                """UPDATE provider_acceptance_authorizations
+                   SET state='REDEEMED', redeemed_at=?, acceptance_execution_id=?
+                   WHERE authorization_id=? AND state='PENDING'""",
+                (now, execution_id, authorization_id),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("ACCEPTANCE_AUTHORIZATION_NOT_REDEEMABLE")
+            connection.execute(
+                """INSERT INTO solution_generation_intents(
+                    id,participant_id,project_id,operation_type,idempotency_key,status,
+                    quota_reservation_id,request_count,replay_count,provider_call_count,
+                    requested_model_preference,resolved_model_family,resolved_model_id,created_at,
+                    generation_run_id
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (intent_id, participant, project_id, "solution_generation", idempotency_key,
+                 "IN_PROGRESS", intent_id, 1, 0, 0, requested_model_preference,
+                 resolved_model_family, resolved_model_id, now, run_id),
+            )
+            connection.execute(
+                """INSERT INTO async_solution_generation_runs(
+                    generation_run_id,generation_intent_id,participant_id,project_id,
+                    operation_type,idempotency_key,status,requested_model_preference,
+                    resolved_model_family,resolved_model_id,quota_reservation_id,created_at,
+                    acceptance_authorization_id,acceptance_execution_id,forward_ledger_epoch_id,
+                    dispatch_beta_instance,dispatch_expected_provider,dispatch_expected_model,
+                    dispatch_ordinal,strict_at_most_once
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (run_id, intent_id, participant, project_id, "solution_generation", idempotency_key,
+                 "PENDING", requested_model_preference, resolved_model_family, resolved_model_id,
+                 intent_id, now, authorization_id, execution_id, auth["forward_ledger_epoch_id"],
+                 "beta001", "bailian", "qwen3.7-flash", 1, 1),
+            )
+            row = connection.execute(
+                "SELECT * FROM async_solution_generation_runs WHERE generation_run_id=?", (run_id,)
+            ).fetchone()
+        return self._row(row)
 
     def get(self, participant_id: str, project_id: str, run_id: str) -> AsyncRun | None:
         with self.db.connect() as connection:

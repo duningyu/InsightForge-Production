@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from app.schemas import SolutionCandidateDraft
+from app.services.dispatch_control import DispatchControlContext
 
 DIVERSITY_FIELDS = (
     "mechanism",
@@ -211,7 +212,7 @@ class SolutionDesignService:
             payload[field] = bool(payload[field])
         return payload
 
-    def generate(self, project_id: str, *, actor: str, managed_selection: Any | None = None) -> dict[str, Any]:
+    def generate(self, project_id: str, *, actor: str, managed_selection: Any | None = None, dispatch_control: DispatchControlContext | None = None) -> dict[str, Any]:
         brief_row = self._confirmed_brief_row(project_id)
         brief = self._brief_from_row(brief_row)
         resolver = getattr(self.runtime, "for_project", None)
@@ -222,7 +223,9 @@ class SolutionDesignService:
         )
         started = time.perf_counter()
         try:
-            raw_set = runtime.design_solutions(brief)
+            design_kwargs = ({"dispatch_control": dispatch_control}
+                             if dispatch_control is not None else {})
+            raw_set = runtime.design_solutions(brief, **design_kwargs)
         except StructuredRuntimeRecoveryError as exc:
             self._audit_failure(
                 runtime=runtime,
@@ -261,7 +264,9 @@ class SolutionDesignService:
 
         def regenerate() -> list[SolutionCandidateDraft]:
             nonlocal regenerated
-            regenerated_set = runtime.design_solutions(brief)
+            regenerate_kwargs = ({"dispatch_control": dispatch_control}
+                                  if dispatch_control is not None else {})
+            regenerated_set = runtime.design_solutions(brief, **regenerate_kwargs)
             regenerated = list(regenerated_set.candidates)
             return regenerated
 
@@ -269,7 +274,7 @@ class SolutionDesignService:
             candidates = validate_with_one_regeneration(
                 list(raw_set.candidates),
                 llm_core_required=raw_set.llm_core_required,
-                regenerate=regenerate,
+                regenerate=None if dispatch_control is not None else regenerate,
             )
         except StructuredRuntimeRecoveryError as exc:
             self.db.execute(
@@ -403,6 +408,7 @@ class SolutionDesignService:
         managed_selection: Any | None = None,
         generation_intent_id: str | None = None,
         generation_run_id: str | None = None,
+        dispatch_control: DispatchControlContext | None = None,
     ) -> dict[str, Any]:
         """Generate through the real async provider boundary.
 
@@ -419,11 +425,13 @@ class SolutionDesignService:
         )
         started = time.perf_counter()
         try:
-            raw_set = await runtime.async_design_solutions(
-                brief,
-                generation_intent_id=generation_intent_id,
-                generation_run_id=generation_run_id,
-            )
+            async_kwargs = {
+                "generation_intent_id": generation_intent_id,
+                "generation_run_id": generation_run_id,
+            }
+            if dispatch_control is not None:
+                async_kwargs["dispatch_control"] = dispatch_control
+            raw_set = await runtime.async_design_solutions(brief, **async_kwargs)
         except StructuredRuntimeRecoveryError as exc:
             self._audit_failure(
                 runtime=runtime, brief=brief, started_at=started, actor=actor,

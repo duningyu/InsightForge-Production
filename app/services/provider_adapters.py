@@ -22,6 +22,7 @@ from app.schemas import (
 )
 from app.services.capability_probe import CapabilityProbe, CapabilityReport, CapabilityStatus
 from app.services.model_providers import ProviderConfigurationError, ProviderRegistry
+from app.services.dispatch_control import DispatchControlContext
 
 
 class ProviderCallError(RuntimeError):
@@ -118,6 +119,9 @@ class ModelAdapter:
         attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
         generation_intent_id: str | None = None,
         generation_run_id: str | None = None,
+        dispatch_ledger: Any | None = None,
+        dispatch_control: DispatchControlContext | None = None,
+        dispatch_permit_id: str | None = None,
     ) -> None:
         self.preset = ProviderRegistry.resolve(provider, protocol=protocol, base_url=base_url)
         if not str(model).strip():
@@ -140,10 +144,25 @@ class ModelAdapter:
         self._attempt_observer = attempt_observer
         self._generation_intent_id = generation_intent_id
         self._generation_run_id = generation_run_id
+        self._dispatch_ledger = dispatch_ledger
+        self._dispatch_control = dispatch_control
+        self._dispatch_permit_id = dispatch_permit_id
         self._use_response_format = True
         self._owns_client = client is None
         self._client = client or httpx.Client(timeout=self._timeout)
         self.last_safe_diagnostic: dict[str, Any] = {}
+
+    def _before_network(self) -> None:
+        if self._dispatch_control is None:
+            return
+        self._dispatch_control.validate(provider=self.provider, model=self.model, base_url=self.base_url)
+        if self._dispatch_ledger is None or not self._dispatch_permit_id or not self._dispatch_ledger.permit_matches(self._dispatch_permit_id, self._dispatch_control):
+            raise ProviderCallError("dispatch_control_invalid", "Provider dispatch authorization is unavailable.", False)
+        self._dispatch_ledger.record_event(self._dispatch_permit_id, "CALL_BOUNDARY_ENTERED")
+
+    def _dispatch_event(self, event_type: str) -> None:
+        if self._dispatch_control is not None and self._dispatch_ledger is not None and self._dispatch_permit_id:
+            self._dispatch_ledger.record_event(self._dispatch_permit_id, event_type)
 
     @property
     def effective_timeout(self) -> dict[str, float | None]:
@@ -417,6 +436,7 @@ class ModelAdapter:
         )
         transport_failure: tuple[str, str, bool, str, BaseException] | None = None
         try:
+            self._before_network()
             response = self._client.post(f"{self.base_url}{endpoint}", headers=headers, json=payload)
         except httpx.TimeoutException as exc:
             subtype = type(exc).__name__
@@ -461,6 +481,7 @@ class ModelAdapter:
                 exception_class=type(safe_cause).__name__ if code == "timeout" else "RequestError",
                 failure_stage=diagnostic["provider_failure_stage"],
             )
+            self._dispatch_event("TIMEOUT_AFTER_BOUNDARY" if code == "timeout" else "TRANSPORT_ERROR_AFTER_BOUNDARY")
             raise ProviderCallError(
                 code, message, retryable,
                 safe_diagnostic=diagnostic,
@@ -474,6 +495,7 @@ class ModelAdapter:
             exception_at=None, response_headers_observed=True,
             exception_class=None, failure_stage=("provider_http_response" if response.status_code >= 400 else None),
         )
+        self._dispatch_event("PROVIDER_HTTP_ERROR_RECEIVED" if response.status_code >= 400 else "PROVIDER_RESPONSE_RECEIVED")
         if used_response_format and response.status_code in {400, 422}:
             # The caller owns retry accounting.  Mark this adapter instance so
             # its next globally-budgeted attempt uses plain completion.
@@ -717,6 +739,9 @@ class AsyncModelAdapter(ModelAdapter):
         self._attempt_observer = kwargs.get("attempt_observer")
         self._generation_intent_id = kwargs.get("generation_intent_id")
         self._generation_run_id = kwargs.get("generation_run_id")
+        self._dispatch_ledger = kwargs.get("dispatch_ledger")
+        self._dispatch_control = kwargs.get("dispatch_control")
+        self._dispatch_permit_id = kwargs.get("dispatch_permit_id")
         self._use_response_format = True
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=self._timeout)
@@ -792,14 +817,17 @@ class AsyncModelAdapter(ModelAdapter):
         schema_bytes = len(json.dumps(response_format, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) if response_format else 0
         structured_output_mode = "json_schema" if isinstance(response_format, dict) and response_format.get("type") == "json_schema" else "json_object" if response_format else "none"
         try:
+            self._before_network()
             async with asyncio.timeout(self._overall_timeout):
                 response = await self._client.post(f"{self.base_url}{endpoint}", headers=headers, json=payload)
         except asyncio.TimeoutError as exc:
+            self._dispatch_event("TIMEOUT_AFTER_BOUNDARY")
             diagnostic = {"provider_request_started": True, "provider_request_completed": False, "upstream_response_received": False, "provider_error_source": "APPLICATION_OVERALL_DEADLINE", "provider_error_code": "NO_UPSTREAM_ERROR_CODE", "provider_http_status": None, "provider_exception_class": "TimeoutError", "provider_failure_stage": "application_overall_deadline", "provider_retryable": True, "provider_retry_after_seconds_if_present": None}
             self.last_safe_diagnostic = diagnostic
             self._emit_attempt(attempt_id=attempt_id, started_at=started_at, started_clock=started_clock, request_bytes=request_bytes, message_count=len(payload["messages"]), schema_bytes=schema_bytes, structured_output_mode=structured_output_mode, exception_at=datetime.now(timezone.utc), response_headers_observed=False, exception_class="TimeoutError", failure_stage="application_overall_deadline")
             raise ProviderCallError("timeout", "Provider request timed out.", True, safe_diagnostic=diagnostic) from exc
         except httpx.TimeoutException as exc:
+            self._dispatch_event("TIMEOUT_AFTER_BOUNDARY")
             subtype = type(exc).__name__
             stage = {"ConnectTimeout": "connect", "ReadTimeout": "read", "WriteTimeout": "write", "PoolTimeout": "pool"}.get(subtype, "unknown")
             safe_cause = type(exc)("Provider transport timeout.")
@@ -808,11 +836,13 @@ class AsyncModelAdapter(ModelAdapter):
             self._emit_attempt(attempt_id=attempt_id, started_at=started_at, started_clock=started_clock, request_bytes=request_bytes, message_count=len(payload["messages"]), schema_bytes=schema_bytes, structured_output_mode=structured_output_mode, exception_at=datetime.now(timezone.utc), response_headers_observed=False, exception_class=subtype, failure_stage=f"provider_transport_{stage}")
             raise ProviderCallError("timeout", "Provider request timed out.", True, safe_diagnostic=diagnostic) from safe_cause
         except httpx.RequestError as exc:
+            self._dispatch_event("TRANSPORT_ERROR_AFTER_BOUNDARY")
             diagnostic = {"provider_request_started": True, "provider_request_completed": False, "upstream_response_received": False, "provider_error_source": "UPSTREAM_CONNECTION_FAILURE", "provider_error_code": "NO_UPSTREAM_ERROR_CODE", "provider_http_status": None, "provider_exception_class": type(exc).__name__, "provider_failure_stage": "provider_transport", "provider_retryable": True}
             self.last_safe_diagnostic = diagnostic
             self._emit_attempt(attempt_id=attempt_id, started_at=started_at, started_clock=started_clock, request_bytes=request_bytes, message_count=len(payload["messages"]), schema_bytes=schema_bytes, structured_output_mode=structured_output_mode, exception_at=datetime.now(timezone.utc), response_headers_observed=False, exception_class=type(exc).__name__, failure_stage="provider_transport")
             raise ProviderCallError("network_error", "Provider request could not be completed.", True, safe_diagnostic=diagnostic) from exc
         self._emit_attempt(attempt_id=attempt_id, started_at=started_at, started_clock=started_clock, request_bytes=request_bytes, message_count=len(payload["messages"]), schema_bytes=schema_bytes, structured_output_mode=structured_output_mode, exception_at=None, response_headers_observed=True, exception_class=None, failure_stage="provider_http_response" if response.status_code >= 400 else None)
+        self._dispatch_event("PROVIDER_HTTP_ERROR_RECEIVED" if response.status_code >= 400 else "PROVIDER_RESPONSE_RECEIVED")
         if response.status_code >= 400:
             raise self._error_for_status(response)
         self.last_safe_diagnostic = {"provider_request_started": True, "provider_request_completed": True, "upstream_response_received": True, "upstream_http_status": response.status_code, "upstream_request_id": next((response.headers[name][:120] for name in ("x-request-id", "request-id") if response.headers.get(name)), "NO_UPSTREAM_REQUEST_ID"), "upstream_error_code": "NO_UPSTREAM_ERROR_CODE", "provider_exception_class": None, "provider_failure_stage": None, "retry_after_present": "retry-after" in response.headers, "response_body_length": len(response.content)}

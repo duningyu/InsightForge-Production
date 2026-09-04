@@ -71,6 +71,27 @@ class ProviderDispatchLedger:
         with self.database.connect() as cx:
             return self._insert_event(cx, permit_id, event_type, safe)
 
+    def permit_matches(self, permit_id: str, context: Any) -> bool:
+        """Validate an existing permit without creating or changing ledger state."""
+        with self.database.connect() as cx:
+            row = cx.execute(
+                """SELECT acceptance_execution_id, acceptance_window_id, beta_instance,
+                   provider, model, dispatch_ordinal FROM provider_dispatch_permits
+                   WHERE permit_id=?""", (permit_id,)
+            ).fetchone()
+        return bool(row and (row[0], row[1], row[2], row[3], row[4], row[5]) == (
+            context.acceptance_execution_id, context.window_id, context.beta_instance,
+            context.expected_provider, context.expected_model, context.dispatch_ordinal,
+        ))
+
+    def permit_for_execution(self, acceptance_execution_id: str) -> str | None:
+        with self.database.connect() as cx:
+            row = cx.execute(
+                "SELECT permit_id FROM provider_dispatch_permits WHERE acceptance_execution_id=?",
+                (acceptance_execution_id,),
+            ).fetchone()
+        return row[0] if row else None
+
     @staticmethod
     def _insert_event(cx: sqlite3.Connection, permit_id: str, event_type: str,
                       metadata: dict[str, Any] | None = None) -> str:
@@ -116,4 +137,3 @@ class ProviderDispatchLedger:
         if self.classify(acceptance_execution_id) is not DispatchClassification.NOT_YET_ATTEMPTED:
             return False, "EXECUTION_ALREADY_HAS_PERMIT_OR_EVIDENCE"
         return True, "SCOPED_GUARD_PASS"
-

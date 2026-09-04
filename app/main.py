@@ -86,6 +86,8 @@ from app.services.beta_feedback import BetaFeedbackService
 from app.services.beta_sessions import BetaSessionService
 from app.services.beta_usage import BetaUsageService
 from app.services.solution_generation_guard import SolutionGenerationGuard
+from app.services.provider_dispatch_ledger import ProviderDispatchLedger
+from app.services.dispatch_control import DispatchControlContext
 from app.services.retrieval_service import ProjectRetrievalService
 from app.services.sources import SourceService
 from app.services.generation import LLMDocumentGenerator, build_generator
@@ -180,6 +182,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             ExampleProjectSeeder(db).seed()
         LegacyMigrationService(db).migrate_all()
         application.state.db = db
+        application.state.provider_dispatch_ledger = ProviderDispatchLedger(db)
         application.state.settings = settings
         application.state.beta_context = beta_context
         application.state.solution_generation_guard = SolutionGenerationGuard(db)
@@ -232,6 +235,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                 before_provider_call=application.state.beta_usage.consume,
                 after_provider_failure=lambda operation, decision: application.state.beta_usage.release(decision),
                 attempt_observer=db.insert_provider_attempt,
+                dispatch_ledger=application.state.provider_dispatch_ledger,
             )
 
         application.state.structured_runtime = HybridStructuredRuntime(
@@ -250,6 +254,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                     before_provider_call=application.state.beta_usage.consume,
                     after_provider_failure=lambda operation, decision: application.state.beta_usage.release(decision),
                     attempt_observer=db.insert_provider_attempt,
+                    dispatch_ledger=application.state.provider_dispatch_ledger,
                 )
                 if settings.beta_mode and settings.beta_managed_mode
                 else None
@@ -274,6 +279,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                 run.project_id, actor="async_worker", managed_selection=selection,
                 generation_intent_id=run.generation_intent_id,
                 generation_run_id=run.generation_run_id,
+                dispatch_control=run.dispatch_control,
             )
             if selection:
                 result = {
@@ -845,7 +851,28 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
         x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
         x_managed_model_preference: str | None = Header(default=None, alias="X-Managed-Model-Preference"),
         x_generation_mode: str | None = Header(default=None, alias="X-Generation-Mode"),
+        x_acceptance_execution_id: str | None = Header(default=None, alias="X-Acceptance-Execution-Id"),
+        x_forward_ledger_epoch_id: str | None = Header(default=None, alias="X-Forward-Ledger-Epoch-Id"),
     ) -> dict[str, Any]:
+        if bool(x_acceptance_execution_id) != bool(x_forward_ledger_epoch_id):
+            return JSONResponse(status_code=422, content={
+                "error_code": "DISPATCH_CONTROL_CONTEXT_INCOMPLETE",
+                "message": "验收调度控制上下文不完整。",
+            })
+
+        def acceptance_dispatch_control(selection: Any | None) -> DispatchControlContext | None:
+            if not x_acceptance_execution_id:
+                return None
+            if selection is None or selection.family != "qwen" or selection.model_id != "qwen3.7-flash":
+                raise ValueError("DISPATCH_CONTROL_TARGET_MISMATCH")
+            return DispatchControlContext(
+                acceptance_execution_id=x_acceptance_execution_id,
+                forward_ledger_epoch_id=x_forward_ledger_epoch_id or "",
+                beta_instance="beta001",
+                expected_provider="bailian",
+                expected_model="qwen3.7-flash",
+            )
+
         if x_generation_mode == "async":
             participant_id = application.state.beta_context.participant_id
             managed_preference = x_managed_model_preference
@@ -860,6 +887,13 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                         "error_code": "UNKNOWN_MANAGED_MODEL",
                         "message": "请选择受支持的托管模型。",
                     })
+            try:
+                dispatch_control = acceptance_dispatch_control(selection)
+            except ValueError:
+                return JSONResponse(status_code=409, content={
+                    "error_code": "DISPATCH_CONTROL_TARGET_MISMATCH",
+                    "message": "验收调度目标与当前托管模型不一致。",
+                })
             idempotency_key = x_idempotency_key or f"web:{uuid.uuid4().hex}"
             try:
                 run = application.state.async_generation_repository.create_or_replay(
@@ -867,12 +901,18 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                     requested_model_preference=selection.preference.value if selection else managed_preference,
                     resolved_model_family=selection.family if selection else None,
                     resolved_model_id=selection.model_id if selection else None,
+                    dispatch_control=dispatch_control,
                 )
             except ValueError as error:
                 if str(error) == "IDEMPOTENCY_MODEL_MISMATCH":
                     return JSONResponse(status_code=409, content={
                         "error_code": "IDEMPOTENCY_MODEL_MISMATCH",
                         "message": "该生成请求已绑定其他模型，请重新生成。",
+                    })
+                if str(error) == "IDEMPOTENCY_DISPATCH_CONTROL_MISMATCH":
+                    return JSONResponse(status_code=409, content={
+                        "error_code": "IDEMPOTENCY_DISPATCH_CONTROL_MISMATCH",
+                        "message": "该生成请求已绑定其他验收调度上下文。",
                     })
                 raise
             if run.status in {"SUCCEEDED", "FAILED"}:
@@ -891,6 +931,13 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                     "error_code": "UNKNOWN_MANAGED_MODEL",
                     "message": "请选择受支持的托管模型。",
                 })
+        try:
+            dispatch_control = acceptance_dispatch_control(selection)
+        except ValueError:
+            return JSONResponse(status_code=409, content={
+                "error_code": "DISPATCH_CONTROL_TARGET_MISMATCH",
+                "message": "验收调度目标与当前托管模型不一致。",
+            })
         claim = application.state.solution_generation_guard.begin(
             participant_id, project_id, attempt_id,
             requested_model_preference=selection.preference.value if selection else None,
@@ -905,9 +952,13 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             application.state.solution_generation_guard.mark_provider_call(
                 participant_id, project_id, attempt_id
             )
-            result = application.state.solution_design.generate(
-                project_id, actor=x_actor, managed_selection=selection
-            )
+            generate_kwargs = {
+                "actor": x_actor,
+                "managed_selection": selection,
+            }
+            if dispatch_control is not None:
+                generate_kwargs["dispatch_control"] = dispatch_control
+            result = application.state.solution_design.generate(project_id, **generate_kwargs)
             if selection:
                 result = {**result, "requested_model_preference": selection.preference.value,
                           "resolved_model_family": selection.family, "resolved_model_id": selection.model_id}

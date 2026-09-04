@@ -852,6 +852,17 @@ class Database:
 
     @classmethod
     def _migrate_schema(cls, connection: sqlite3.Connection) -> None:
+        async_dispatch_columns = {
+            "acceptance_execution_id": "TEXT",
+            "forward_ledger_epoch_id": "TEXT",
+            "dispatch_beta_instance": "TEXT",
+            "dispatch_expected_provider": "TEXT",
+            "dispatch_expected_model": "TEXT",
+            "dispatch_ordinal": "INTEGER",
+            "strict_at_most_once": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, definition in async_dispatch_columns.items():
+            cls._ensure_column(connection, "async_solution_generation_runs", column, definition)
         cls._ensure_column(connection, "projects", "current_snapshot_id", "TEXT")
         cls._ensure_column(connection, "projects", "project_origin", "TEXT NOT NULL DEFAULT 'user'")
         cls._ensure_column(connection, "projects", "exclude_from_beta_metrics", "INTEGER NOT NULL DEFAULT 0")

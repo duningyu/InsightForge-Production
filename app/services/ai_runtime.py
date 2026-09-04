@@ -10,6 +10,7 @@ from typing import Any, Callable, Literal, Protocol, runtime_checkable
 from app.errors import StructuredRuntimeRecoveryError, StructuredRuntimeUnavailableError
 from app.schemas import EvidenceRelationSetDraft, IdeaBriefDraft, QuickStartRequest, SolutionSetDraft
 from app.services.provider_adapters import AsyncModelAdapter, DEFAULT_PROVIDER_TIMEOUT, ModelAdapter, ProviderCallError
+from app.services.dispatch_control import DispatchControlContext
 
 RuntimeMode = Literal["llm_structured", "deterministic_demo", "managed_qwen"]
 
@@ -313,6 +314,7 @@ class ManagedQwenStructuredRuntime:
         after_provider_failure: Callable[[str, Any], Any] | None = None,
         attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
         timeout: Any = DEFAULT_PROVIDER_TIMEOUT,
+        dispatch_ledger: Any | None = None,
     ) -> None:
         if not api_key.strip():
             raise StructuredRuntimeUnavailableError("MANAGED_QWEN_API_KEY is required; no deterministic fallback was used")
@@ -326,9 +328,27 @@ class ManagedQwenStructuredRuntime:
         self._after_provider_failure = after_provider_failure
         self._attempt_observer = attempt_observer
         self._timeout = timeout
+        self._dispatch_ledger = dispatch_ledger
+
+    def _dispatch_kwargs(self, control: DispatchControlContext | None) -> dict[str, Any]:
+        if control is None:
+            return {}
+        control.validate(provider=self.provider, model=self.model, base_url=self._base_url)
+        if self._dispatch_ledger is None:
+            raise StructuredRuntimeUnavailableError("DISPATCH_LEDGER_REQUIRED")
+        permit_id = self._dispatch_ledger.acquire_permit(
+            acceptance_execution_id=control.acceptance_execution_id,
+            acceptance_window_id=control.window_id,
+            beta_instance=control.beta_instance, provider=control.expected_provider, model=control.expected_model,
+            authorization_reference=control.authorization_reference, quota_scope=control.quota_scope,
+        )
+        if permit_id is None:
+            raise StructuredRuntimeUnavailableError("DISPATCH_PERMIT_UNAVAILABLE")
+        return {"dispatch_ledger": self._dispatch_ledger, "dispatch_control": control, "dispatch_permit_id": permit_id}
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         self.model_rounds_used = 1
+        dispatch_control = kwargs.pop("dispatch_control", None)
         operation = {
             "design_solutions": "solution_generation",
             "analyze_evidence": "evidence_analysis",
@@ -346,6 +366,7 @@ class ManagedQwenStructuredRuntime:
             if self._attempt_observer is not None:
                 adapter_kwargs["attempt_observer"] = self._attempt_observer
             adapter_kwargs["timeout"] = self._timeout
+            adapter_kwargs.update(self._dispatch_kwargs(dispatch_control))
             adapter = self._adapter_factory(**adapter_kwargs)
         except Exception as exc:
             if operation is not None and self._after_provider_failure is not None:
@@ -386,6 +407,7 @@ class ManagedQwenStructuredRuntime:
 
     async def _call_async(self, method: str, *args: Any, **kwargs: Any) -> Any:
         self.model_rounds_used = 1
+        dispatch_control = kwargs.pop("dispatch_control", None)
         operation = {"design_solutions": "solution_generation", "analyze_evidence": "evidence_analysis"}.get(method)
         reservation = None
         if operation is not None and self._before_provider_call is not None:
@@ -401,6 +423,7 @@ class ManagedQwenStructuredRuntime:
                 adapter_kwargs["generation_run_id"] = generation_run_id
             if self._attempt_observer is not None:
                 adapter_kwargs["attempt_observer"] = self._attempt_observer
+            adapter_kwargs.update(self._dispatch_kwargs(dispatch_control))
             adapter = self._async_adapter_factory(**adapter_kwargs)
             async_method = getattr(adapter, f"{method}_async")
             result = await async_method(*args, **kwargs)
@@ -435,16 +458,16 @@ class ManagedQwenStructuredRuntime:
     def interpret_idea(self, request: QuickStartRequest) -> IdeaBriefDraft:
         return self._call("interpret_idea", request)
 
-    def design_solutions(self, brief: IdeaBriefDraft) -> SolutionSetDraft:
-        return self._call("design_solutions", brief)
+    def design_solutions(self, brief: IdeaBriefDraft, *, dispatch_control: DispatchControlContext | None = None) -> SolutionSetDraft:
+        return self._call("design_solutions", brief, dispatch_control=dispatch_control)
 
     def analyze_evidence(
         self, *, claim: dict[str, Any], chunks: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         return self._call("analyze_evidence", claim=claim, chunks=chunks)
 
-    async def async_design_solutions(self, brief: IdeaBriefDraft, *, generation_intent_id: str | None = None, generation_run_id: str | None = None) -> SolutionSetDraft:
-        return await self._call_async("design_solutions", brief, _generation_intent_id=generation_intent_id, _generation_run_id=generation_run_id)
+    async def async_design_solutions(self, brief: IdeaBriefDraft, *, generation_intent_id: str | None = None, generation_run_id: str | None = None, dispatch_control: DispatchControlContext | None = None) -> SolutionSetDraft:
+        return await self._call_async("design_solutions", brief, dispatch_control=dispatch_control, _generation_intent_id=generation_intent_id, _generation_run_id=generation_run_id)
 
     async def async_interpret_idea(self, request: QuickStartRequest) -> IdeaBriefDraft:
         return await self._call_async("interpret_idea", request)
@@ -465,7 +488,8 @@ class ManagedModelStructuredRuntime(ManagedQwenStructuredRuntime):
                  before_provider_call: Callable[[str], Any] | None = None,
                  after_provider_failure: Callable[[str, Any], Any] | None = None,
                  attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
-                 timeout: Any = DEFAULT_PROVIDER_TIMEOUT) -> None:
+                 timeout: Any = DEFAULT_PROVIDER_TIMEOUT,
+                 dispatch_ledger: Any | None = None) -> None:
         super().__init__(
             model=model,
             api_key=api_key,
@@ -477,6 +501,7 @@ class ManagedModelStructuredRuntime(ManagedQwenStructuredRuntime):
             after_provider_failure=after_provider_failure,
             attempt_observer=attempt_observer,
             timeout=timeout,
+            dispatch_ledger=dispatch_ledger,
         )
 
 
@@ -490,6 +515,7 @@ def build_structured_runtime(
     after_provider_failure: Callable[[str, Any], Any] | None = None,
     attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
     base_url: str | None = None,
+    dispatch_ledger: Any | None = None,
 ) -> StructuredAIRuntime:
     selected = mode or os.getenv("INSIGHTFORGE_STRUCTURED_AI_MODE", "deterministic_demo")
     if selected == "llm_structured":
@@ -520,6 +546,7 @@ def build_structured_runtime(
             after_provider_failure=after_provider_failure,
             base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
             attempt_observer=attempt_observer,
+            dispatch_ledger=dispatch_ledger,
         )
     if selected == "managed_model":
         resolved_key = api_key or os.getenv("MANAGED_BAILIAN_API_KEY") or os.getenv("MANAGED_QWEN_API_KEY")
@@ -535,5 +562,6 @@ def build_structured_runtime(
             after_provider_failure=after_provider_failure,
             base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
             attempt_observer=attempt_observer,
+            dispatch_ledger=dispatch_ledger,
         )
     raise StructuredRuntimeUnavailableError(f"UNKNOWN_STRUCTURED_AI_MODE: {selected}")

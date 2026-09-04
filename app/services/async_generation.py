@@ -16,6 +16,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from app.db import Database
+from app.services.dispatch_control import DispatchControlContext
 
 
 def _now() -> str:
@@ -37,6 +38,7 @@ class AsyncRun:
     request_count: int
     replay_count: int
     provider_call_count: int
+    dispatch_control: DispatchControlContext | None = None
 
     def public(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -79,12 +81,22 @@ class AsyncGenerationRepository:
             resolved_model_id=row["resolved_model_id"],
             request_count=row["request_count"], replay_count=row["replay_count"],
             provider_call_count=row["provider_call_count"],
+            dispatch_control=(DispatchControlContext(
+                acceptance_execution_id=row["acceptance_execution_id"],
+                forward_ledger_epoch_id=row["forward_ledger_epoch_id"],
+                beta_instance=row["dispatch_beta_instance"],
+                expected_provider=row["dispatch_expected_provider"],
+                expected_model=row["dispatch_expected_model"],
+                dispatch_ordinal=row["dispatch_ordinal"] or 1,
+                strict_at_most_once=bool(row["strict_at_most_once"]),
+            ) if row["acceptance_execution_id"] else None),
         )
 
     def create_or_replay(
         self, participant_id: str, project_id: str, idempotency_key: str,
         *, requested_model_preference: str | None = None,
         resolved_model_family: str | None = None, resolved_model_id: str | None = None,
+        dispatch_control: DispatchControlContext | None = None,
     ) -> AsyncRun:
         participant = participant_id or "default"
         with self.db.connect() as connection:
@@ -115,6 +127,17 @@ class AsyncGenerationRepository:
                      idempotency_key, "PENDING", requested_model_preference,
                      resolved_model_family, resolved_model_id, intent_id, _now()),
                 )
+                if dispatch_control is not None:
+                    connection.execute(
+                        """UPDATE async_solution_generation_runs SET
+                        acceptance_execution_id=?, forward_ledger_epoch_id=?, dispatch_beta_instance=?,
+                        dispatch_expected_provider=?, dispatch_expected_model=?, dispatch_ordinal=?, strict_at_most_once=?
+                        WHERE generation_run_id=?""",
+                        (dispatch_control.acceptance_execution_id, dispatch_control.forward_ledger_epoch_id,
+                         dispatch_control.beta_instance, dispatch_control.expected_provider,
+                         dispatch_control.expected_model, dispatch_control.dispatch_ordinal,
+                         int(dispatch_control.strict_at_most_once), run_id),
+                    )
                 connection.execute(
                     "UPDATE solution_generation_intents SET generation_run_id=? WHERE id=?",
                     (run_id, intent_id),
@@ -123,6 +146,9 @@ class AsyncGenerationRepository:
                     "SELECT * FROM async_solution_generation_runs WHERE generation_run_id=?", (run_id,)
                 ).fetchone()
             else:
+                existing_context = self._row(row).dispatch_control
+                if dispatch_control is not None and existing_context != dispatch_control:
+                    raise ValueError("IDEMPOTENCY_DISPATCH_CONTROL_MISMATCH")
                 if row["resolved_model_id"] and resolved_model_id and row["resolved_model_id"] != resolved_model_id:
                     raise ValueError("IDEMPOTENCY_MODEL_MISMATCH")
                 connection.execute(

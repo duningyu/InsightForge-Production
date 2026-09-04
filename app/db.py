@@ -713,6 +713,40 @@ CREATE TABLE IF NOT EXISTS beta_daily_usage (
     updated_at TEXT NOT NULL,
     PRIMARY KEY(participant_id, usage_date, operation_type)
 );
+CREATE TABLE IF NOT EXISTS provider_dispatch_epochs (
+    epoch_id TEXT PRIMARY KEY,
+    acceptance_window_id TEXT NOT NULL UNIQUE,
+    checkpoint_at TEXT NOT NULL,
+    historical_authorized_dispatches INTEGER NOT NULL CHECK(historical_authorized_dispatches >= 0),
+    historical_unresolved_intents INTEGER NOT NULL CHECK(historical_unresolved_intents >= 0),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_dispatch_permits (
+    permit_id TEXT PRIMARY KEY,
+    acceptance_execution_id TEXT NOT NULL,
+    acceptance_window_id TEXT NOT NULL,
+    beta_instance TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    dispatch_ordinal INTEGER NOT NULL CHECK(dispatch_ordinal = 1),
+    authorization_reference TEXT NOT NULL,
+    quota_scope TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(acceptance_execution_id, dispatch_ordinal)
+);
+CREATE TABLE IF NOT EXISTS provider_dispatch_events (
+    event_id TEXT PRIMARY KEY,
+    permit_id TEXT NOT NULL REFERENCES provider_dispatch_permits(permit_id),
+    event_type TEXT NOT NULL CHECK(event_type IN (
+        'PERMIT_ACQUIRED', 'CALL_BOUNDARY_ENTERED', 'PROVIDER_RESPONSE_RECEIVED',
+        'PROVIDER_HTTP_ERROR_RECEIVED', 'TRANSPORT_ERROR_AFTER_BOUNDARY',
+        'TIMEOUT_AFTER_BOUNDARY', 'CANCELLED_AFTER_BOUNDARY', 'COMPLETED'
+    )),
+    observed_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_provider_dispatch_events_permit
+    ON provider_dispatch_events(permit_id, observed_at);
 """
 
 

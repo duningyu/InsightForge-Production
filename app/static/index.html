@@ -205,10 +205,12 @@
             </div>
             <div id="evidence-claims-panel" class="evidence-panel"><div id="evidence-content"></div></div>
             <div id="evidence-impact-panel" class="evidence-panel hidden"><div id="impact-content"></div></div>
-            <div id="evidence-sources-panel" class="evidence-panel hidden">
-              <div class="secondary-panel">
-                <div class="secondary-panel-heading"><div><strong>项目资料库</strong><p>资料进入后仍要经过 Claim 关系与 exact-span 校验；上传本身不等于支持某个判断。</p></div><button id="analyze-evidence-button" class="button button-secondary" type="button">分析资料影响</button></div>
-                <form id="add-evidence-form" class="evidence-form">
+              <div id="evidence-sources-panel" class="evidence-panel hidden">
+                <div class="secondary-panel">
+                  <div class="secondary-panel-heading"><div><strong>项目资料库</strong><p>资料进入后仍要经过 Claim 关系与 exact-span 校验；上传本身不等于支持某个判断。</p></div><button id="analyze-evidence-button" class="button button-secondary" type="button">分析资料影响</button></div>
+                  <div id="evidence-entry-guidance" class="evidence-entry-guidance"></div>
+                  <details class="technical-details"><summary>兼容模式：按内部类型添加资料</summary>
+                  <form id="add-evidence-form" class="evidence-form">
                   <label>标题<input id="evidence-title" maxlength="200" required placeholder="例如：店主访谈 #03"></label>
                   <label>来源类型
                     <select id="evidence-source-type">
@@ -221,16 +223,18 @@
                   </label>
                   <label class="evidence-content-field">内容<textarea id="evidence-text" rows="5" maxlength="2000000" required placeholder="粘贴访谈原话、公开资料摘录或实现证据。"></textarea></label>
                   <button class="button button-primary" type="submit">添加证据</button>
-                </form>
+                  </form>
+                  </details>
                 <div id="source-list"></div>
               </div>
             </div>
           </section>
           <section id="documents-view" class="workspace-view hidden" data-workspace-view="documents">
             <div class="section-heading"><div><p class="eyebrow">DOCUMENTS</p><h2>正式文档</h2><p>PRD / TechDoc 来自当前确认的项目成果；编辑会先自动保存为草稿，正式保存始终创建新版本。</p></div></div>
-            <div id="documents-content"></div>
-            <section class="document-editor-shell" aria-labelledby="document-editor-title">
-              <div class="document-editor-toolbar">
+              <div id="documents-content"></div>
+              <section class="document-editor-shell" aria-labelledby="document-editor-title">
+                <div id="document-workspace-error" class="document-warning hidden" role="alert"></div>
+                <div class="document-editor-toolbar">
                 <div><strong id="document-editor-title">在线编辑</strong><span id="document-autosave-status" class="muted">选择文档版本后开始编辑</span></div>
                 <div class="document-editor-controls">
                   <label>文档<select id="document-editor-type"><option value="prd">PRD</option><option value="techdoc">TechDoc</option></select></label>

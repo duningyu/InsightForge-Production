@@ -33,7 +33,8 @@ const state = {
   betaConsented: false,
   betaConsentVersion: 1,
   history: {q: "", status: "all", sort: "updated_at", order: "desc", page: 1, pageSize: 10, pages: 1, total: 0, items: []},
-  documentWorkspace: {docType: "prd", versions: [], selectedVersionId: null, compareVersionId: null, draft: null, autosaveTimer: null, dirty: false},
+  documentWorkspace: {docType: "prd", versions: [], selectedVersionId: null, compareVersionId: null, draft: null, autosaveTimer: null, dirty: false, error: null},
+  evidenceEntry: {mode: null, submitting: false, pending: false},
 };
 
 const qs = (selector, root = document) => root.querySelector(selector);
@@ -204,6 +205,9 @@ function reportError(error) {
     toast(error.message || "Provider 已返回结果，但应用校验未通过；本次生成额度已释放，未自动重试。请明确发起新的生成。", 4500);
     return;
   }
+  if (error?.code === "PROVIDER_FAILURE") { toast(error.message || "AI 服务未能完成本次请求；未自动重试。", 4500); return; }
+  if (error?.code === "GENERATION_PENDING") { toast(error.message || "本次生成仍在处理中，请稍候查看结果。", 4000); return; }
+  if (error?.code === "IDEMPOTENT_REPLAY") { toast(error.message || "已找到这次操作的已有结果，不会重复发起生成。", 4000); return; }
   if (error?.code === "BETA_DAILY_LIMIT_REACHED" || error?.payload?.blocked_operation) {
     const operation = error?.payload?.operation_type || error?.payload?.blocked_operation;
     toast(error.message || `${operation} 今日额度已用尽；其他操作额度不受影响。`);
@@ -293,6 +297,23 @@ function sourceTypeLabel(value) {
   })[value] || value;
 }
 
+const STATUS_PRESENTATION = {
+  draft: {label: "草稿", next: "继续编辑并运行检查"},
+  approved: {label: "已批准", next: "只能基于此版本交接；修改会创建新草稿"},
+  archived: {label: "已归档", next: "如需继续编辑，请恢复为新版本"},
+  passed: {label: "检查通过", next: "等待人工确认"},
+  failed: {label: "检查未通过", next: "查看校验提示并修改草稿"},
+  not_run: {label: "尚未检查", next: "先运行文档检查"},
+  current: {label: "当前有效", next: "可用于交接"},
+  stale: {label: "需要重新检查", next: "证据或依赖已变化"},
+  released: {label: "额度已释放", next: "本次操作未扣除用户额度"},
+  committed: {label: "额度已结算", next: "本次操作已计入用户额度"},
+};
+
+function statusPresentation(value) {
+  return STATUS_PRESENTATION[value] || {label: "状态待确认", next: "查看技术详情或联系操作员"};
+}
+
 function showQuickStart() {
   secureSettingsExit();
   qs("#quick-start-view").classList.remove("hidden");
@@ -329,6 +350,7 @@ function showModelSettings() {
 }
 
 function activateView(view) {
+  const previousView = state.activeView;
   secureSettingsExit();
   state.activeView = view;
   qsa(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
@@ -336,6 +358,7 @@ function activateView(view) {
   qs("#primary-nav").classList.remove("open");
   qs("#mobile-nav-button").setAttribute("aria-expanded", "false");
   if (view === "snapshot" && state.currentProjectId) trackBetaEventOnce(`snapshot:${state.currentProjectId}`, "snapshot_viewed", {}, state.currentProjectId);
+  if (view === "documents" && previousView !== view && state.currentProjectId) loadDocuments().catch(reportError);
 }
 
 const GUIDANCE_ACTION_FIELDS = ["code", "title", "reason", "view", "control_id"];
@@ -926,12 +949,62 @@ function renderImpactHistory() {
 }
 
 function renderSourceLibrary() {
-  qs("#source-list").innerHTML = (state.sources || []).map((source) => `<article class="source-row"><div><strong>${escapeHtml(source.title)}</strong><small>${escapeHtml(sourceTypeLabel(source.source_type))}</small></div><span>${escapeHtml(source.status)}</span></article>`).join("") || "<p class=\"muted\">暂无资料。添加资料后，还需要运行影响分析才能形成 Evidence → Claim 关系。</p>";
+  qs("#source-list").innerHTML = (state.sources || []).map((source) => {
+    const metadata = source.metadata || {};
+    const guidance = metadata.needs_confirmation ? "待确认来源" : "已记录来源";
+    const limits = Array.isArray(metadata.limitations) ? metadata.limitations.join("；") : "";
+    const status = source.status || "unknown";
+    const readableStatus = statusPresentation(status);
+    return `<article class="source-row"><div><strong>${escapeHtml(source.title)}</strong><small>${escapeHtml(sourceTypeLabel(source.source_type))} · ${escapeHtml(guidance)}</small>${limits ? `<small>边界：${escapeHtml(limits)}</small>` : ""}</div><span>${escapeHtml(readableStatus.label)}</span><details class="technical-details"><summary>技术详情</summary><code>${escapeHtml(status)}</code><span>${escapeHtml(readableStatus.next)}</span></details></article>`;
+  }).join("") || "<p class=\"muted\">暂无资料。添加资料后，还需要运行影响分析才能形成 Evidence → Claim 关系。</p>";
+}
+
+function renderEvidenceEntryGuidance() {
+  const panel = qs("#evidence-entry-guidance");
+  if (!panel) return;
+  const mode = state.evidenceEntry.mode;
+  if (!mode) {
+    panel.innerHTML = `<div class="evidence-entry-options"><button class="button button-secondary" data-evidence-entry="public_search" type="button">让 AI 帮我找公开资料</button><button class="button button-secondary" data-evidence-entry="own_material" type="button">我有自己的资料</button><button class="button button-quiet" data-evidence-entry="no_evidence" type="button">暂时没有，先继续</button></div><p class="muted">先选择资料入口；来源确认和项目校验仍由你决定。</p>`;
+    return;
+  }
+  if (mode === "public_search") {
+    panel.innerHTML = `<div class="evidence-entry-choice"><strong>公开资料候选</strong><p>当前未配置公开搜索后端。这里不会伪造搜索结果，也不会把模型生成的网址当成已检索事实。</p><small>后续接入搜索后，只会先展示候选来源和获取时间；你确认前不会进入正式项目 RAG。</small><button class="button button-quiet" data-evidence-entry="reset" type="button">返回入口选择</button></div>`;
+    return;
+  }
+  if (mode === "no_evidence") {
+    state.evidenceEntry.pending = true;
+    panel.innerHTML = `<div class="evidence-entry-choice"><strong>先不添加资料</strong><p>可以继续形成草稿，但相关判断会明确标记为待验证，不会被写成市场事实，也不会自动绕过校验、批准或交接。</p><button class="button button-quiet" data-evidence-entry="reset" type="button">返回入口选择</button></div>`;
+    return;
+  }
+  panel.innerHTML = `<form id="guided-evidence-form" class="evidence-form"><div class="evidence-entry-choice"><strong>添加自己的资料</strong><p>请用自然语言描述来源；系统会保留来源说明和真实性核验边界。</p><label>标题<input id="guided-source-title" maxlength="200" required placeholder="例如：客户反馈摘要 #01"></label><label>资料类型<select id="guided-source-origin"><option value="owner_input">我自己的判断或资料</option><option value="real_interview">真实访谈（仍需核验）</option><option value="official_page">官方页面</option><option value="public_report">公开报告</option><option value="unknown">其他/待确认</option></select></label><label>简短说明和内容<textarea id="guided-source-content" rows="5" maxlength="2000000" required placeholder="说明这份资料是什么、来自哪里，以及它支持或削弱什么判断。"></textarea></label><button class="button button-primary" type="submit">添加为待校验资料</button><button class="button button-quiet" data-evidence-entry="reset" type="button">返回入口选择</button></div></form>`;
+}
+
+function selectEvidenceEntry(mode) {
+  state.evidenceEntry.mode = mode === "reset" ? null : mode;
+  renderEvidenceEntryGuidance();
+  qs("#guided-evidence-form")?.addEventListener("submit", addGuidedEvidence);
+  qsa("[data-evidence-entry]").forEach((button) => button.addEventListener("click", () => selectEvidenceEntry(button.dataset.evidenceEntry)));
+}
+
+async function addGuidedEvidence(event) {
+  event.preventDefault();
+  if (!state.currentProjectId || state.evidenceEntry.submitting) return;
+  state.evidenceEntry.submitting = true;
+  const payload = {title: qs("#guided-source-title").value.trim(), origin_kind: qs("#guided-source-origin").value, content: qs("#guided-source-content").value.trim(), filename: "guided_evidence.txt"};
+  try {
+    const result = await api(`/api/projects/${state.currentProjectId}/sources/guided`, {method: "POST", body: JSON.stringify(payload)});
+    state.evidenceEntry = {mode: null, submitting: false, pending: false};
+    await Promise.all([loadEvidenceData(), loadProjectNextAction()]);
+    toast(result?.guidance?.needs_confirmation ? "资料已记录为待确认来源；它不会自动证明访谈或需求已经验证。" : "资料已记录；请继续完成 Claim 关系和范围校验。");
+  } catch (error) { state.evidenceEntry.submitting = false; reportError(error); }
 }
 
 function renderEvidence() {
   renderEvidenceClaims();
   renderImpactHistory();
+  renderEvidenceEntryGuidance();
+  qs("#guided-evidence-form")?.addEventListener("submit", addGuidedEvidence);
+  qsa("[data-evidence-entry]").forEach((button) => button.addEventListener("click", () => selectEvidenceEntry(button.dataset.evidenceEntry)));
   renderSourceLibrary();
   setEvidenceTab(state.evidenceTab);
 }
@@ -1000,6 +1073,22 @@ function renderDocumentWorkspace() {
   const list = qs("#document-version-list");
   if (!editor || !list) return;
   const workspace = state.documentWorkspace;
+  const errorNode = qs("#document-workspace-error");
+  if (workspace.error) {
+    if (errorNode) {
+      errorNode.classList.remove("hidden");
+      errorNode.innerHTML = `<strong>文档版本暂时无法加载</strong><span>${escapeHtml(workspace.error.message)}</span><details class="technical-details"><summary>技术详情</summary><code>${escapeHtml(workspace.error.code)}</code></details>`;
+    }
+    editor.value = "";
+    editor.disabled = true;
+    list.innerHTML = `<div class="empty-state"><p>未加载到可编辑版本，请稍后重试。</p></div>`;
+    qs("#document-save-version").disabled = true;
+    qs("#document-validate-selected").disabled = true;
+    qs("#document-restore-selected").disabled = true;
+    qs("#document-export-selected").disabled = true;
+    return;
+  }
+  errorNode?.classList.add("hidden");
   const selected = selectedDocumentVersion();
   const draftMatches = workspace.draft && selected && workspace.draft.base_version_id === selected.id;
   const expectedContent = draftMatches ? workspace.draft.content : selected?.content || "";
@@ -1021,8 +1110,12 @@ function renderDocumentWorkspace() {
     const selectedClass = version.id === workspace.selectedVersionId ? " selected" : "";
     const compareClass = version.id === workspace.compareVersionId ? " compare" : "";
     const health = version.artifact_health?.health_status || "unknown";
+    const lifecycle = statusPresentation(version.status || "draft");
+    const validation = statusPresentation(version.validation_status || "not_run");
+    const healthCopy = statusPresentation(health);
     return `<article class="document-version-row${selectedClass}${compareClass}">
-      <div><strong>v${escapeHtml(version.version)}</strong><span>${escapeHtml(version.status || "draft")} · ${escapeHtml(version.validation_status || "not_run")} · ${escapeHtml(health)}</span><small>${escapeHtml(formatProjectDate(version.created_at))}</small></div>
+      <div><strong>v${escapeHtml(version.version)}</strong><span>${escapeHtml(lifecycle.label)} · ${escapeHtml(validation.label)} · ${escapeHtml(healthCopy.label)}</span><small>${escapeHtml(formatProjectDate(version.created_at))}</small></div>
+      <details class="technical-details"><summary>技术详情</summary><code>${escapeHtml(JSON.stringify({status: version.status || "draft", validation_status: version.validation_status || "not_run", health_status: health}))}</code></details>
       <div class="document-version-actions"><button class="button button-secondary" type="button" data-doc-select="${escapeHtml(version.id)}">编辑/查看</button><button class="button button-quiet" type="button" data-doc-compare="${escapeHtml(version.id)}">${version.id === workspace.compareVersionId ? "取消对比" : "设为对比"}</button></div>
     </article>`;
   }).join("") : `<div class="empty-state"><p>当前 ${escapeHtml(workspace.docType.toUpperCase())} 还没有正式版本。</p></div>`;
@@ -1048,10 +1141,20 @@ async function loadDocumentWorkspace(docType = state.documentWorkspace.docType) 
   if (!state.currentProjectId) return;
   const workspace = state.documentWorkspace;
   workspace.docType = docType;
+  workspace.error = null;
   qs("#document-editor-type").value = docType;
   try {
     workspace.versions = await api(`/api/projects/${state.currentProjectId}/documents/${docType}/versions`);
-  } catch (_) { workspace.versions = []; }
+  } catch (error) {
+    workspace.versions = [];
+    workspace.selectedVersionId = null;
+    workspace.compareVersionId = null;
+    workspace.draft = null;
+    workspace.dirty = false;
+    workspace.error = {code: error.code || "DOCUMENT_VERSION_LOAD_FAILED", message: error.message || "无法加载文档版本"};
+    renderDocumentWorkspace();
+    return;
+  }
   if (!workspace.versions.some((version) => version.id === workspace.selectedVersionId)) {
     workspace.selectedVersionId = workspace.versions[0]?.id || null;
     workspace.compareVersionId = workspace.versions[1]?.id || null;
@@ -1059,7 +1162,10 @@ async function loadDocumentWorkspace(docType = state.documentWorkspace.docType) 
   try {
     const draftPath = DOCUMENT_DRAFT_PATHS[docType];
     workspace.draft = await api(`/api/projects/${state.currentProjectId}${draftPath}`);
-  } catch (_) { workspace.draft = null; }
+  } catch (error) {
+    if (error.status === 404) workspace.draft = null;
+    else workspace.error = {code: error.code || "DOCUMENT_DRAFT_LOAD_FAILED", message: error.message || "无法加载文档草稿"};
+  }
   workspace.dirty = false;
   const editor = qs("#document-editor");
   if (editor) editor.dataset.loadedVersionId = "";
@@ -1393,7 +1499,7 @@ async function loadProject(projectId) {
     state.generationTerminalFailure = false;
   }
   state.currentProjectId = projectId;
-  state.documentWorkspace = {...state.documentWorkspace, versions: [], selectedVersionId: null, compareVersionId: null, draft: null, dirty: false};
+  state.documentWorkspace = {...state.documentWorkspace, versions: [], selectedVersionId: null, compareVersionId: null, draft: null, dirty: false, error: null};
   renderProjectPicker();
   showProjectShell();
   try { state.ideaBrief = await api(`/api/projects/${projectId}/idea-brief`); } catch (_) { state.ideaBrief = null; }
@@ -1577,6 +1683,7 @@ function wireEvents() {
   qsa(".nav-item").forEach((button) => button.addEventListener("click", () => activateView(button.dataset.view)));
   qsa("[data-evidence-tab]").forEach((button) => button.addEventListener("click", () => setEvidenceTab(button.dataset.evidenceTab)));
   qs("#add-evidence-form")?.addEventListener("submit", addEvidence);
+  qs("#guided-evidence-form")?.addEventListener("submit", addGuidedEvidence);
   qs("#analyze-evidence-button")?.addEventListener("click", analyzeEvidence);
   qs("#mobile-nav-button").addEventListener("click", () => {
     secureSettingsExit();
@@ -1602,6 +1709,11 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     generateSolutions,
     isRecoveryPayload,
     renderRuntimeDisclosure,
+    loadDocumentWorkspace,
+    renderDocumentWorkspace,
+    renderEvidenceEntryGuidance,
+    selectEvidenceEntry,
+    addGuidedEvidence,
     createGuidanceNavigator,
     parseGuidanceAction,
     renderImpactHistory,

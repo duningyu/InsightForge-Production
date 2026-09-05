@@ -1,0 +1,95 @@
+{
+  "manifest_version": "2026-09-05-beta003-reproducible",
+  "deployment_type": "TAILSCALE_FUNNEL_CLOSED_BETA",
+  "instance": "beta003",
+  "service": "beta003",
+  "container_name": "beta-beta003-1",
+  "image": {
+    "reference": "insightforge-beta:p0-hotfix-92f13c2",
+    "image_id": "sha256:2174eaef9c815861c7282bd62bcc1a4b7805ecacb162699f105c595a2779d35e",
+    "source_label": "92f13c213612ed672ee10dc9f55370ccc5d16660"
+  },
+  "compose": {
+    "base": "deploy/beta/docker-compose.yml",
+    "override": "deploy/beta/docker-compose.beta003.yml",
+    "image_variable": "INSIGHTFORGE_BETA003_IMAGE"
+  },
+  "ports": {
+    "local_backend": "127.0.0.1:18003",
+    "container": 8000,
+    "funnel_public_port": 10000
+  },
+  "volumes": [
+    {
+      "name": "beta_beta003_data",
+      "container_destination": "/data",
+      "purpose": "SQLite database and instance data",
+      "read_write": true
+    },
+    {
+      "name": "beta_beta003_runtime",
+      "container_destination": "/runtime",
+      "purpose": "instance runtime artifacts",
+      "read_write": true
+    }
+  ],
+  "runtime": {
+    "command": "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000",
+    "working_directory": "/app",
+    "restart_policy": "unless-stopped",
+    "healthcheck": {
+      "command": "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)\" || exit 1",
+      "interval_seconds": 30,
+      "timeout_seconds": 5,
+      "start_period_seconds": 10,
+      "retries": 3
+    },
+    "network": "bridge",
+    "managed_mode": true,
+    "provider": "bailian",
+    "model": "qwen3.7-flash",
+    "quota_timezone": "Asia/Shanghai",
+    "quota_contract": "existing per-user daily operation limits",
+    "database_path": "/data/insightforge.sqlite3",
+    "runtime_path": "/runtime",
+    "non_secret_environment": {
+      "BETA_MODE": "true",
+      "BETA_MANAGED_MODE": "true",
+      "BETA_RELEASE_ID": "92f13c2",
+      "BETA_PARTICIPANT_ID": "beta_003",
+      "BETA_TIMEZONE": "Asia/Shanghai",
+      "INSIGHTFORGE_DATABASE_PATH": "/data/insightforge.sqlite3",
+      "RUNTIME_DIR": "/runtime",
+      "INSIGHTFORGE_CREDENTIAL_BACKEND": "environment",
+      "MANAGED_QWEN_MODEL": "qwen3.7-flash"
+    },
+    "secret_environment_keys": [
+      "MANAGED_QWEN_API_KEY"
+    ]
+  },
+  "secret_references": {
+    "provider_key_environment": "MANAGED_QWEN_API_KEY",
+    "participant_auth_reference": "private/beta003_INVITE.txt",
+    "external_private_source": "E:/AI_Projects/_deploy/insightforge_phase_b_lite_tailscale_v1/private/beta_invites_private.json"
+  },
+  "funnel": {
+    "hostname": "laptop-gvipqfsn.tail3eb67d.ts.net",
+    "public_url": "https://laptop-gvipqfsn.tail3eb67d.ts.net:10000",
+    "backend_target": "http://127.0.0.1:18003",
+    "auth_behavior": "existing participant auth boundary",
+    "tls_required": true,
+    "managed_by": "Windows host Tailscale Funnel"
+  },
+  "source_of_truth": [
+    "deploy/beta/docker-compose.yml",
+    "deploy/beta/docker-compose.beta003.yml",
+    "deployment/BETA003_DEPLOYMENT_SAFE.json",
+    "external private environment/secret source"
+  ],
+  "receipt_reconciliation": {
+    "current_runtime_authority": "running beta003 container plus deployment/BETA003_P0_HOTFIX_CANARY_RECEIPT.json",
+    "historical_rollout_receipt": "receipts/THREE_USER_CLOSED_BETA_ROLLOUT_RECEIPT.json",
+    "historical_image_source_difference": "historical rollout records fa03a1c; current beta003 hotfix records 92f13c2 and sha256:2174eaef9c815861c7282bd62bcc1a4b7805ecacb162699f105c595a2779d35e",
+    "resolution": "historical rollout state is preserved; current runtime contract is sourced from the running container and beta003 hotfix receipt"
+  }
+}

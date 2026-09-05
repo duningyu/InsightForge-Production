@@ -1,0 +1,35 @@
+services:
+  beta003:
+    image: ${INSIGHTFORGE_BETA003_IMAGE:-insightforge-beta:p0-hotfix-92f13c2}
+    restart: unless-stopped
+    environment:
+      BETA_MODE: "true"
+      BETA_MANAGED_MODE: "true"
+      BETA_RELEASE_ID: ${BETA003_RELEASE_ID:-92f13c2}
+      BETA_PARTICIPANT_ID: beta_003
+      BETA_TIMEZONE: ${BETA_TIMEZONE:-Asia/Shanghai}
+      INSIGHTFORGE_DATABASE_PATH: /data/insightforge.sqlite3
+      RUNTIME_DIR: /runtime
+      INSIGHTFORGE_CREDENTIAL_BACKEND: environment
+      MANAGED_QWEN_MODEL: qwen3.7-flash
+      MANAGED_QWEN_API_KEY: ${MANAGED_QWEN_API_KEY:?MANAGED_QWEN_API_KEY must be supplied by the external private environment}
+    volumes:
+      - beta_beta003_data:/data
+      - beta_beta003_runtime:/runtime
+    ports:
+      - "127.0.0.1:18003:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    labels:
+      com.insightforge.instance: beta003
+      com.insightforge.image-id: sha256:2174eaef9c815861c7282bd62bcc1a4b7805ecacb162699f105c595a2779d35e
+      com.insightforge.funnel-port: "10000"
+      com.insightforge.funnel-target: 127.0.0.1:18003
+
+volumes:
+  beta_beta003_data: {}
+  beta_beta003_runtime: {}

@@ -312,6 +312,7 @@ class ManagedQwenStructuredRuntime:
         async_adapter_factory: Any = AsyncModelAdapter,
         before_provider_call: Callable[[str], Any] | None = None,
         after_provider_failure: Callable[[str, Any], Any] | None = None,
+        after_provider_success: Callable[[str, Any], Any] | None = None,
         attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
         timeout: Any = DEFAULT_PROVIDER_TIMEOUT,
         dispatch_ledger: Any | None = None,
@@ -326,9 +327,32 @@ class ManagedQwenStructuredRuntime:
         self._async_adapter_factory = async_adapter_factory
         self._before_provider_call = before_provider_call
         self._after_provider_failure = after_provider_failure
+        self._after_provider_success = after_provider_success
+        self._pending_reservation: tuple[str, Any] | None = None
         self._attempt_observer = attempt_observer
         self._timeout = timeout
         self._dispatch_ledger = dispatch_ledger
+
+    def _remember_reservation(self, operation: str | None, reservation: Any) -> None:
+        if operation is not None and reservation is not None:
+            self._pending_reservation = (operation, reservation)
+
+    def _release_reservation(self, operation: str | None, reservation: Any) -> None:
+        if operation is not None and self._after_provider_failure is not None:
+            self._after_provider_failure(operation, reservation)
+        if self._pending_reservation is not None and self._pending_reservation[1] is reservation:
+            self._pending_reservation = None
+
+    def commit_current_reservation(self) -> None:
+        pending = self._pending_reservation
+        if pending is not None and self._after_provider_success is not None:
+            self._after_provider_success(*pending)
+        self._pending_reservation = None
+
+    def release_current_reservation(self) -> None:
+        pending = self._pending_reservation
+        if pending is not None:
+            self._release_reservation(*pending)
 
     def _dispatch_kwargs(self, control: DispatchControlContext | None) -> dict[str, Any]:
         if control is None:
@@ -358,6 +382,7 @@ class ManagedQwenStructuredRuntime:
             # Managed mode bypasses profile resolution; enforce quota at the
             # final boundary before the real provider adapter is constructed.
             reservation = self._before_provider_call(operation)
+            self._remember_reservation(operation, reservation)
         try:
             adapter_kwargs = dict(
                 provider=self.provider, model=self.model, api_key=self._api_key,
@@ -370,7 +395,7 @@ class ManagedQwenStructuredRuntime:
             adapter = self._adapter_factory(**adapter_kwargs)
         except Exception as exc:
             if operation is not None and self._after_provider_failure is not None:
-                self._after_provider_failure(operation, reservation)
+                self._release_reservation(operation, reservation)
             raise StructuredRuntimeUnavailableError("MANAGED_QWEN_CONFIGURATION_INVALID") from exc
         try:
             result = getattr(adapter, method)(*args, **kwargs)
@@ -378,7 +403,7 @@ class ManagedQwenStructuredRuntime:
             return result
         except ProviderCallError as exc:
             if operation is not None and self._after_provider_failure is not None:
-                self._after_provider_failure(operation, reservation)
+                self._release_reservation(operation, reservation)
             self.last_provider_diagnostic = dict(exc.safe_diagnostic)
             raise StructuredRuntimeRecoveryError(
                 error_code=f"MODEL_{exc.code.upper()}",
@@ -393,11 +418,11 @@ class ManagedQwenStructuredRuntime:
             ) from exc
         except StructuredRuntimeRecoveryError:
             if operation is not None and self._after_provider_failure is not None:
-                self._after_provider_failure(operation, reservation)
+                self._release_reservation(operation, reservation)
             raise
         except Exception as exc:
             if operation is not None and self._after_provider_failure is not None:
-                self._after_provider_failure(operation, reservation)
+                self._release_reservation(operation, reservation)
             raise StructuredRuntimeUnavailableError("MANAGED_QWEN_REQUEST_FAILED") from exc
         finally:
             try:
@@ -412,6 +437,7 @@ class ManagedQwenStructuredRuntime:
         reservation = None
         if operation is not None and self._before_provider_call is not None:
             reservation = self._before_provider_call(operation)
+            self._remember_reservation(operation, reservation)
         adapter = None
         try:
             generation_intent_id = kwargs.pop("_generation_intent_id", None)
@@ -431,7 +457,7 @@ class ManagedQwenStructuredRuntime:
             return result
         except ProviderCallError as exc:
             if operation is not None and self._after_provider_failure is not None:
-                self._after_provider_failure(operation, reservation)
+                self._release_reservation(operation, reservation)
             self.last_provider_diagnostic = dict(exc.safe_diagnostic)
             raise StructuredRuntimeRecoveryError(
                 error_code=f"MODEL_{exc.code.upper()}",
@@ -442,11 +468,11 @@ class ManagedQwenStructuredRuntime:
             ) from exc
         except StructuredRuntimeRecoveryError:
             if operation is not None and self._after_provider_failure is not None:
-                self._after_provider_failure(operation, reservation)
+                self._release_reservation(operation, reservation)
             raise
         except Exception as exc:
             if operation is not None and self._after_provider_failure is not None:
-                self._after_provider_failure(operation, reservation)
+                self._release_reservation(operation, reservation)
             raise StructuredRuntimeUnavailableError("MANAGED_QWEN_REQUEST_FAILED") from exc
         finally:
             if adapter is not None:
@@ -487,6 +513,7 @@ class ManagedModelStructuredRuntime(ManagedQwenStructuredRuntime):
                  async_adapter_factory: Any = AsyncModelAdapter,
                  before_provider_call: Callable[[str], Any] | None = None,
                  after_provider_failure: Callable[[str, Any], Any] | None = None,
+                 after_provider_success: Callable[[str, Any], Any] | None = None,
                  attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
                  timeout: Any = DEFAULT_PROVIDER_TIMEOUT,
                  dispatch_ledger: Any | None = None) -> None:
@@ -499,6 +526,7 @@ class ManagedModelStructuredRuntime(ManagedQwenStructuredRuntime):
             async_adapter_factory=async_adapter_factory,
             before_provider_call=before_provider_call,
             after_provider_failure=after_provider_failure,
+            after_provider_success=after_provider_success,
             attempt_observer=attempt_observer,
             timeout=timeout,
             dispatch_ledger=dispatch_ledger,
@@ -513,6 +541,7 @@ def build_structured_runtime(
     api_key: str | None = None,
     before_provider_call: Callable[[str], Any] | None = None,
     after_provider_failure: Callable[[str, Any], Any] | None = None,
+    after_provider_success: Callable[[str, Any], Any] | None = None,
     attempt_observer: Callable[[dict[str, Any]], Any] | None = None,
     base_url: str | None = None,
     dispatch_ledger: Any | None = None,
@@ -544,6 +573,7 @@ def build_structured_runtime(
             api_key=resolved_key,
             before_provider_call=before_provider_call,
             after_provider_failure=after_provider_failure,
+            after_provider_success=after_provider_success,
             base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
             attempt_observer=attempt_observer,
             dispatch_ledger=dispatch_ledger,
@@ -560,6 +590,7 @@ def build_structured_runtime(
             api_key=resolved_key,
             before_provider_call=before_provider_call,
             after_provider_failure=after_provider_failure,
+            after_provider_success=after_provider_success,
             base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
             attempt_observer=attempt_observer,
             dispatch_ledger=dispatch_ledger,

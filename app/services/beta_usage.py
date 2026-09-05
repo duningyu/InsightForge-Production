@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.db import Database
@@ -24,6 +25,8 @@ class UsageDecision:
     limit: int | None
     used: int
     reset_at: str | None
+    reservation_id: str | None = None
+    usage_date: str | None = None
 
 
 class BetaUsageService:
@@ -105,17 +108,45 @@ class BetaUsageService:
                 """,
                 (self.participant_id, usage_date, operation, used, updated_at),
             )
-        return UsageDecision(True, True, operation, limit, used, reset_at)
+            reservation_id = f"quota_res_{uuid.uuid4().hex}"
+            connection.execute(
+                """INSERT INTO beta_quota_reservations(
+                    reservation_id, participant_id, usage_date, operation_type,
+                    state, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'RESERVED', ?, ?)""",
+                (reservation_id, self.participant_id, usage_date, operation, updated_at, updated_at),
+            )
+        return UsageDecision(True, True, operation, limit, used, reset_at, reservation_id, usage_date)
+
+    def commit(self, decision: UsageDecision) -> None:
+        """Commit a successful user-visible operation exactly once."""
+        if not self.beta_mode or not decision.counted or not decision.reservation_id:
+            return
+        now = self._local_now().astimezone(timezone.utc).isoformat(timespec="microseconds")
+        with self.db.connect() as connection:
+            connection.execute(
+                """UPDATE beta_quota_reservations
+                   SET state='COMMITTED', updated_at=?
+                   WHERE reservation_id=? AND state='RESERVED'""",
+                (now, decision.reservation_id),
+            )
 
     def release(self, decision: UsageDecision) -> None:
         """Release a reservation when the provider did not deliver a result."""
         if not self.beta_mode or not decision.counted or not self.participant_id:
             return
         local_now = self._local_now()
-        usage_date = local_now.date().isoformat()
+        usage_date = decision.usage_date or local_now.date().isoformat()
         updated_at = local_now.astimezone(timezone.utc).isoformat(timespec="microseconds")
         with self.db.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if decision.reservation_id:
+                reservation = connection.execute(
+                    "SELECT state FROM beta_quota_reservations WHERE reservation_id=?",
+                    (decision.reservation_id,),
+                ).fetchone()
+                if reservation is None or reservation[0] != "RESERVED":
+                    return
             row = connection.execute(
                 "SELECT request_count FROM beta_daily_usage WHERE participant_id=? AND usage_date=? AND operation_type=?",
                 (self.participant_id, usage_date, decision.operation),
@@ -130,4 +161,11 @@ class BetaUsageService:
                 connection.execute(
                     "UPDATE beta_daily_usage SET request_count=?, updated_at=? WHERE participant_id=? AND usage_date=? AND operation_type=?",
                     (used - 1, updated_at, self.participant_id, usage_date, decision.operation),
+                )
+            if decision.reservation_id:
+                connection.execute(
+                    """UPDATE beta_quota_reservations
+                       SET state='RELEASED', updated_at=?
+                       WHERE reservation_id=? AND state='RESERVED'""",
+                    (updated_at, decision.reservation_id),
                 )

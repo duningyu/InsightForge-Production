@@ -189,6 +189,7 @@ class _ProfileStructuredRuntime:
         max_tool_rounds: int,
         before_provider_call: BeforeProviderCall | None = None,
         after_provider_failure: AfterProviderFailure | None = None,
+        after_provider_success: Callable[[str, Any], Any] | None = None,
     ) -> None:
         self.provider = profile["provider"]
         self.model = profile["model_id"]
@@ -202,6 +203,29 @@ class _ProfileStructuredRuntime:
         self.model_rounds_used = 0
         self._before_provider_call = before_provider_call
         self._after_provider_failure = after_provider_failure
+        self._after_provider_success = after_provider_success
+        self._pending_reservation: tuple[str, Any] | None = None
+
+    def _remember_reservation(self, operation: str | None, reservation: Any) -> None:
+        if operation is not None and reservation is not None:
+            self._pending_reservation = (operation, reservation)
+
+    def _release_reservation(self, operation: str | None, reservation: Any) -> None:
+        if operation is not None and self._after_provider_failure is not None:
+            self._after_provider_failure(operation, reservation)
+        if self._pending_reservation is not None and self._pending_reservation[1] is reservation:
+            self._pending_reservation = None
+
+    def commit_current_reservation(self) -> None:
+        pending = self._pending_reservation
+        if pending is not None and self._after_provider_success is not None:
+            self._after_provider_success(*pending)
+        self._pending_reservation = None
+
+    def release_current_reservation(self) -> None:
+        pending = self._pending_reservation
+        if pending is not None:
+            self._release_reservation(*pending)
 
     def _credential(self, preserved_input: Any) -> str:
         credential_ref = self._profile.get("credential_ref")
@@ -270,6 +294,7 @@ class _ProfileStructuredRuntime:
                     # This is deliberately after all local profile/credential/adapter
                     # validation and immediately before the real provider dispatch.
                     reservation = self._before_provider_call(operation)
+                self._remember_reservation(operation, reservation)
                 try:
                     result = adapter_method(*args, **(kwargs or {}))
                     if method == "analyze_evidence":
@@ -291,7 +316,7 @@ class _ProfileStructuredRuntime:
                     return result
                 except ProviderCallError as error:
                     if operation is not None and self._after_provider_failure is not None:
-                        self._after_provider_failure(operation, reservation)
+                        self._release_reservation(operation, reservation)
                     can_retry = error.code in SCHEMA_ERROR_CODES or error.retryable
                     if can_retry and self.model_rounds_used < self.max_model_rounds:
                         continue
@@ -300,11 +325,11 @@ class _ProfileStructuredRuntime:
                     ) from None
                 except StructuredRuntimeRecoveryError:
                     if operation is not None and self._after_provider_failure is not None:
-                        self._after_provider_failure(operation, reservation)
+                        self._release_reservation(operation, reservation)
                     raise
                 except Exception:
                     if operation is not None and self._after_provider_failure is not None:
-                        self._after_provider_failure(operation, reservation)
+                        self._release_reservation(operation, reservation)
                     raise StructuredRuntimeRecoveryError(
                         error_code="MODEL_PROVIDER_ERROR",
                         message="所选模型暂时无法完成生成；你的输入已保留。",
@@ -363,6 +388,7 @@ class HybridStructuredRuntime:
         max_tool_rounds: int = 4,
         before_provider_call: BeforeProviderCall | None = None,
         after_provider_failure: AfterProviderFailure | None = None,
+        after_provider_success: Callable[[str, Any], Any] | None = None,
         managed_runtime: StructuredAIRuntime | None = None,
         managed_runtime_factory: Callable[[Any], StructuredAIRuntime] | None = None,
     ) -> None:
@@ -379,6 +405,7 @@ class HybridStructuredRuntime:
         self.max_tool_rounds = max_tool_rounds
         self.before_provider_call = before_provider_call
         self.after_provider_failure = after_provider_failure
+        self.after_provider_success = after_provider_success
         if managed_runtime is not None and managed_runtime.mode not in {"managed_qwen", "managed_model"}:
             raise ValueError("managed_runtime must use a managed runtime")
         self.managed_runtime = managed_runtime
@@ -431,6 +458,7 @@ class HybridStructuredRuntime:
             max_tool_rounds=self.max_tool_rounds,
             before_provider_call=self.before_provider_call,
             after_provider_failure=self.after_provider_failure,
+            after_provider_success=self.after_provider_success,
         )
 
     def analyze_evidence(

@@ -735,6 +735,19 @@ CREATE TABLE IF NOT EXISTS beta_daily_usage (
     updated_at TEXT NOT NULL,
     PRIMARY KEY(participant_id, usage_date, operation_type)
 );
+CREATE TABLE IF NOT EXISTS beta_quota_reservations (
+    reservation_id TEXT PRIMARY KEY,
+    participant_id TEXT NOT NULL,
+    usage_date TEXT NOT NULL,
+    operation_type TEXT NOT NULL CHECK(operation_type IN (
+        'solution_generation', 'document_generation', 'evidence_analysis'
+    )),
+    state TEXT NOT NULL CHECK(state IN ('RESERVED', 'COMMITTED', 'RELEASED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_beta_quota_reservations_scope
+    ON beta_quota_reservations(participant_id, usage_date, operation_type, state);
 CREATE TABLE IF NOT EXISTS provider_dispatch_epochs (
     epoch_id TEXT PRIMARY KEY,
     acceptance_window_id TEXT NOT NULL UNIQUE,

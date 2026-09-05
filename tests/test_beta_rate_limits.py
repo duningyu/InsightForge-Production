@@ -109,10 +109,13 @@ def test_solution_limit_rejects_eleventh(usage_db, clock):
     assert captured.value.as_payload() == {
         "error_code": "BETA_DAILY_LIMIT_REACHED",
         "operation": "solution_generation",
+        "operation_type": "solution_generation",
+        "blocked_operation": "solution_generation",
         "limit": 10,
         "used": 10,
+        "remaining": 0,
         "reset_at": "2026-09-01T00:00:00+08:00",
-        "message": "今日 Beta AI 使用额度已达到测试上限。已有项目和文档仍可继续查看和编辑。",
+        "message": "该类 Beta AI 操作的今日额度已达到测试上限；其他操作额度不受影响。",
     }
     assert _count(usage_db, "beta_001", "solution_generation") == 10
 
@@ -352,10 +355,13 @@ def test_rate_limit_http_contract_is_429_and_ui_safe(tmp_path, monkeypatch):
     assert response.json() == {
         "error_code": "BETA_DAILY_LIMIT_REACHED",
         "operation": "solution_generation",
+        "operation_type": "solution_generation",
+        "blocked_operation": "solution_generation",
         "limit": 10,
         "used": 10,
+        "remaining": 0,
         "reset_at": "2026-09-01T00:00:00+08:00",
-        "message": "今日 Beta AI 使用额度已达到测试上限。已有项目和文档仍可继续查看和编辑。",
+        "message": "该类 Beta AI 操作的今日额度已达到测试上限；其他操作额度不受影响。",
     }
     app_js = (Path(__file__).parents[1] / "app" / "static" / "app.js").read_text(
         encoding="utf-8"

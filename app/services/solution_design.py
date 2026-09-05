@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from app.schemas import SolutionCandidateDraft
 from app.services.dispatch_control import DispatchControlContext
@@ -25,6 +26,18 @@ def _has_non_llm_core(candidate: SolutionCandidateDraft) -> bool:
         or candidate.requires_rag_runtime
         or candidate.requires_agent_runtime
     )
+
+
+def _commit_runtime_reservation(runtime: Any) -> None:
+    callback = getattr(runtime, "commit_current_reservation", None)
+    if callable(callback):
+        callback()
+
+
+def _release_runtime_reservation(runtime: Any) -> None:
+    callback = getattr(runtime, "release_current_reservation", None)
+    if callable(callback):
+        callback()
 
 
 def validate_solution_set(
@@ -294,6 +307,7 @@ class SolutionDesignService:
             )
             return exc.as_payload(preserved_input=brief)
         except ValueError as exc:
+            _release_runtime_reservation(runtime)
             message = str(exc)
             status = (
                 "failed_overengineering" if "OVERENGINEERED" in message
@@ -383,7 +397,9 @@ class SolutionDesignService:
                 "UPDATE solution_runs SET status = 'failed_empty_result' WHERE id = ?",
                 (run_id,),
             )
+            _release_runtime_reservation(runtime)
             raise ConflictError("SOLUTION_GENERATION_NO_VALID_CANDIDATES")
+        _commit_runtime_reservation(runtime)
         return result
 
     def list_candidates(self, project_id: str) -> dict[str, Any]:
@@ -446,6 +462,7 @@ class SolutionDesignService:
                 list(raw_set.candidates), llm_core_required=raw_set.llm_core_required
             )
         except ValueError as exc:
+            _release_runtime_reservation(runtime)
             self._audit_failure(
                 runtime=runtime, brief=brief, started_at=started, actor=actor,
                 entity_type="project", entity_id=project_id,
@@ -453,9 +470,13 @@ class SolutionDesignService:
                 error_code=str(exc).split(":", 1)[0],
             )
             return {
-                "error_code": "SOLUTION_GENERATION_NO_VALID_CANDIDATES",
-                "message": "这次没有生成可用方案，你的项目内容已经保留，请稍后重试。",
-                "recovery_actions": ["重新生成"], "retryable": True,
+                "error_code": "APPLICATION_POSTPROCESS_FAILURE",
+                "failure_stage": "postprocess",
+                "validation_error": str(exc).split(":", 1)[0],
+                "message": "Provider 已返回结果，但应用校验未通过；本次生成额度已释放，未自动重试。若继续，请明确发起新的生成。",
+                "recovery_actions": ["发起新的生成"],
+                "quota_status": "RELEASED",
+                "retryable": False,
             }
 
         run_id = f"solution_run_{uuid.uuid4().hex}"
@@ -517,4 +538,5 @@ class SolutionDesignService:
             )
         result = self.list_candidates(project_id)
         result["_solution_run_id"] = run_id
+        _commit_runtime_reservation(runtime)
         return result

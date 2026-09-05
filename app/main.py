@@ -235,6 +235,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                 base_url=settings.managed_qwen_base_url,
                 before_provider_call=application.state.beta_usage.consume,
                 after_provider_failure=lambda operation, decision: application.state.beta_usage.release(decision),
+                after_provider_success=lambda operation, decision: application.state.beta_usage.commit(decision),
                 attempt_observer=db.insert_provider_attempt,
                 dispatch_ledger=application.state.provider_dispatch_ledger,
             )
@@ -246,6 +247,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             ),
                 before_provider_call=application.state.beta_usage.consume,
                 after_provider_failure=lambda operation, decision: application.state.beta_usage.release(decision),
+                after_provider_success=lambda operation, decision: application.state.beta_usage.commit(decision),
             managed_runtime=(
                 build_structured_runtime(
                     mode="managed_qwen",
@@ -254,6 +256,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
                     base_url=settings.managed_qwen_base_url,
                     before_provider_call=application.state.beta_usage.consume,
                     after_provider_failure=lambda operation, decision: application.state.beta_usage.release(decision),
+                    after_provider_success=lambda operation, decision: application.state.beta_usage.commit(decision),
                     attempt_observer=db.insert_provider_attempt,
                     dispatch_ledger=application.state.provider_dispatch_ledger,
                 )

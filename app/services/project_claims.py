@@ -6,6 +6,7 @@ import uuid
 from typing import Any
 
 from app.db import Database, utc_now
+from app.errors import BetaDailyLimitReached
 from app.services.ai_runtime import StructuredAIRuntime, build_ai_trace_payload
 from app.services.retrieval_service import ProjectRetrievalService
 
@@ -452,8 +453,10 @@ class ProjectClaimService:
                 raise KeyError("one or more project claims were not found")
         changes: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
+        not_analyzed: list[dict[str, Any]] = []
+        analysis_state: dict[str, Any] | None = None
         resolver = getattr(self.runtime, "for_project", None)
-        for claim in claims:
+        for claim_index, claim in enumerate(claims):
             runtime = resolver(project_id) if callable(resolver) else self.runtime
             admissible_types = [source_type for source_type, types in ADMISSIBILITY.items() if claim["claim_type"] in types]
             run = self.retrieval.execute_retrieval(
@@ -470,6 +473,20 @@ class ProjectClaimService:
             status = "completed"
             try:
                 output = runtime.analyze_evidence(claim=claim, chunks=run["items"])
+            except BetaDailyLimitReached as exc:
+                analysis_state = {
+                    "operation_type": exc.operation,
+                    "used": exc.used,
+                    "limit": exc.limit,
+                    "remaining": max(exc.limit - exc.used, 0),
+                    "blocked_operation": exc.operation,
+                    "status": "EXHAUSTED",
+                }
+                not_analyzed.extend(
+                    {"claim_id": pending["id"], "status": "NOT_ANALYZED_QUOTA_EXHAUSTED"}
+                    for pending in claims[claim_index:]
+                )
+                break
             except Exception:
                 status = "failed"
                 trace = build_ai_trace_payload(
@@ -543,7 +560,15 @@ class ProjectClaimService:
                     "impact": impact,
                 })
                 before = after
-        return {"project_id": project_id, "changes": changes, "rejected": rejected}
+            commit = getattr(runtime, "commit_current_reservation", None)
+            if callable(commit):
+                commit()
+        result = {"project_id": project_id, "changes": changes, "rejected": rejected}
+        if analysis_state is not None:
+            result["analysis"] = analysis_state
+        if not_analyzed:
+            result["not_analyzed"] = not_analyzed
+        return result
 
     def impact_summary(self, project_id: str) -> dict[str, Any]:
         claims = self.list_claims(project_id)

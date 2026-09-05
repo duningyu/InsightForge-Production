@@ -6,7 +6,7 @@ from typing import Any
 class BetaDailyLimitReached(RuntimeError):
     """A participant exhausted one daily closed-beta AI operation budget."""
 
-    message = "今日 Beta AI 使用额度已达到测试上限。已有项目和文档仍可继续查看和编辑。"
+    message = "该类 Beta AI 操作的今日额度已达到测试上限；其他操作额度不受影响。"
 
     def __init__(
         self,
@@ -28,6 +28,9 @@ class BetaDailyLimitReached(RuntimeError):
             "operation": self.operation,
             "limit": self.limit,
             "used": self.used,
+            "remaining": max(self.limit - self.used, 0),
+            "operation_type": self.operation,
+            "blocked_operation": self.operation,
             "reset_at": self.reset_at,
             "message": self.message,
         }

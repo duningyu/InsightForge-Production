@@ -28,6 +28,7 @@ const state = {
   generationInFlight: null,
   generationIntentId: null,
   generationTerminalFailure: false,
+  generationFailureCode: null,
   betaMode: false,
   betaConsented: false,
   betaConsentVersion: 1,
@@ -52,6 +53,7 @@ async function api(path, options = {}) {
     error.status = response.status;
     error.code = body?.error_code || null;
     error.code = body?.code || error.code;
+    error.payload = body;
     error.clarificationQuestion = body?.clarification_question || null;
     throw error;
   }
@@ -196,6 +198,15 @@ function reportError(error) {
   }
   if (error?.code === "SOLUTION_GENERATION_IN_PROGRESS") {
     toast("正在生成方案，请稍候。");
+    return;
+  }
+  if (error?.code === "APPLICATION_POSTPROCESS_FAILURE") {
+    toast(error.message || "Provider 已返回结果，但应用校验未通过；本次生成额度已释放，未自动重试。请明确发起新的生成。", 4500);
+    return;
+  }
+  if (error?.code === "BETA_DAILY_LIMIT_REACHED" || error?.payload?.blocked_operation) {
+    const operation = error?.payload?.operation_type || error?.payload?.blocked_operation;
+    toast(error.message || `${operation} 今日额度已用尽；其他操作额度不受影响。`);
     return;
   }
   if (error?.status === 503 && error?.code === "MODEL_TIMEOUT") {
@@ -795,7 +806,7 @@ function renderSolutions() {
     const action = clarificationRequired
       ? `<button id="open-idea-brief-button" class="button button-primary" type="button">补充信息</button>`
       : confirmed
-      ? `<label class="managed-model-choice" for="managed-model-preference">模型<select id="managed-model-preference"><option value="AUTO">自动（默认 Qwen3.7-Flash）</option><option value="QWEN">Qwen3.7-Flash</option><option value="GLM">GLM-5.2</option><option value="DEEPSEEK">DeepSeek V4 Flash</option></select></label><button id="generate-solutions-button" class="button button-primary" type="button" aria-disabled="false">${state.generationTerminalFailure ? "重新生成" : "生成方案"}</button>`
+      ? `<label class="managed-model-choice" for="managed-model-preference">模型<select id="managed-model-preference"><option value="AUTO">自动（默认 Qwen3.7-Flash）</option><option value="QWEN">Qwen3.7-Flash</option><option value="GLM">GLM-5.2</option><option value="DEEPSEEK">DeepSeek V4 Flash</option></select></label><button id="generate-solutions-button" class="button button-primary" type="button" aria-disabled="false">${state.generationFailureCode === "APPLICATION_POSTPROCESS_FAILURE" ? "发起新的生成" : state.generationTerminalFailure ? "重新生成" : "生成方案"}</button>`
       : `<button id="open-idea-brief-button" class="button button-primary" type="button">查看并确认项目定义</button>`;
     const message = clarificationRequired
       ? "还需要补充一项信息，完成澄清后才能确认项目理解并生成方案。"
@@ -1285,6 +1296,7 @@ async function generateSolutions({newIntent = false} = {}) {
     state.generationIntentId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
   state.generationTerminalFailure = false;
+  state.generationFailureCode = null;
   const button = qs("#generate-solutions-button");
   if (button) {
     button.disabled = true;
@@ -1305,6 +1317,7 @@ async function generateSolutions({newIntent = false} = {}) {
       if (isRecoveryPayload(result)) {
         state.solutions = null;
         state.generationTerminalFailure = true;
+        state.generationFailureCode = result.error_code || null;
         renderSolutions();
         showRecoveryPayload(result);
         return result;
@@ -1312,11 +1325,13 @@ async function generateSolutions({newIntent = false} = {}) {
       state.solutions = result;
       state.generationIntentId = null;
       state.generationTerminalFailure = false;
+      state.generationFailureCode = null;
       renderSolutions();
       await loadProjectNextAction();
       return result;
     } catch (error) {
       state.generationTerminalFailure = true;
+      state.generationFailureCode = error?.code || null;
       reportError(error);
       return null;
     } finally {
@@ -1324,7 +1339,7 @@ async function generateSolutions({newIntent = false} = {}) {
       if (button?.isConnected && !state.solutions?.candidates?.length) {
         button.disabled = false;
         button.setAttribute("aria-disabled", "false");
-        button.textContent = state.generationTerminalFailure ? "重新生成" : "生成方案";
+        button.textContent = state.generationFailureCode === "APPLICATION_POSTPROCESS_FAILURE" ? "发起新的生成" : state.generationTerminalFailure ? "重新生成" : "生成方案";
       }
     }
   })();
@@ -1342,6 +1357,7 @@ async function pollSolutionGeneration(runId) {
     if (isRecoveryPayload(result) || result.status === "FAILED") {
       state.solutions = null;
       state.generationTerminalFailure = true;
+      state.generationFailureCode = result.error_code || null;
       renderSolutions();
       showRecoveryPayload(result);
       return result;
@@ -1349,6 +1365,7 @@ async function pollSolutionGeneration(runId) {
     state.solutions = result;
     state.generationIntentId = null;
     state.generationTerminalFailure = false;
+    state.generationFailureCode = null;
     renderSolutions();
     await loadProjectNextAction();
     return result;

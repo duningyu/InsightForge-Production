@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from app.db import Database
 from app.main import create_app
 from app.services.beta_usage import BetaUsageService
+from app.config import Settings
+from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
@@ -63,3 +65,32 @@ def test_api_discloses_disabled_policy_without_zero_remaining(tmp_path, monkeypa
         assert response.json()["daily_user_limits_enabled"] is False
         assert response.json()["operations"]["solution_generation"]["limit"] is None
         assert response.json()["operations"]["evidence_analysis"]["remaining"] is None
+
+
+def test_open_test_target_example_overrides_old_limits_without_secret_or_production_access(tmp_path, monkeypatch):
+    monkeypatch.setenv("INSIGHTFORGE_DAILY_USER_LIMITS_ENABLED", "true")
+    example = Path(__file__).resolve().parents[1] / "deploy/beta/open-test.env.example"
+    values = dict(line.split("=", 1) for line in example.read_text().splitlines()
+                  if line.strip() and not line.startswith("#"))
+    assert set(values) == {"INSIGHTFORGE_ACCOUNTS_ENABLED", "INSIGHTFORGE_ACCOUNTS_DIR",
+                           "INSIGHTFORGE_DAILY_USER_LIMITS_ENABLED", "BETA_SESSION_COOKIE_SECURE"}
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    target = Settings.from_env()
+    assert target.accounts_enabled and target.beta_session_cookie_secure
+    assert not target.daily_user_limits_enabled
+    assert target.accounts_dir == Path(values["INSIGHTFORGE_ACCOUNTS_DIR"])
+    # Redirect persistence BEFORE constructing any application; never touch target path.
+    monkeypatch.setenv("INSIGHTFORGE_ACCOUNTS_DIR", str(tmp_path / "accounts"))
+    monkeypatch.setenv("BETA_SESSION_COOKIE_SECURE", "false")
+    app = create_app(seed=False, settings_override=Settings.from_env())
+    with TestClient(app, headers={"X-InsightForge-Request": "1"}) as client:
+        invitation = app.state.accounts.issue_invite()
+        assert client.post("/api/auth/claim", json={"invite": invitation, "username": "target-test",
+                           "password": "SYNTHETIC-only-passphrase!"}).status_code == 201
+        assert client.post("/api/auth/login", json={"username": "target-test",
+                           "password": "SYNTHETIC-only-passphrase!"}).status_code == 200
+        policy = client.get("/api/usage/policy").json()
+        assert policy["daily_user_limits_enabled"] is False
+        assert all(item["remaining"] is None and item["limit"] is None
+                   for item in policy["operations"].values())

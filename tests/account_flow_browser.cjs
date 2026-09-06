@@ -26,6 +26,12 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'C:/Users/ASUS/.cach
       await page.waitForFunction(() => document.querySelector('#account-message').textContent.includes('已创建'));
       await page.locator('button[value=login]').click();
       await page.locator('#account-controls').waitFor({state:'visible'});
+      await page.locator('#usage-policy').waitFor({state:'visible', timeout:5000});
+      assert.match(await page.locator('#usage-policy').innerText(), /不设每日次数限制/);
+      assert.doesNotMatch(await page.locator('#usage-policy').innerText(), /剩余\s*0|每日\s*[35]\s*次/);
+      const policy = await page.evaluate(async () => (await fetch('/api/usage/policy')).json());
+      assert.equal(policy.daily_user_limits_enabled, false);
+      assert.equal(policy.operations.solution_generation.remaining, null);
       if (foreign) {
         const code = await page.evaluate(async id => (await fetch('/api/projects/' + id)).status, foreign);
         assert.equal(code, 404);
@@ -38,6 +44,8 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'C:/Users/ASUS/.cach
       foreign = (await response.json()).id;
       await page.reload();
       await page.locator('#account-controls').waitFor({state:'visible'});
+      await page.locator('#usage-policy').waitFor({state:'visible'});
+      assert.match(await page.locator('#usage-policy').innerText(), /不设每日次数限制/);
       assert.equal(await page.evaluate(async id => (await fetch('/api/projects/' + id)).status, foreign), 200);
       await page.screenshot({path:`artifacts/account-browser/user-${i}.png`});
       await page.locator('#account-logout').click();

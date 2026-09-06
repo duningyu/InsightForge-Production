@@ -17,6 +17,7 @@ const state = {
   handoff: null,
   runtimeMode: null,
   managedModelMode: false,
+  usagePolicy: null,
   managedModelPreference: "AUTO",
   showAllProjects: false,
   examples: [],
@@ -1805,6 +1806,7 @@ async function bootstrap() {
     state.runtimeMode = health.structured_runtime_mode || health.runtime_mode || health.llm_mode || null;
     const mode = await api("/api/settings/mode");
     state.managedModelMode = Boolean(mode.managed_beta_mode);
+    await loadUsagePolicy();
     renderRuntimeDisclosure();
     await Promise.all([loadProjects(), loadExamples(), loadHistory(), loadHomeNextAction()]);
     showQuickStart();
@@ -1815,3 +1817,29 @@ async function bootstrap() {
 }
 
 document.addEventListener("DOMContentLoaded", bootstrap);
+
+async function loadUsagePolicy() {
+  const element = qs("#usage-policy");
+  // Policy is server-owned and deliberately never persisted in browser storage.
+  state.usagePolicy = null;
+  try {
+    const policy = await api("/api/usage/policy");
+    if (typeof policy.daily_user_limits_enabled !== "boolean") throw new Error("Invalid usage policy");
+    state.usagePolicy = policy;
+    if (element) {
+      element.textContent = policy.daily_user_limits_enabled
+        ? "当前按操作分别执行每日次数限制；以提交时的服务端检查为准。"
+        : "方案生成与资料分析不设每日次数限制；仍记录使用情况，并保留排队、超时和重复提交保护。";
+      element.hidden = false;
+    }
+  } catch (_) {
+    if (element) {
+      element.textContent = "暂时无法读取使用政策；操作是否可用以服务端实际响应为准。";
+      element.hidden = false;
+    }
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void loadUsagePolicy();
+});

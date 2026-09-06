@@ -55,3 +55,16 @@ tests/test_account_business_paths.py 使用真实账号领取/登录与业务HTT
 六个不同claim分别经证据分析HTTP入口/真实业务/同步Adapter，六次传输、usage6、六个COMMITTED、零RESERVED。
 无资料时fake合法空relations，不虚构来源；每条确实经过Adapter，不以缓存命中或202代替结果。
 本矩阵仍按资源族列出，尚未建立完整(method,path)路由计数，不能把10行资源族称作10个已验收接口。
+
+## 2026-09-06 后继补测（接续3e26b402）
+
+`test_running_task_keeps_workspace_after_logout_and_account_switch`：真实生成POST202，
+worker在真实AsyncModelAdapter的fake HTTP传输等待；owner实际任务GET200，退出后同任务GET401，
+另一账号携带伪造workspace/user_id/participant/database_path查询同任务404，响应无run内容。
+忙任务在可控时钟触发sweep后仍绑定原账号child；原账号重登后同run SUCCEEDED，
+fake传输一次、COMMITTED一次、无活动reservation。此组合更新为VERIFIED。
+不是运行中worker销毁/重建证明；后者及取消/失败回收仍NOT_RUN。
+
+真实Chromium新验证GET /api/usage/policy驱动页面不限说明，刷新/换账号一致；
+不等于浏览器执行第4次生成。开放测试env示例实际离线加载并通过HTTP账号/policy验证。
+所有其他未完成矩阵项保留NOT_RUN；统一跨模块草稿及竞品候选接口NOT_IMPLEMENTED。

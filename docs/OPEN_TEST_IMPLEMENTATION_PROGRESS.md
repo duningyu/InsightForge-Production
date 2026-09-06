@@ -220,3 +220,53 @@
    无秘密开放测试目标配置实际加载仍未闭环。
 4. 旧库兼容范围保持v206 fixture和当前schema，不扩大；统一跨模块草稿 NOT_IMPLEMENTED。
    完成以上缺口后才进入用户级草稿恢复与冲突检测，后续AI参考/无资料交接/完整中文布局E2E仍待做。
+
+## 追加：竞品包读取及账号前置收口增量（2026-09-06）
+
+接续3e26b402fa174338a3f5f86969ed2e93bd749afd，初始工作区干净，未回退。
+已从用户提供ZIP读取README.md、docs/02_竞品到方案闭环规格.md、
+docs/03_整合与验收边界.md、CODEX_TASK.md。包内说明作为设计输入，
+不能覆盖当前工程权限/持久化合同；没有执行参考包代码、联网取证或导入八个示例产品。
+
+### 实际文件/接口映射与未完成边界
+
+| 接入点 | 当前实际位置 | 本次状态 |
+| --- | --- | --- |
+| 账号与项目归属 | app/accounts.py、app/account_registry.py；会话绑定账号子app/数据库 | 运行中任务退出换账号补测通过；完整资源矩阵仍PARTIAL |
+| 不限政策 | app/main.py GET /api/usage/policy；app/static/app.js、index.html | 页面接入权威policy；不把null当0，不缓存政策；目标示例离线加载验证 |
+| 手动项目资料 | app/services/source_guidance.py、sources.py；POST /api/projects/{id}/sources/guided | 未来复用点；本次未增加竞品候选与确认API |
+| 方案读取/选择 | app/services/solution_design.py、snapshots.py；GET solutions、POST solutions/select | 未来复用点；未改已有人工选择；不能直接把客户端confirmed当竞品事实凭据 |
+| 文档与版本 | app/services/document_workspace.py、document_versions.py；draft、draft/commit及版本接口 | 保留原实现；未增加竞品决策快照字段 |
+| 项目快照 | GET /api/projects/{id}/snapshots、GET /api/project-snapshots/{id} | 待新增服务端项目范围引用验证后接入；未实现 |
+| 看看已有产品/AI补充思路 | 必须走现有业务模型服务与Adapter传输边界 | 本次NOT_IMPLEMENTED；尚未证明竞品生产模型接线或候选采纳链 |
+
+八产品仅为InsightForge自身研究示例，不作为任何用户项目默认答案。
+来源引用存在/一致不证明事实真实；公开页不转成真实用户研究。
+搜索能力没有在本批配置或调用，不能声称实时搜索可用。
+
+### 已完成的前置增量与证据
+
+- 新增 deploy/beta/open-test.env.example：账号开启、持久化路径引用、日限额关闭、HTTPS secure cookie。
+  测试先加载该文件覆盖合成旧限额true，核对Settings；构造app前改为临时路径及本地HTTP cookie。
+  真实claim/login及policy返回false/null通过。不代表线上配置启用或任何未来override都安全。
+- 页面新增权威policy说明，初始化/返回可见页面重新读取；失败明确说明无法读取，不锁死操作，
+  不宣称免费或无Provider成本。没有增加次数限制，没有删除历史/结算保护。
+- 有效RED：真实Chromium等待#usage-policy超时5秒；修复页面接线后GREEN。
+  实际浏览器覆盖登录、policy、创建/保存项目、刷新、退出、换账号及外来项目拒绝；1366×768。
+  不包含浏览器第4次生成或完整交接。截图 artifacts/account-browser/（本地忽略，不提交）。
+- 新运行中任务测试走HTTP→真实worker/AsyncModelAdapter→fake httpx，传输边界用线程事件同步。
+  A owner读200、退出匿名401、B伪造身份参数读404；busy回收保留原child；A重登终态SUCCEEDED。
+  该任务fake传输1、COMMITTED1、RESERVED0。未向任务表注入完成状态。
+- 此测试初次1 failed/2 passed是测试跨线程asyncio.Event唤醒错误，不是产品RED；
+  使用worker循环call_soon_threadsafe后3 passed in 16.20s，外部连接尝试0。
+- 配置/不限定向5 passed in 8.07s；真实Chromium和加载提示harness PASS，外部调用0。
+- 最终fresh `py -3.12 tests/run_open_test_regressions.py`：116 passed in 169.31s，
+  0 failed/0 skipped；blocked_external_attempts=0、real_external_connections=0；这是定向而非全库测试。
+  `py -3.12 tests/run_account_browser.py` PASS，实际lifespan，外部连接/阻断尝试/生成均0。
+  `node tests/loading_progress_harness.js`、两份变更JS语法检查、两份变更Python compileall、
+  git diff --check PASS；八份变更文件常见真实密钥模式扫描0命中，人工review仅合成凭据。
+
+账号批次仍PARTIAL：资料/检索、实际交接导出、设置/全局对象、文档草稿commit跨账号组合仍未补齐；
+运行中worker重建、取消/失败回收组合及浏览器超过旧限额提交仍未验证。
+因此竞品功能最小接入尚未开始，不能把读包或前置测试写成竞品集成PASS。
+统一草稿、AI参考、无资料交接、完整中文/缩放/E2E仍按原依赖顺序待做；不新增重复清单。

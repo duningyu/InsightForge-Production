@@ -1,4 +1,6 @@
 """Account HTTP -> real worker/adapter -> fake HTTP -> durable result."""
+import asyncio
+import threading
 import json
 import time
 from collections import Counter
@@ -12,6 +14,79 @@ from app.main import create_app
 from app.services.provider_adapters import AsyncModelAdapter, ModelAdapter
 from test_open_accounts import claim
 from test_normal_dispatch_control_integration import _solution_payload
+
+
+def test_running_task_keeps_workspace_after_logout_and_account_switch(tmp_path, monkeypatch):
+    """Synchronize at real adapter transport; never seed a terminal task."""
+    calls = []
+    original = AsyncModelAdapter.__init__
+    payload = _solution_payload()
+    payload["candidates"][1].update(human_role="synthetic author", core_decision_logic="manual checklist")
+    entered, release = threading.Event(), asyncio.Event()
+    worker_loops = []
+
+    def injected(self, **kwargs):
+        async def transport(request):
+            calls.append((kwargs.get("generation_intent_id"), kwargs.get("generation_run_id")))
+            worker_loops.append(asyncio.get_running_loop())
+            entered.set()
+            await release.wait()
+            return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(payload)}}]})
+        original(self, **{**kwargs, "client": httpx.AsyncClient(transport=httpx.MockTransport(transport))})
+
+    monkeypatch.setattr(AsyncModelAdapter, "__init__", injected)
+    settings = Settings(accounts_enabled=True, accounts_dir=tmp_path / "accounts",
+                        database_path=tmp_path / "unused.sqlite3", runtime_dir=tmp_path / "unused-runtime",
+                        beta_mode=True, beta_managed_mode=True, daily_user_limits_enabled=False,
+                        managed_qwen_api_key="TEST_ONLY_SYNTHETIC", managed_bailian_api_key="TEST_ONLY_SYNTHETIC")
+    app = create_app(settings_override=settings, seed=False)
+    with TestClient(app, headers={"X-InsightForge-Request": "1"}) as client:
+        claim(app, client, 1)
+        project = client.post("/api/projects", json={"title": "Synthetic A", "summary": "local"}).json()["id"]
+        account = client.get("/api/auth/me").json()["id"]
+        pool = app.state.workspace_pool
+        child = pool.entries[account]["child"]
+        db = child.state.async_generation_repository.db
+        db.execute("""INSERT INTO idea_briefs(id,project_id,version,original_idea,target_user,problem,
+            desired_outcome,known_resources_json,constraints_json,unknowns_json,provenance_json,
+            confirmation_status,created_at) VALUES (?,?,1,?,?,?,?, '[]','[]','[]','{}','confirmed',?)""",
+            ("brief-running", project, "Synthetic idea", "synthetic users", "synthetic problem",
+             "synthetic outcome", "2026-09-06T00:00:00+00:00"))
+        path = f"/api/projects/{project}/solutions/generate"
+        response = client.post(path, headers={"X-Generation-Mode": "async", "X-Idempotency-Key": "running-key"})
+        assert response.status_code == 202, response.text
+        run = response.json()["generation_run_id"]
+        try:
+            assert entered.wait(timeout=10), "worker did not enter fake transport"
+            assert client.get(f"{path}/{run}").status_code == 200
+            assert client.post("/api/auth/logout").status_code == 200
+            assert client.get(f"{path}/{run}").status_code == 401
+            claim(app, client, 2)
+            denied = client.get(f"{path}/{run}", params={"workspace": account, "user_id": account,
+                                "participant": account, "database_path": str(settings.database_path)})
+            assert denied.status_code == 404
+            assert run not in denied.text
+            idle_now = max(entry["last_used"] for entry in pool.entries.values()) + 1801
+            pool.clock = lambda: idle_now
+            client.portal.call(pool.sweep)
+            assert pool.entries[account]["child"] is child
+            assert len(calls) == 1 and calls[0][1] == run
+        finally:
+            if worker_loops:
+                worker_loops[0].call_soon_threadsafe(release.set)
+        assert client.post("/api/auth/logout").status_code == 200
+        assert client.post("/api/auth/login", json={"username": "synthetic1", "password": "SYNTHETIC-only-passphrase!"}).status_code == 200
+        deadline = time.monotonic() + 20
+        while True:
+            terminal = client.get(f"{path}/{run}").json()
+            if terminal.get("status") in {"SUCCEEDED", "FAILED"}:
+                break
+            assert time.monotonic() < deadline, terminal
+            time.sleep(.02)  # terminal polling only; race is controlled by Event above
+        assert terminal["status"] == "SUCCEEDED", terminal
+        assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='COMMITTED'")["n"] == 1
+        assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='RESERVED'")["n"] == 0
+        assert len(calls) == 1
 
 
 def test_four_generations_account_scope_replay_and_worker_reconstruction(tmp_path, monkeypatch):

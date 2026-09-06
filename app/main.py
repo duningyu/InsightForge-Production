@@ -1371,12 +1371,12 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
 
     @application.post("/api/projects/{project_id}/documents/{doc_type}/draft/commit", status_code=201)
     def commit_document_edit_draft(
-        project_id: str, doc_type: str, payload: DocumentDraftCommitRequest
+        project_id: str, doc_type: str, payload: DocumentDraftCommitRequest, request: Request
     ) -> dict[str, Any]:
         return application.state.document_workspace.commit_draft(
             project_id,
             doc_type,
-            actor=payload.actor,
+            actor=request.scope.get("workspace_account", {}).get("id", payload.actor),
             note=payload.note,
             expected_base_version_id=payload.expected_base_version_id,
         )

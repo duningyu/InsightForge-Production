@@ -1,5 +1,34 @@
 # 开放测试资源隔离矩阵（源码检查点 84617b 后的有限补测）
 
+## 当前增量：9ff9e5b 后的真实资源覆盖
+
+下表优先于后文历史状态。共同认证入口为服务端账号会话及 WorkspacePool 独立 DB；
+下列每项均使用实际合成资源，owner 正向成功、匿名401、foreign拒绝后重新核对原资源。
+测试位置统一为 `tests/test_account_resource_matrix.py`（7个用例）。
+
+| 实际 method/path | owner / foreign / anonymous | 状态与证据函数 |
+| --- | --- | --- |
+| POST `/api/projects/{p}/sources/upload`; GET `…/sources` | owner201/200；foreign已有上传控制复用，读取404；匿名读取401 | VERIFIED `test_uploaded_sources_and_persisted_retrieval_are_account_and_project_scoped` |
+| POST `/api/projects/{p}/sources/{s}/archive`, `/restore` | owner200；foreign422 SOURCE_SCOPE_MISMATCH；匿名401；内容不变 | VERIFIED 同上 |
+| POST `/api/projects/{p}/retrieve`; GET `…/retrieval-runs`; GET `/api/retrieval/runs/{r}` | owner200且只含本项目来源；foreign404；匿名401；持久化结果不变 | VERIFIED 同上；同账号第二项目、另一账号各有不同真实资料 |
+| POST `/api/projects/{p}/documents/{type}/draft/commit` | owner201新版本；foreign404；匿名401；原版本/草稿不变 | VERIFIED `test_document_draft_commit_is_scoped_and_uses_authenticated_actor`；审计actor伪造RED后修复 |
+| GET `/api/project-snapshots/{s}`; GET `/api/projects/{p}/handoff/readiness`; POST `…/handoff/export` | owner200且真实ZIP；foreign404；匿名401；版本/导出记录不变 | VERIFIED `test_handoff_zip_and_global_snapshot_have_owner_positive_controls` |
+| GET/POST `/api/settings/model-profiles`; PATCH/DELETE `…/{id}`; POST `…/{id}/set-default`; GET/PUT `/api/projects/{p}/model-profile` | owner创建201/修改绑定200/删除非默认204；foreign404且列表无他人profile；匿名401 | VERIFIED `test_user_profile_settings_are_private_without_reading_credentials`；默认删除409按合同保留，未读凭据 |
+| GET `/api/settings/mode` | 已登录200公开运行模式元数据，不返回他人设置 | VERIFIED 同上；非秘密产品配置不是越权内容 |
+| GET `/api/projects/{p}/change-proposals`; POST `/api/change-proposals/{id}/accept`, `/reject`, `/defer` | owner200；foreign404；匿名401；拒绝后提案/快照不变 | VERIFIED `test_global_change_proposal_actions_are_workspace_scoped` 三个参数用例 |
+
+交接测试以合成 fixture 设置校验通过作为资源准备，再经实际HTTP人工确认和导出。
+它只证明真实资源权限，不证明完整校验流程或浏览器交接E2E。
+设置未提供API key，未读取真实凭据；test/live-test不在本次覆盖中。
+资料没有独立原文件下载路由的既有结论不变，不能虚构下载验收。
+
+仍NOT_RUN：文档diff双端ID、匿名版本下载和跨账号confirm组合；audit实际内容；
+settings test/live-test安全传输集成及相同局部profile ID；中断重建/取消失败回收组合；
+Chromium第4次生成和第6个claim到业务终态。全局快照/提案不再列为NOT_RUN。
+统一跨模块草稿和竞品候选/快照接口 NOT_IMPLEMENTED；账号批次仍PARTIAL。
+
+## 历史矩阵（保留当时状态，以顶部当前增量为准）
+
 本文件是统一进度文件的证据附件，不是独立发布清单。全部数据为合成数据。
 共同入口：`app/accounts.py::route_workspace` 验证服务端会话，经 AccountRegistry
 读取固定 database/runtime/participant，创建对应业务 app；各服务只查询该 app 的 DB。

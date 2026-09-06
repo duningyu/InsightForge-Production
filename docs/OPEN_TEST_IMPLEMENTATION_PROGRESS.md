@@ -1,5 +1,47 @@
 # 开放测试改版：源码增量与未完成边界
 
+## 当前状态摘要（从 9ff9e5b 接续）
+
+账号批次 PARTIAL；整体 PARTIAL；生产未部署。以下历史章节保留当时的状态，
+不作为当前未完成清单。
+
+- 已完成：独立账号、已有项目/文档隔离、v206 fixture/当前 schema 显式归属、
+  默认不限政策、页面真实读取 policy（null 不作为 0）、目标示例配置离线加载。
+- 已完成：运行任务退出/匿名/换账号/伪造身份检查、busy 回收保留原 child；
+  该既有用例走真实 worker/Adapter，fake 传输 1 次。保留布局、详情侧窗和加载反馈。
+- 本轮已验证：资料上传/读取/归档/恢复及项目内检索、持久化检索结果，
+  实际交接 ZIP 导出、全局快照、变更提案 accept/reject/defer，用户模型配置读写/默认/绑定，
+  文档草稿 commit。修复 commit 审计 actor 信任客户端的问题；账号模式改用服务端认证主体。
+- 仍需补：文档 diff 两端版本/匿名下载/跨账号人工确认、audit 内容隔离、
+  设置 test/live-test 的传输边界覆盖及同局部 profile ID 控制；
+  Chromium 第 4 次生成/第 6 个 claim 到业务终态；取消/失败/中断重建组合。
+- 账号通过后：可选竞品候选→服务端项目快照→生成上下文→文档版本引用的最小切片。
+- 后续仍未完成：统一用户草稿恢复/冲突检测、同模型 AI 参考完整体验、
+  无资料人工确认交接、完整中文/缩放/登录到交接 E2E。统一跨模块草稿接口 NOT_IMPLEMENTED；
+  多进程 NOT_VERIFIED。真实模型/搜索未验收，不自动部署。
+
+### 本轮验证记录
+
+- 有效 RED：新增资料/草稿两项测试初跑 1 failed / 1 passed（9.69s）；
+  草稿 commit audit.actor 实为客户端 forged-body，而非认证账号 ID。
+  `app/main.py::commit_document_edit_draft` 改用可信 workspace_account；旧非账号入口保留原合同。
+  GREEN 两项 2 passed（9.13s）。其余新增项属于既有行为覆盖，未人为制造产品 RED。
+- `py -3.12 tests/run_open_test_regressions.py test_account_resource_matrix.py`：
+  最终 7 passed（32.99s），外部连接尝试/真实连接均 0。
+- `py -3.12 tests/run_open_test_regressions.py`：最终 fresh 123 passed（155.63s），
+  0 failed / 0 skipped，包含原 116 项与新增 7 项；定向回归，不是全库测试。
+  blocked_external_attempts=0，real_external_connections=0。
+- `py -3.12 tests/run_account_browser.py`：真实 Chromium 账号领取/登录、policy、
+  创建保存项目、刷新、退出换账号和跨账号拒绝 PASS；真实 lifespan，外部连接/生成均 0。
+  不是第4次生成/第6个claim的浏览器业务证明。截图沿用本地忽略的 artifacts/account-browser/。
+- `node tests/loading_progress_harness.js` PASS（mock请求）；变更 Python compileall、
+  git diff --check PASS。五份变更文件常见真实密钥模式 0 命中；人工复核只有合成口令，
+  未读取真实凭据。此扫描不宣称全仓库安全认证。
+- 当前未覆盖入口及组合已在顶部和资源矩阵明确列出，非工具/授权阻塞，属于尚未完成工作。
+  本次只提交资源权限增量；账号未结项，竞品垂直切片 NOT_STARTED。
+
+## 历史实现记录（以下按当时状态保留）
+
 本记录对应 2026-09-06 的离线实现。状态为 **PARTIAL，不能据此开放注册或部署**。
 没有修改生产数据库、运行容器、凭据或邀请，没有真实模型/搜索请求。
 

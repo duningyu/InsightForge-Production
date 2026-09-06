@@ -3,6 +3,7 @@
 const DEMO_DISCLOSURE = "本地演示模式：当前结构化结果用于验证工作流，不代表真实模型已理解任意 Idea。";
 
 const state = {
+  accountId: null,
   projects: [],
   currentProjectId: null,
   activeView: "snapshot",
@@ -346,6 +347,116 @@ const STATUS_PRESENTATION = {
   committed: {label: "额度已结算", next: "本次操作已计入用户额度"},
 };
 
+// Unified draft recovery is deliberately a recovery layer, not a second source of
+// truth. Server drafts use CAS revisions; local copies only protect text that has
+// not reached the server yet and are always scoped by account/project/module.
+const draftRecovery = {
+  timers: new Map(),
+  requests: new Map(),
+  localPrefix: "insightforge-draft-recovery:",
+};
+
+function draftAccountKey() {
+  return String(state.accountId || globalThis.__INSIGHTFORGE_ACCOUNT_ID__ || "default");
+}
+function draftStorageKey(projectId, scopeType, scopeKey) {
+  return `${draftRecovery.localPrefix}${encodeURIComponent(draftAccountKey())}:${encodeURIComponent(projectId || "new")}:${encodeURIComponent(scopeType)}:${encodeURIComponent(scopeKey)}`;
+}
+function draftContext(projectId, scopeType, scopeKey) {
+  return `${draftAccountKey()}|${projectId}|${scopeType}|${scopeKey}`;
+}
+function readRecoveryCopy(projectId, scopeType, scopeKey) {
+  try { return JSON.parse(globalThis.localStorage?.getItem(draftStorageKey(projectId, scopeType, scopeKey)) || "null"); } catch (_) { return null; }
+}
+function writeRecoveryCopy(projectId, scopeType, scopeKey, payload, baseRevision = null) {
+  try {
+    globalThis.localStorage?.setItem(draftStorageKey(projectId, scopeType, scopeKey), JSON.stringify({payload, baseRevision, dirty: true, savedAt: new Date().toISOString()}));
+  } catch (_) { /* local recovery is best effort; server persistence remains authoritative. */ }
+}
+function clearRecoveryCopy(projectId, scopeType, scopeKey) {
+  try { globalThis.localStorage?.removeItem(draftStorageKey(projectId, scopeType, scopeKey)); } catch (_) {}
+}
+function showDraftStatus(message) {
+  const node = qs("#draft-recovery-status");
+  if (node) node.textContent = message;
+}
+async function loadUnifiedDraft(projectId, scopeType, scopeKey) {
+  const context = draftContext(projectId, scopeType, scopeKey);
+  const response = await api(`/api/projects/${encodeURIComponent(projectId)}/drafts/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeKey)}`).catch(error => {
+    if (error.status === 404) return null;
+    throw error;
+  });
+  const local = readRecoveryCopy(projectId, scopeType, scopeKey);
+  if (local?.dirty) {
+    if (!response || Number(local.baseRevision ?? 0) >= Number(response.revision ?? 0)) {
+      showDraftStatus("发现未同步内容，已暂时保留在本机。");
+    } else {
+      showDraftStatus("这个内容已经在其他页面更新。你的当前内容已临时保留。");
+    }
+  }
+  return {context, server: response, local};
+}
+function preferredRecoveryPayload(recovered) {
+  const server = recovered?.server;
+  const local = recovered?.local;
+  if (local?.dirty && (!server || Number(local.baseRevision ?? 0) >= Number(server.revision ?? 0))) return local.payload;
+  return server?.payload || local?.payload || null;
+}
+function queueUnifiedDraft(projectId, scopeType, scopeKey, payload, {baseRevision = null, delay = 700} = {}) {
+  if (!projectId) {
+    writeRecoveryCopy("new", scopeType, scopeKey, payload, baseRevision);
+    showDraftStatus("仅保存在本机，项目创建后可继续同步。");
+    return;
+  }
+  writeRecoveryCopy(projectId, scopeType, scopeKey, payload, baseRevision);
+  showDraftStatus("正在保存…");
+  const key = draftContext(projectId, scopeType, scopeKey);
+  clearTimeout(draftRecovery.timers.get(key));
+  const requestId = (draftRecovery.requests.get(key) || 0) + 1;
+  draftRecovery.requests.set(key, requestId);
+  draftRecovery.timers.set(key, setTimeout(async () => {
+    try {
+      const result = await api(`/api/projects/${encodeURIComponent(projectId)}/drafts/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeKey)}`, {
+        method: "PUT", body: JSON.stringify({payload, base_revision: baseRevision}),
+      });
+      if (draftRecovery.requests.get(key) !== requestId || draftContext(projectId, scopeType, scopeKey) !== key) return;
+      clearRecoveryCopy(projectId, scopeType, scopeKey);
+      showDraftStatus("已保存");
+      return result;
+    } catch (error) {
+      if (draftRecovery.requests.get(key) !== requestId || draftContext(projectId, scopeType, scopeKey) !== key) return;
+      if (error.code === "DRAFT_CONFLICT") showDraftStatus("这个内容已经在其他页面更新。你的当前内容已临时保留。");
+      else showDraftStatus("已保存到本机，等待同步");
+    }
+  }, delay));
+}
+function setAccountContext(accountId) {
+  state.accountId = accountId || null;
+}
+function recoverNewIdeaDraft() {
+  const copy = readRecoveryCopy("new", "idea", "main");
+  const payload = copy?.payload;
+  if (!payload || typeof payload !== "object") return;
+  for (const [id, value] of Object.entries({
+    "quick-start-idea": payload.idea,
+    "quick-start-target-user": payload.target_user,
+    "quick-start-priority": payload.priority,
+    "quick-start-resources": payload.resources,
+  })) {
+    const node = qs(`#${id}`);
+    if (node && value != null) node.value = Array.isArray(value) ? value.join("\n") : value;
+  }
+  showDraftStatus("发现未同步内容，已暂时保留在本机。");
+}
+function persistViewContext() {
+  if (!state.currentProjectId) return;
+  queueUnifiedDraft(state.currentProjectId, "ui_context", "main", {
+    activeView: state.activeView,
+    evidenceTab: state.evidenceTab,
+    docType: state.documentWorkspace.docType,
+  }, {delay: 250});
+}
+
 function statusPresentation(value) {
   return STATUS_PRESENTATION[value] || {label: "状态待确认", next: "查看技术详情或联系操作员"};
 }
@@ -387,8 +498,10 @@ function showModelSettings() {
 
 function activateView(view) {
   const previousView = state.activeView;
+  persistViewContext();
   secureSettingsExit();
   state.activeView = view;
+  persistViewContext();
   qsa(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   qsa(".workspace-view").forEach((node) => node.classList.toggle("hidden", node.dataset.workspaceView !== view));
   qs("#primary-nav").classList.remove("open");
@@ -1238,6 +1351,18 @@ async function loadDocumentWorkspace(docType = state.documentWorkspace.docType) 
     if (error.status === 404) workspace.draft = null;
     else workspace.error = {code: error.code || "DOCUMENT_DRAFT_LOAD_FAILED", message: error.message || "无法加载文档草稿"};
   }
+  const selected = selectedDocumentVersion();
+  if (selected) {
+    const local = readRecoveryCopy(state.currentProjectId, "document", `${docType}:${selected.id}`);
+    if (local?.dirty) {
+      if (!workspace.draft || Number(local.baseRevision ?? 0) >= Number(workspace.draft.revision ?? 0)) {
+        workspace.draft = {...(workspace.draft || {}), base_version_id: selected.id, content: local.payload?.content || "", revision: local.baseRevision ?? workspace.draft?.revision ?? null, recovered_locally: true};
+        showDraftStatus("发现未同步内容，已暂时保留在本机。");
+      } else {
+        showDraftStatus("这个内容已经在其他页面更新。你的当前内容已临时保留。");
+      }
+    }
+  }
   workspace.dirty = false;
   const editor = qs("#document-editor");
   if (editor) editor.dataset.loadedVersionId = "";
@@ -1286,21 +1411,35 @@ function scheduleDocumentAutosave() {
   const selected = selectedDocumentVersion();
   if (!state.currentProjectId || !selected) return;
   workspace.dirty = true;
+  const content = qs("#document-editor").value;
+  const draftScopeKey = `${workspace.docType}:${selected.id}`;
+  writeRecoveryCopy(state.currentProjectId, "document", draftScopeKey, {content}, workspace.draft?.revision ?? null);
+  const requestProject = state.currentProjectId;
+  const requestVersion = selected.id;
+  const requestRevision = workspace.draft?.revision ?? null;
+  const requestContext = draftContext(requestProject, "document", draftScopeKey);
   qs("#document-autosave-status").textContent = "草稿有修改 · 正在等待自动保存…";
   clearTimeout(workspace.autosaveTimer);
   workspace.autosaveTimer = setTimeout(async () => {
-    const content = qs("#document-editor").value;
-    if (!content.trim()) {
+    const latestContent = qs("#document-editor").value;
+    if (!latestContent.trim()) {
       qs("#document-autosave-status").textContent = "草稿为空，不会覆盖已保存内容";
       return;
     }
     try {
       const draftPath = DOCUMENT_DRAFT_PATHS[workspace.docType];
-      workspace.draft = await api(`/api/projects/${state.currentProjectId}${draftPath}`, {method: "PUT", body: JSON.stringify({base_version_id: selected.id, content})});
+      const result = await api(`/api/projects/${requestProject}${draftPath}`, {method: "PUT", body: JSON.stringify({base_version_id: requestVersion, base_revision: requestRevision, content: latestContent})});
+      if (requestContext !== draftContext(state.currentProjectId, "document", draftScopeKey) || requestProject !== state.currentProjectId || requestVersion !== selectedDocumentVersion()?.id) return;
+      workspace.draft = result;
+      clearRecoveryCopy(requestProject, "document", `${workspace.docType}:${requestVersion}`);
       workspace.dirty = false;
       qs("#document-autosave-status").textContent = `草稿已自动保存 · 基于 v${selected.version}`;
     } catch (error) {
-      qs("#document-autosave-status").textContent = "自动保存失败，正式版本未被修改";
+      if (requestContext !== draftContext(state.currentProjectId, "document", draftScopeKey)
+        || requestProject !== state.currentProjectId
+        || requestVersion !== selectedDocumentVersion()?.id) return;
+      if (error.code === "DRAFT_CONFLICT") qs("#document-autosave-status").textContent = "这个内容已经在其他页面更新。当前内容已临时保留。";
+      else qs("#document-autosave-status").textContent = "自动保存失败，正式版本未被修改";
       reportError(error);
     }
   }, 700);
@@ -1316,8 +1455,9 @@ async function commitDocumentDraft() {
     clearTimeout(workspace.autosaveTimer);
     try {
       const draftPath = DOCUMENT_DRAFT_PATHS[workspace.docType];
-      workspace.draft = await api(`/api/projects/${state.currentProjectId}${draftPath}`, {method: "PUT", body: JSON.stringify({base_version_id: selected.id, content: qs("#document-editor").value})});
+      workspace.draft = await api(`/api/projects/${state.currentProjectId}${draftPath}`, {method: "PUT", body: JSON.stringify({base_version_id: selected.id, base_revision: workspace.draft?.revision ?? null, content: qs("#document-editor").value})});
       workspace.dirty = false;
+      clearRecoveryCopy(state.currentProjectId, "document", `${workspace.docType}:${selected.id}`);
     } catch (error) { reportError(error); return; }
   }
   try {
@@ -1416,6 +1556,7 @@ async function quickStart(event) {
       return result;
     }
     state.currentProjectId = result.project_id;
+    clearRecoveryCopy("new", "idea", "main");
     state.ideaBrief = result.idea_brief;
     state.runtimeMode = result.runtime_mode || result.ai_trace?.runtime_mode || state.runtimeMode;
     renderRuntimeDisclosure();
@@ -1648,6 +1789,14 @@ async function loadProject(projectId) {
   renderIdeaBrief();
   renderSolutions();
   renderSnapshot();
+  try {
+    const recovered = await loadUnifiedDraft(projectId, "ui_context", "main");
+    const context = preferredRecoveryPayload(recovered);
+    if (context?.evidenceTab) state.evidenceTab = context.evidenceTab;
+    if (context?.activeView && WORKSPACE_VIEWS.has(context.activeView) && context.activeView !== state.activeView) {
+      activateView(context.activeView);
+    }
+  } catch (_) { /* recovery must not prevent the project from opening */ }
   await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough()]);
 }
 
@@ -1791,8 +1940,10 @@ async function exportHandoff() {
 // Only ephemeral per-project input here; this is not the cross-module draft system.
 const competitorPanel = {project: null, opener: null, busy: false, revision: 0, drafts: new Map(), candidates: [], comparison: null};
 function rememberCompetitorInput() {
-  if (competitorPanel.project) competitorPanel.drafts.set(competitorPanel.project,
-    ["name", "url", "description"].map(key => qs(`#competitor-${key}`).value));
+  if (!competitorPanel.project) return;
+  const payload = Object.fromEntries(["name", "url", "description"].map(key => [key, qs(`#competitor-${key}`).value]));
+  competitorPanel.drafts.set(competitorPanel.project, [payload.name, payload.url, payload.description]);
+  queueUnifiedDraft(competitorPanel.project, "competitor_decision", "form", payload, {delay: 500});
 }
 function closeCompetitors() {
   rememberCompetitorInput();
@@ -1804,7 +1955,9 @@ async function openCompetitors() {
   rememberCompetitorInput();
   competitorPanel.project = state.currentProjectId;
   competitorPanel.opener = document.activeElement;
-  const draft = competitorPanel.drafts.get(competitorPanel.project) || ["", "", ""];
+  const recovered = await loadUnifiedDraft(competitorPanel.project, "competitor_decision", "form").catch(() => null);
+  const payload = preferredRecoveryPayload(recovered);
+  const draft = payload ? [payload.name || "", payload.url || "", payload.description || ""] : (competitorPanel.drafts.get(competitorPanel.project) || ["", "", ""]);
   ["name", "url", "description"].forEach((key, i) => { qs(`#competitor-${key}`).value = draft[i]; });
   qs("#competitor-dialog").showModal();
   await loadCompetitors();
@@ -1903,7 +2056,7 @@ async function mutateCompetitors(path, options, adding = false) {
   qs("#competitor-message").textContent = "正在保存…";
   try {
     await api(path, options);
-    if (adding) competitorPanel.drafts.delete(project);
+    if (adding) { competitorPanel.drafts.delete(project); clearRecoveryCopy(project, "competitor_decision", "form"); }
     if (competitorPanel.project === project) {
       if (adding) { qs("#competitor-form").reset(); rememberCompetitorInput(); }
       await loadCompetitors();
@@ -1925,6 +2078,7 @@ function wireEvents() {
     const body = Object.fromEntries(["name", "url", "description"].map(key => [key, qs(`#competitor-${key}`).value.trim()]));
     void mutateCompetitors(`/api/projects/${encodeURIComponent(competitorPanel.project)}/competitors`, {method:"POST", body:JSON.stringify(body)}, true);
   });
+  ["name", "url", "description"].forEach(key => qs(`#competitor-${key}`)?.addEventListener("input", rememberCompetitorInput));
   qs("#competitor-compare")?.addEventListener("click", () => void compareCompetitors());
   qs("#competitor-save-snapshot")?.addEventListener("click", () => void saveCompetitorSnapshot());
   qs("#generation-progress-open")?.addEventListener("click", showGenerationProgress);
@@ -1936,6 +2090,14 @@ function wireEvents() {
   qs("#beta-feedback-form")?.addEventListener("submit", submitBetaFeedback);
   qs("#home-button").addEventListener("click", (event) => { event.preventDefault(); showQuickStart(); });
   qs("#quick-start-form").addEventListener("submit", quickStart);
+  ["idea", "target-user", "priority", "resources"].forEach(key => qs(`#quick-start-${key}`)?.addEventListener("input", () => {
+    queueUnifiedDraft(null, "idea", "main", {
+      idea: qs("#quick-start-idea")?.value || "",
+      target_user: qs("#quick-start-target-user")?.value || "",
+      priority: qs("#quick-start-priority")?.value || "",
+      resources: qs("#quick-start-resources")?.value || "",
+    }, {delay: 500});
+  }));
   qs("#idea-brief-form").addEventListener("submit", confirmIdeaBrief);
   qs("#idea-brief-edit").addEventListener("click", (event) => { event.preventDefault(); qs("#idea-brief-target-user")?.focus(); toast("可以直接修改以上项目理解，确认后才会保存。"); });
   qs("#new-idea-button").addEventListener("click", showQuickStart);
@@ -1978,6 +2140,7 @@ function wireEvents() {
     setEvidenceTab("claims");
   });
   qs("#snapshot-health-reconfirm").addEventListener("click", reconfirmSnapshotHealth);
+  recoverNewIdeaDraft();
 }
 
 const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
@@ -2006,9 +2169,18 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     parseGuidanceAction,
     renderImpactHistory,
     reconfirmSnapshotHealth,
+    loadUnifiedDraft,
+    preferredRecoveryPayload,
+    queueUnifiedDraft,
+    setAccountContext,
+    readRecoveryCopy,
+    writeRecoveryCopy,
+    clearRecoveryCopy,
+    draftStorageKey,
+    draftContext,
   },
 } : {};
-window.InsightForgeUi = {api, escapeHtml, reportError, toast, secureSettingsExit, applyGuidanceAction, ...recoveryTestHooks};
+window.InsightForgeUi = {api, escapeHtml, reportError, toast, secureSettingsExit, applyGuidanceAction, setAccountContext, ...recoveryTestHooks};
 
 async function bootstrap() {
   wireEvents();

@@ -40,6 +40,14 @@ class ConflictError(RuntimeError):
     """The requested write conflicts with the current immutable/versioned state."""
 
 
+class DraftConflictError(ConflictError):
+    """A draft write was based on an older server revision."""
+
+    def __init__(self, latest: dict[str, Any]):
+        self.latest = latest
+        super().__init__("DRAFT_CONFLICT")
+
+
 class StructuredRuntimeUnavailableError(RuntimeError):
     """The requested structured AI runtime cannot safely serve this request."""
 

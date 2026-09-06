@@ -6,7 +6,7 @@ import uuid
 from typing import Any
 
 from app.db import Database, utc_now
-from app.errors import ConflictError
+from app.errors import ConflictError, DraftConflictError
 
 
 class DocumentWorkspaceService:
@@ -71,6 +71,7 @@ class DocumentWorkspaceService:
         base_version_id: str,
         content: str,
         actor: str,
+        base_revision: int | None = None,
     ) -> dict[str, Any]:
         self._project(project_id)
         self._validate_doc_type(doc_type)
@@ -83,19 +84,27 @@ class DocumentWorkspaceService:
             raise ValueError("document draft content cannot be empty")
         clean_content = content
         now = utc_now()
+        current = self.db.fetch_one(
+            "SELECT * FROM document_edit_drafts WHERE project_id=? AND doc_type=?",
+            (project_id, doc_type),
+        )
+        if current is not None and base_revision is not None and int(current.get("revision", 1)) != base_revision:
+            raise DraftConflictError(self.get_draft(project_id, doc_type))
+        next_revision = int(current.get("revision", 1)) + 1 if current else 1
         draft_id = f"document_edit_draft_{uuid.uuid4().hex}"
         self.db.execute(
             """
             INSERT INTO document_edit_drafts(
-                id,project_id,doc_type,base_version_id,content,updated_by,updated_at
-            ) VALUES (?,?,?,?,?,?,?)
+                id,project_id,doc_type,base_version_id,content,updated_by,updated_at,revision
+            ) VALUES (?,?,?,?,?,?,?,?)
             ON CONFLICT(project_id,doc_type) DO UPDATE SET
                 base_version_id=excluded.base_version_id,
                 content=excluded.content,
                 updated_by=excluded.updated_by,
-                updated_at=excluded.updated_at
+                updated_at=excluded.updated_at,
+                revision=excluded.revision
             """,
-            (draft_id, project_id, doc_type, base_version_id, clean_content, actor.strip() or "web_user", now),
+            (draft_id, project_id, doc_type, base_version_id, clean_content, actor.strip() or "web_user", now, next_revision),
         )
         return self.get_draft(project_id, doc_type)
 

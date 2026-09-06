@@ -305,6 +305,14 @@ class WalkthroughAdvanceRequest(StrictModel):
 class DocumentDraftSaveRequest(StrictModel):
     base_version_id: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1, max_length=2_000_000)
+    base_revision: int | None = Field(default=None, ge=0)
+
+
+class UnifiedDraftSaveRequest(StrictModel):
+    payload: dict[str, Any]
+    base_revision: int | None = Field(default=None, ge=0)
+    entity_id: str | None = Field(default=None, max_length=200)
+    version_id: str | None = Field(default=None, max_length=200)
 
 
 class DocumentDraftCommitRequest(StrictModel):

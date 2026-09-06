@@ -1,5 +1,15 @@
 # 开放测试改版：源码增量与未完成边界
 
+## 当前状态摘要（统一草稿恢复与多标签冲突增量）
+
+开发基线：`0100891113e8151d744d31a361e63cca262bc069`，本轮保留此前账号隔离与竞品决策改动，未部署、未调用真实 Provider/Search。
+
+- 已增加服务端统一草稿存储：按认证账号、项目、模块作用域保存，使用 revision compare-and-swap；旧 revision 写入返回冲突，不覆盖新内容。
+- 已为 PRD/TechDoc 文档草稿接入 `base_revision` 冲突保护；正式 document version、已批准版本和竞品 snapshot 仍是独立权威状态。
+- 已接入前端本地恢复副本、按账号/项目/作用域隔离的恢复 key、debounce autosave、模块上下文保存、Idea/竞品/文档草稿恢复，以及迟到响应上下文保护。未同步内容显示为“仅保存在本机”或冲突提示，不伪称已同步。
+- Fresh 定向证据：`tests/test_unified_drafts.py` 3 passed（含真实 claim/login 会话的账号隔离）；`tests/draft_recovery_behavior_harness.js` PASS；generation/loading/document/solution harness、JS syntax、compileall、git diff --check PASS。真实 Chromium 草稿流程因环境缺少 Playwright（`Cannot find module 'playwright'`）未运行，不能写成浏览器 E2E PASS。
+- 当前批次仍为 PARTIAL，未完成项为真实 Chromium 的草稿恢复/双标签冲突/账号切换流程，以及既有的完整 AI 补充思路、无资料人工确认交接、完整中文/有结果布局/125%与150%缩放、最终登录到交接 E2E、竞品完整浏览器串联。
+
 ## 当前状态摘要（竞品决策垂直切片）
 
 开发基线：`646598975e5b3b6e1e56b9fc6d117a5c67e5fa8b`，当前工作区保留其改动并继续完成竞品决策切片；账号批次保持 PASS，整体开放测试仍为 PARTIAL，未部署。

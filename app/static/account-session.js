@@ -7,6 +7,8 @@ async function accountSession() {
   if (response.status === 401) { location.replace("/login"); return; }
   if (!response.ok) return;
   const account = await response.json();
+  window.__INSIGHTFORGE_ACCOUNT_ID__ = account.id;
+  window.InsightForgeUi?.setAccountContext?.(account.id);
   document.querySelector("#account-name").textContent = account.username;
   document.querySelector("#account-controls").hidden = false;
   document.querySelector("#account-logout").onclick = async () => {

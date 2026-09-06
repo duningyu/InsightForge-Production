@@ -1,5 +1,18 @@
 # 开放测试资源隔离矩阵（源码检查点 84617b 后的有限补测）
 
+## 当前增量：统一草稿与文档草稿并发边界
+
+统一草稿服务不重新打开账号批次；其权限由认证会话和项目归属决定，客户端提交的 `user_id`、`workspace`、`database_path` 等字段不参与资源选择。文档正式版本、已批准版本、已保存竞品 snapshot 和任务终态继续由服务端真实状态决定。
+
+| 实际 method/path | 正向与隔离结果 | 状态 / 测试 |
+| --- | --- | --- |
+| GET/PUT `/api/projects/{p}/drafts/{scope_type}/{scope_key}` | owner 可读写；foreign/anonymous 不可读；同作用域使用 revision CAS，旧 revision 返回 `409 DRAFT_CONFLICT` 且不覆盖最新内容 | VERIFIED `tests/test_unified_drafts.py` |
+| GET/PUT `/api/projects/{p}/documents/{document_id}/draft` | owner 文档草稿可读写；`base_revision` 过期时返回冲突，正文与修订号保持最新 | VERIFIED `tests/test_unified_drafts.py::test_document_draft_rejects_stale_revision_without_overwriting` |
+| 浏览器本地恢复副本 | key 包含账号、项目、scope；切换账号不会加载另一账号副本；冲突时保留本地内容并提示 | VERIFIED `tests/draft_recovery_behavior_harness.js`；真实 Chromium NOT_RUN（Playwright 不可用） |
+| 任务恢复引用 | 既有 generation recovery 只查询原任务，不因模块恢复新增 POST；本轮未改写任务权威状态 | VERIFIED `tests/generation_recovery_behavior_harness.js` |
+
+统一草稿已实现的跨模块范围：Idea 本地输入、项目 UI context、竞品未提交表单、PRD/TechDoc 文档草稿。统一跨模块草稿的更广泛资料上传 File 对象恢复、复杂文本 merge 和多进程恢复仍未实现/未验证，不冒充 PASS。
+
 ## 当前增量：竞品决策资源（截至 6465989 后续工作区）
 
 账号批次保持 PASS。竞品 comparison/snapshot 资源已纳入同一服务端项目与账号边界；统一跨模块草稿仍为后续未实现接口。

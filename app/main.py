@@ -33,6 +33,7 @@ from app.schemas import (
     ApprovalRequest,
     WalkthroughAdvanceRequest,
     DocumentDraftSaveRequest,
+    UnifiedDraftSaveRequest,
     DocumentDraftCommitRequest,
     DocumentRestoreAsNewRequest,
     CanvasUpdateRequest,
@@ -61,6 +62,7 @@ from app.services.competitor_decisions import CompetitorDecisionService
 from app.errors import (
     BetaDailyLimitReached,
     ConflictError,
+    DraftConflictError,
     StructuredRuntimeRecoveryError,
     StructuredRuntimeUnavailableError,
 )
@@ -80,6 +82,7 @@ from app.services.change_proposals import ChangeProposalService
 from app.services.impact import ImpactResolver
 from app.services.document_versions import DocumentVersionService
 from app.services.document_workspace import DocumentWorkspaceService
+from app.services.drafts import UnifiedDraftService
 from app.services.walkthrough import WalkthroughService
 from app.services.example_copies import ExampleCopyService
 from app.services.example_projects import ExampleProjectSeeder
@@ -340,6 +343,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         application.state.project_claims.impact_resolver = application.state.impact
         application.state.document_versions = DocumentVersionService(db)
         application.state.document_workspace = DocumentWorkspaceService(db)
+        application.state.drafts = UnifiedDraftService(db)
         application.state.walkthrough = WalkthroughService(db)
         application.state.guided = GuidedProjectService(db, application.state.projects)
         application.state.claims = ClaimService(db)
@@ -445,6 +449,15 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
     @application.exception_handler(ConflictError)
     async def conflict_error_handler(_request, exc: ConflictError):
         detail = str(exc)
+        if isinstance(exc, DraftConflictError):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "这个内容已经在其他页面更新。",
+                    "code": "DRAFT_CONFLICT",
+                    "latest": jsonable_encoder(exc.latest),
+                },
+            )
         if detail.startswith("IDEA_BRIEF_REQUIRED"):
             return JSONResponse(
                 status_code=409,
@@ -1438,13 +1451,38 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             before = {"content": ""}
         result = application.state.document_workspace.save_draft(
             project_id, doc_type, base_version_id=payload.base_version_id,
-            content=payload.content, actor=x_actor
+            content=payload.content, actor=x_actor, base_revision=payload.base_revision
         )
         if doc_type == "prd":
             before_length = len(before.get("content") or "")
             after_length = len(payload.content)
             record_product_event(request, "prd_draft_saved", {"doc_type": "prd", "chars_before": before_length, "chars_after": after_length, "chars_added": max(0, after_length-before_length), "chars_removed": max(0, before_length-after_length)}, project_id=project_id)
         return result
+
+    @application.get("/api/projects/{project_id}/drafts/{scope_type}/{scope_key}")
+    def get_unified_draft(project_id: str, scope_type: str, scope_key: str) -> dict[str, Any]:
+        return application.state.drafts.get(project_id, scope_type, scope_key)
+
+    @application.put("/api/projects/{project_id}/drafts/{scope_type}/{scope_key}")
+    def save_unified_draft(
+        project_id: str,
+        scope_type: str,
+        scope_key: str,
+        payload: UnifiedDraftSaveRequest,
+        request: Request,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        actor = request.scope.get("workspace_account", {}).get("id") or x_actor
+        return application.state.drafts.save(
+            project_id,
+            scope_type,
+            scope_key,
+            payload=payload.payload,
+            base_revision=payload.base_revision,
+            entity_id=payload.entity_id,
+            version_id=payload.version_id,
+            actor=actor,
+        )
 
     @application.post("/api/projects/{project_id}/documents/{doc_type}/draft/commit", status_code=201)
     def commit_document_edit_draft(

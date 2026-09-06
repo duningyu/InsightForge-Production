@@ -202,10 +202,26 @@ CREATE TABLE IF NOT EXISTS document_edit_drafts (
     content TEXT NOT NULL,
     updated_by TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
     UNIQUE(project_id, doc_type)
 );
 CREATE INDEX IF NOT EXISTS idx_document_edit_drafts_project
     ON document_edit_drafts(project_id, doc_type);
+CREATE TABLE IF NOT EXISTS unified_drafts (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    entity_id TEXT,
+    version_id TEXT,
+    revision INTEGER NOT NULL DEFAULT 1,
+    payload_json TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project_id, scope_type, scope_key)
+);
+CREATE INDEX IF NOT EXISTS idx_unified_drafts_project
+    ON unified_drafts(project_id, scope_type, scope_key);
 CREATE TABLE IF NOT EXISTS project_tour_progress (
     project_id TEXT NOT NULL REFERENCES projects(id),
     tour_id TEXT NOT NULL,
@@ -921,6 +937,7 @@ class Database:
 
     @classmethod
     def _migrate_schema(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "document_edit_drafts", "revision", "INTEGER NOT NULL DEFAULT 1")
         async_dispatch_columns = {
             "cancel_requested_at": "TEXT",
             "acceptance_authorization_id": "TEXT",

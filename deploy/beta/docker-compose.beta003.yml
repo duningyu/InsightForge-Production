@@ -14,8 +14,8 @@ services:
       MANAGED_QWEN_MODEL: qwen3.7-flash
       MANAGED_QWEN_API_KEY: ${MANAGED_QWEN_API_KEY:?MANAGED_QWEN_API_KEY must be supplied by the external private environment}
     volumes:
-      - beta_beta003_data:/data
-      - beta_beta003_runtime:/runtime
+      - beta003_data:/data
+      - beta003_runtime:/runtime
     ports:
       - "127.0.0.1:18003:8000"
     healthcheck:
@@ -31,5 +31,5 @@ services:
       com.insightforge.funnel-target: 127.0.0.1:18003
 
 volumes:
-  beta_beta003_data: {}
-  beta_beta003_runtime: {}
+  beta003_data: {}
+  beta003_runtime: {}

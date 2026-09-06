@@ -64,12 +64,35 @@ CREATE TABLE IF NOT EXISTS competitor_candidates (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_competitor_candidates_project ON competitor_candidates(project_id);
+CREATE TABLE IF NOT EXISTS competitor_comparisons (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    created_by TEXT NOT NULL,
+    candidate_ids_json TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_competitor_comparisons_project
+    ON competitor_comparisons(project_id, created_at);
+CREATE TABLE IF NOT EXISTS competitor_decision_snapshots (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    created_by TEXT NOT NULL,
+    comparison_id TEXT NOT NULL REFERENCES competitor_comparisons(id),
+    candidate_ids_json TEXT NOT NULL,
+    content_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_competitor_snapshots_project
+    ON competitor_decision_snapshots(project_id, created_at);
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     summary TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     current_snapshot_id TEXT,
+    current_competitor_snapshot_id TEXT,
     project_origin TEXT NOT NULL DEFAULT 'user' CHECK(project_origin IN ('user','demo','qa')),
     exclude_from_beta_metrics INTEGER NOT NULL DEFAULT 0 CHECK(exclude_from_beta_metrics IN (0,1)),
     created_at TEXT NOT NULL,
@@ -167,6 +190,7 @@ CREATE TABLE IF NOT EXISTS document_versions (
     lifecycle_status TEXT NOT NULL DEFAULT 'active',
     trashed_at TEXT,
     restored_from_version_id TEXT REFERENCES document_versions(id),
+    competitor_snapshot_id TEXT,
     UNIQUE(document_id, version)
 );
 CREATE INDEX IF NOT EXISTS idx_document_versions_project ON document_versions(project_id, doc_type, version);
@@ -989,6 +1013,8 @@ class Database:
         )
         cls._ensure_column(connection, "document_versions", "trashed_at", "TEXT")
         cls._ensure_column(connection, "document_versions", "restored_from_version_id", "TEXT")
+        cls._ensure_column(connection, "projects", "current_competitor_snapshot_id", "TEXT")
+        cls._ensure_column(connection, "document_versions", "competitor_snapshot_id", "TEXT")
         connection.execute(
             "UPDATE sources SET captured_at = COALESCE(captured_at, created_at), "
             "authority_label = COALESCE(authority_label, CASE "

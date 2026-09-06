@@ -9,7 +9,15 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 from app.errors import StructuredRuntimeRecoveryError, StructuredRuntimeUnavailableError
-from app.schemas import EvidenceRelationSetDraft, IdeaBriefDraft, QuickStartRequest, SolutionSetDraft
+from app.schemas import (
+    CompetitorComparisonDraft,
+    CompetitorComparisonItem,
+    CompetitorProjectLevel,
+    EvidenceRelationSetDraft,
+    IdeaBriefDraft,
+    QuickStartRequest,
+    SolutionSetDraft,
+)
 from app.services.provider_adapters import AsyncModelAdapter, DEFAULT_PROVIDER_TIMEOUT, ModelAdapter, ProviderCallError
 from app.services.dispatch_control import DispatchControlContext
 
@@ -30,6 +38,10 @@ class StructuredAIRuntime(Protocol):
     def interpret_idea(self, request: QuickStartRequest) -> IdeaBriefDraft: ...
 
     def design_solutions(self, brief: IdeaBriefDraft) -> SolutionSetDraft: ...
+
+    def compare_competitors(
+        self, candidates: list[dict[str, Any]], *, project_context: dict[str, Any] | None = None
+    ) -> CompetitorComparisonDraft: ...
 
     def analyze_evidence(
         self, *, claim: dict[str, Any], chunks: list[dict[str, Any]]
@@ -135,6 +147,23 @@ class DeterministicDemoRuntime:
                 "DETERMINISTIC_DEMO_UNSUPPORTED: frozen case has no complete solution set"
             )
         return SolutionSetDraft(candidates=solutions, llm_core_required=False)
+
+    def compare_competitors(
+        self, candidates: list[dict[str, Any]], *, project_context: dict[str, Any] | None = None
+    ) -> CompetitorComparisonDraft:
+        return CompetitorComparisonDraft(
+            competitors=[
+                CompetitorComparisonItem(
+                    candidate_id=str(candidate["candidate_id"]),
+                    name=str(candidate["name"]),
+                    core_problem=str(candidate.get("description") or "暂未确认"),
+                    uncertainties=["来源由用户提供，尚未核实"],
+                )
+                for candidate in candidates
+            ],
+            project_level=CompetitorProjectLevel(),
+            uncertainty_notice="AI分析参考，建议结合实际产品页面核对。",
+        )
 
     def analyze_evidence(
         self, *, claim: dict[str, Any], chunks: list[dict[str, Any]]
@@ -242,6 +271,32 @@ class OpenAIStructuredRuntime:
                     {"role": "user", "content": brief.model_dump_json()},
                 ],
                 text_format=SolutionSetDraft,
+            )
+            parsed = response.output_parsed
+        except Exception as exc:  # pragma: no cover - live adapter
+            raise StructuredRuntimeUnavailableError(f"STRUCTURED_LLM_CALL_FAILED: {exc}") from exc
+        if parsed is None:
+            raise StructuredRuntimeUnavailableError("STRUCTURED_LLM_EMPTY_OUTPUT")
+        return parsed
+
+    def compare_competitors(
+        self, candidates: list[dict[str, Any]], *, project_context: dict[str, Any] | None = None
+    ) -> CompetitorComparisonDraft:
+        self.model_rounds_used = 1
+        system = (
+            "Compare only the supplied candidate products for the current project. "
+            "Treat URLs and descriptions as user-provided, not verified facts. "
+            "Return structured analysis and mark unsupported fields as 暂未确认. "
+            "Do not invent prices, users, market share, research, or official product facts."
+        )
+        try:
+            response = self.client.responses.parse(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps({"candidates": candidates, "project_context": project_context}, ensure_ascii=False)},
+                ],
+                text_format=CompetitorComparisonDraft,
             )
             parsed = response.output_parsed
         except Exception as exc:  # pragma: no cover - live adapter
@@ -377,6 +432,7 @@ class ManagedQwenStructuredRuntime:
         operation = {
             "design_solutions": "solution_generation",
             "analyze_evidence": "evidence_analysis",
+            "compare_competitors": "solution_generation",
         }.get(method)
         reservation = None
         if operation is not None and self._before_provider_call is not None:
@@ -493,6 +549,12 @@ class ManagedQwenStructuredRuntime:
 
     def design_solutions(self, brief: IdeaBriefDraft, *, dispatch_control: DispatchControlContext | None = None) -> SolutionSetDraft:
         return self._call("design_solutions", brief, dispatch_control=dispatch_control)
+
+    def compare_competitors(
+        self, candidates: list[dict[str, Any]], *, project_context: dict[str, Any] | None = None,
+        dispatch_control: DispatchControlContext | None = None,
+    ) -> CompetitorComparisonDraft:
+        return self._call("compare_competitors", candidates, project_context=project_context, dispatch_control=dispatch_control)
 
     def analyze_evidence(
         self, *, claim: dict[str, Any], chunks: list[dict[str, Any]]

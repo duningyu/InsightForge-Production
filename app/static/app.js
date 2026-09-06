@@ -1789,7 +1789,7 @@ async function exportHandoff() {
 }
 
 // Only ephemeral per-project input here; this is not the cross-module draft system.
-const competitorPanel = {project: null, opener: null, busy: false, revision: 0, drafts: new Map()};
+const competitorPanel = {project: null, opener: null, busy: false, revision: 0, drafts: new Map(), candidates: [], comparison: null};
 function rememberCompetitorInput() {
   if (competitorPanel.project) competitorPanel.drafts.set(competitorPanel.project,
     ["name", "url", "description"].map(key => qs(`#competitor-${key}`).value));
@@ -1811,12 +1811,18 @@ async function openCompetitors() {
 }
 async function loadCompetitors() {
   const project = competitorPanel.project, revision = ++competitorPanel.revision;
+  competitorPanel.comparison = null;
+  qs("#competitor-comparison").hidden = true;
+  qs("#competitor-comparison-content").replaceChildren();
+  qs("#competitor-decisions").replaceChildren();
   qs("#competitor-message").textContent = "正在读取候选产品…";
   qs("#competitor-list").replaceChildren();
   try {
     const result = await api(`/api/projects/${encodeURIComponent(project)}/competitors`);
     if (revision !== competitorPanel.revision) return;
     qs("#competitor-message").textContent = result.candidates.length ? "候选只是参考，加入比较不等于事实已经核实。" : "还没有候选产品，可以添加，也可以直接继续。";
+    competitorPanel.candidates = result.candidates;
+    qs("#competitor-compare").hidden = !result.candidates.some(candidate => candidate.selected);
     const list = qs("#competitor-list");
     result.candidates.forEach(candidate => {
       const card = document.createElement("article");
@@ -1839,8 +1845,53 @@ async function loadCompetitors() {
     if (revision === competitorPanel.revision) qs("#competitor-message").textContent = "候选产品读取失败，请关闭后重新打开。你的输入仍保留在当前页面。";
   }
 }
+function renderCompetitorComparison(comparison) {
+  competitorPanel.comparison = comparison;
+  const panel = qs("#competitor-comparison");
+  const content = qs("#competitor-comparison-content");
+  const decisions = qs("#competitor-decisions");
+  panel.hidden = false;
+  content.replaceChildren();
+  decisions.replaceChildren();
+  const result = comparison.comparison || {};
+  (result.competitors || []).forEach(item => {
+    const card = document.createElement("article");
+    card.className = "secondary-panel";
+    const title = document.createElement("h4"); title.textContent = item.name || "候选产品"; card.append(title);
+    [["目标用户", item.target_users], ["解决的问题", item.core_problem], ["主要流程", item.main_flow], ["核心输出", item.main_output], ["使用门槛", item.adoption_barrier], ["可以借鉴", item.strengths_to_learn], ["不适合照搬", item.things_not_to_copy], ["对当前项目的影响", item.impact_on_current_project], ["待确认", item.uncertainties]].forEach(([label, value]) => {
+      const row = document.createElement("p"); row.textContent = `${label}：${value || "暂未确认"}`; card.append(row);
+    });
+    content.append(card);
+    const candidateId = item.candidate_id || (comparison.candidate_ids || [])[0];
+    const field = document.createElement("label"); field.textContent = `${item.name || "候选产品"}的决定`;
+    const select = document.createElement("select"); select.dataset.candidateId = candidateId;
+    [["adopt", "加入我的方案"], ["avoid", "这版先不做"], ["defer", "以后再考虑"]].forEach(([value, label]) => { const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option); });
+    const reason = document.createElement("input"); reason.type = "text"; reason.placeholder = "原因（可选）"; reason.dataset.reasonFor = candidateId;
+    field.append(select, reason); decisions.append(field);
+  });
+}
+async function compareCompetitors() {
+  if (competitorPanel.busy) return;
+  const selected = competitorPanel.candidates.filter(candidate => candidate.selected).map(candidate => candidate.id);
+  if (!selected.length) { qs("#competitor-message").textContent = "请先加入至少一个候选产品。"; return; }
+  competitorPanel.busy = true; renderCompetitorBusy(); qs("#competitor-message").textContent = "正在生成比较参考…";
+  try {
+    const result = await api(`/api/projects/${encodeURIComponent(competitorPanel.project)}/competitor-comparisons`, {method:"POST", body:JSON.stringify({candidate_ids:selected})});
+    renderCompetitorComparison(result);
+    qs("#competitor-message").textContent = "比较参考已生成，请先阅读并做出你的决定。";
+  } catch(error) { qs("#competitor-message").textContent = "比较参考生成失败，请稍后重试。"; }
+  finally { competitorPanel.busy = false; renderCompetitorBusy(); }
+}
+async function saveCompetitorSnapshot() {
+  if (competitorPanel.busy || !competitorPanel.comparison) return;
+  const decisions = [...qs("#competitor-decisions").querySelectorAll("select")].map(select => ({candidate_id: select.dataset.candidateId, decision: select.value, rationale: qs(`[data-reason-for="${CSS.escape(select.dataset.candidateId)}"]`).value.trim()}));
+  competitorPanel.busy = true; renderCompetitorBusy(); qs("#competitor-message").textContent = "正在保存你的决策…";
+  try { await api(`/api/projects/${encodeURIComponent(competitorPanel.project)}/competitor-snapshots`, {method:"POST", body:JSON.stringify({comparison_id:competitorPanel.comparison.id, decisions})}); qs("#competitor-message").textContent = "本次比较已保存，可继续完善方案。"; }
+  catch(error) { qs("#competitor-message").textContent = "保存决策失败，当前页面内容仍保留。"; }
+  finally { competitorPanel.busy = false; renderCompetitorBusy(); }
+}
 function renderCompetitorBusy() {
-  qsa("#competitor-form input, #competitor-form textarea, #competitor-form button, #competitor-list button")
+  qsa("#competitor-form input, #competitor-form textarea, #competitor-form button, #competitor-list button, #competitor-compare, #competitor-save-snapshot, #competitor-decisions select, #competitor-decisions input")
     .forEach(control => { control.disabled = competitorPanel.busy; });
 }
 async function mutateCompetitors(path, options, adding = false) {
@@ -1874,6 +1925,8 @@ function wireEvents() {
     const body = Object.fromEntries(["name", "url", "description"].map(key => [key, qs(`#competitor-${key}`).value.trim()]));
     void mutateCompetitors(`/api/projects/${encodeURIComponent(competitorPanel.project)}/competitors`, {method:"POST", body:JSON.stringify(body)}, true);
   });
+  qs("#competitor-compare")?.addEventListener("click", () => void compareCompetitors());
+  qs("#competitor-save-snapshot")?.addEventListener("click", () => void saveCompetitorSnapshot());
   qs("#generation-progress-open")?.addEventListener("click", showGenerationProgress);
   qs("#generation-progress-close")?.addEventListener("click", closeGenerationProgress);
   qs("#generation-progress-dialog")?.addEventListener("cancel", (event) => { event.preventDefault(); closeGenerationProgress(); });

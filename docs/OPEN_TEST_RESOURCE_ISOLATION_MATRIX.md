@@ -1,5 +1,19 @@
 # 开放测试资源隔离矩阵（源码检查点 84617b 后的有限补测）
 
+## 当前增量：竞品决策资源（截至 6465989 后续工作区）
+
+账号批次保持 PASS。竞品 comparison/snapshot 资源已纳入同一服务端项目与账号边界；统一跨模块草稿仍为后续未实现接口。
+
+| 实际 method/path | 正向与隔离结果 | 状态 / 测试 |
+| --- | --- | --- |
+| POST `/api/projects/{p}/competitor-comparisons` | owner 可对本项目已选择候选生成一次有界比较；未选择、跨项目候选拒绝；复用现有业务 runtime/Adapter | VERIFIED `tests/test_competitor_decision_slice.py` |
+| GET `/api/projects/{p}/competitor-comparisons/{id}` | owner 可读；跨项目/跨账号不可读 | VERIFIED 同上 |
+| POST `/api/projects/{p}/competitor-snapshots` | 服务端重验 comparison、candidate 项目归属与 decision 成员；保存项目级不可变快照 | VERIFIED 同上 |
+| GET `/api/projects/{p}/competitor-snapshots/{id}` | owner 可读；跨项目/跨账号拒绝；同局部 ID 不串库 | VERIFIED 同上 |
+| 方案 context → 文档版本 | 方案 context 含采用/暂不采用/以后再考虑及理由；文档版本记录精确 snapshot 引用；新快照不改旧版本 | VERIFIED `tests/test_competitor_decision_slice.py` |
+
+真实 Chromium 已验证候选添加、查看不选择、显式选择、一次比较、三类决策、保存快照、关闭/Esc/重新打开、移除与跳过；完整生成方案→文档浏览器串联仍 NOT_RUN，不能以业务集成测试替代。
+
 ## 当前增量：账号结项后竞品候选与页面
 
 账号批次 PASS，不因后续产品接口未实现重新打开账号批次。

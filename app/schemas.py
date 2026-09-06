@@ -62,6 +62,55 @@ class CompetitorSelectionRequest(StrictModel):
     selected: bool = Field(strict=True)
 
 
+class CompetitorComparisonRequest(StrictModel):
+    candidate_ids: list[str] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_unique_candidates(self) -> "CompetitorComparisonRequest":
+        if len(set(self.candidate_ids)) != len(self.candidate_ids):
+            raise ValueError("candidate_ids must be unique")
+        return self
+
+
+class CompetitorDecisionRequest(StrictModel):
+    candidate_id: str
+    decision: Literal["adopt", "avoid", "defer"]
+    rationale: str = Field(default="", max_length=2000)
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class CompetitorSnapshotCreateRequest(StrictModel):
+    comparison_id: str
+    decisions: list[CompetitorDecisionRequest] = Field(default_factory=list, max_length=30)
+
+
+class CompetitorComparisonItem(StrictModel):
+    candidate_id: str
+    name: str
+    target_users: str = "暂未确认"
+    core_problem: str = "暂未确认"
+    main_flow: str = "暂未确认"
+    main_output: str = "暂未确认"
+    adoption_barrier: str = "暂未确认"
+    strengths_to_learn: list[str] = Field(default_factory=list)
+    things_not_to_copy: list[str] = Field(default_factory=list)
+    impact_on_current_project: str = "暂未确认"
+    uncertainties: list[str] = Field(default_factory=list)
+
+
+class CompetitorProjectLevel(StrictModel):
+    similarities: list[str] = Field(default_factory=list)
+    differentiation_options: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    recommended_scope_implications: list[str] = Field(default_factory=list)
+
+
+class CompetitorComparisonDraft(StrictModel):
+    competitors: list[CompetitorComparisonItem]
+    project_level: CompetitorProjectLevel
+    uncertainty_notice: str = "AI分析参考，建议结合实际产品页面核对。"
+
+
 class ProjectCreateRequest(StrictModel):
     title: str = Field(min_length=1, max_length=160)
     summary: str = Field(min_length=1, max_length=3000)
@@ -324,6 +373,7 @@ class IdeaBriefDraft(StrictModel):
     provenance: dict[str, HypothesisProvenance]
     clarification_required: bool = False
     clarification_question: str | None = None
+    competitor_context: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_clarification(self) -> "IdeaBriefDraft":

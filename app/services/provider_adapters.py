@@ -15,6 +15,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.schemas import (
+    CompetitorComparisonDraft,
     EvidenceRelationSetDraft,
     IdeaBriefDraft,
     QuickStartRequest,
@@ -434,6 +435,7 @@ class ModelAdapter:
             "json_schema" if isinstance(response_format, dict) and response_format.get("type") == "json_schema"
             else "json_object" if response_format else "none"
         )
+
         transport_failure: tuple[str, str, bool, str, BaseException] | None = None
         try:
             self._before_network()
@@ -650,6 +652,18 @@ class ModelAdapter:
             "response_body_length": len(response.content),
         }
 
+    def compare_competitors(
+        self, candidates: list[dict[str, Any]], *, project_context: dict[str, Any] | None = None
+    ) -> CompetitorComparisonDraft:
+        return self._generate(
+            output_model=CompetitorComparisonDraft,
+            system=(
+                "Compare only supplied user-provided candidate products. Return structured analysis. "
+                "Do not invent URLs, prices, users, market share, research, or official facts; use 暂未确认."
+            ),
+            user=json.dumps({"candidates": candidates, "project_context": project_context}, ensure_ascii=False),
+        )
+
     def _content_from_response(self, body: dict[str, Any]) -> str:
         malformed = False
         content: Any = None
@@ -769,6 +783,19 @@ class AsyncModelAdapter(ModelAdapter):
             output_model=SolutionSetDraft,
             system="Generate 2-3 materially different solutions. Return only JSON matching the requested schema. Do not make unsupported market claims.",
             user=brief.model_dump_json(),
+        )
+
+    async def compare_competitors_async(
+        self, candidates: list[dict[str, Any]]
+    ) -> CompetitorComparisonDraft:
+        return await self._generate_async(
+            output_model=CompetitorComparisonDraft,
+            system=(
+                "Compare only supplied user-provided candidate products. Return only JSON matching "
+                "the requested schema. Keep source-backed facts, user input, AI analysis, and uncertainty "
+                "separate; do not invent URLs, prices, usage figures, market claims, or research findings."
+            ),
+            user=json.dumps({"candidates": candidates}, ensure_ascii=False),
         )
 
     async def _generate_async(self, *, output_model: type[_Model], system: str, user: str) -> _Model:

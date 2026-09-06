@@ -142,8 +142,8 @@ class DocumentWorkspaceService:
             INSERT INTO document_versions(
                 id,document_id,project_id,doc_type,version,canvas_version,status,content,
                 citations_json,validation_status,idempotency_key,created_at,approved_at,
-                lifecycle_status,trashed_at,restored_from_version_id
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?, ?,NULL,'active',NULL,?)
+                competitor_snapshot_id,lifecycle_status,trashed_at,restored_from_version_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,'active',NULL,?)
             """,
             (
                 version_id,
@@ -158,6 +158,7 @@ class DocumentWorkspaceService:
                 "not_run",
                 f"manual-edit:{uuid.uuid4().hex}",
                 now,
+                source.get("competitor_snapshot_id"),
                 restored_from_version_id,
             ),
         )

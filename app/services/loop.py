@@ -165,13 +165,17 @@ class DocumentLoop:
         version = int(version_row["max_version"]) + 1
         version_id = f"version_{uuid.uuid4().hex}"
         validation_status = "passed" if terminal_state == "completed" else "needs_human_review"
+        competitor_snapshot = self.db.fetch_one(
+            "SELECT current_competitor_snapshot_id FROM projects WHERE id=?",
+            (project_id,),
+        )
         self.db.execute(
             """
             INSERT INTO document_versions(
                 id, document_id, project_id, doc_type, version, canvas_version,
                 status, content, citations_json, validation_status,
-                idempotency_key, created_at, approved_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                idempotency_key, created_at, approved_at, competitor_snapshot_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 version_id,
@@ -187,6 +191,7 @@ class DocumentLoop:
                 effective_key,
                 utc_now(),
                 None,
+                competitor_snapshot.get("current_competitor_snapshot_id") if competitor_snapshot else None,
             ),
         )
         if structured_claims:

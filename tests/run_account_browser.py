@@ -34,7 +34,8 @@ with tempfile.TemporaryDirectory(prefix="insightforge-account-browser-") as temp
     from app.main import create_app
     import uvicorn
     cancel = "--cancel" in sys.argv
-    business = "--business" in sys.argv or cancel
+    competitor = "--competitor" in sys.argv
+    business = "--business" in sys.argv or cancel or competitor
     if cancel:
         from browser_cancel_fixture import install_transport, prepare, verify
         calls = install_transport()
@@ -60,13 +61,19 @@ with tempfile.TemporaryDirectory(prefix="insightforge-account-browser-") as temp
         assert server.started, "lifespan startup failed"
         import json
         data = {"url": f"http://127.0.0.1:{port}", "invites": [app.state.accounts.issue_invite() for _ in range(2)]}
-        if business:
+        if competitor:
+            from browser_business_fixture import prepare_competitor
+            data.update(prepare_competitor(app, data["url"], data["invites"][0]))
+        elif business:
             data.update(prepare(app, data["url"], data["invites"][0]))
-        scenario = "competitor_browser.cjs" if "--competitor" in sys.argv else "account_cancel_browser.cjs" if cancel else "account_business_browser.cjs" if business else "account_flow_browser.cjs"
+        scenario = "competitor_browser.cjs" if competitor else "account_cancel_browser.cjs" if cancel else "account_business_browser.cjs" if business else "account_flow_browser.cjs"
         result = subprocess.run(["node", str(ROOT / "tests" / scenario)],
                                 input=json.dumps(data), text=True, cwd=ROOT)
         assert result.returncode == 0, "Browser scenario failed"
-        if business:
+        if competitor:
+            from browser_business_fixture import verify_competitor
+            verify_competitor(app, data, calls)
+        elif business:
             verify(app, data, calls)
         assert not blocked, "External attempt detected"
         print("Application lifespan executed; real external connections=0; blocked attempts=0")

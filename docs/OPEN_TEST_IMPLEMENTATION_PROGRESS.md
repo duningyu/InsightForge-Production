@@ -1,5 +1,17 @@
 # 开放测试改版：源码增量与未完成边界
 
+## 当前状态摘要（竞品决策垂直切片）
+
+开发基线：`646598975e5b3b6e1e56b9fc6d117a5c67e5fa8b`，当前工作区保留其改动并继续完成竞品决策切片；账号批次保持 PASS，整体开放测试仍为 PARTIAL，未部署。
+
+- 竞品候选页面与服务端候选 API 已完成：手动添加、查看、显式选择、移除、跳过；搜索仍 `NOT_CONFIGURED`，不产生真实搜索结果。
+- 本轮新增并验证：一次有界 AI 比较调用复用现有业务 runtime/`AsyncModelAdapter`；比较结果与用户采用/暂不采用/以后再考虑决策保存为项目级不可变快照；快照按项目/账号隔离。
+- 方案生成 context 已实际读取快照中的观察与取舍；PRD/TechDoc 文档版本保存精确 `competitor_snapshot_id`，后续新快照不回写旧版本。以上后端行为由 `tests/test_competitor_decision_slice.py` 覆盖。
+- Fresh `py -3.12 tests/run_open_test_regressions.py`：`143 passed`，`0` 外部网络尝试；定向集合，不代表全库。
+- Fresh `py -3.12 tests/run_account_browser.py --competitor`：真实 Chromium 候选/比较页面流程 PASS；比较 fake transport `1` 次、snapshot `1` 次，generation/analysis `0`；文档生成链的真实 Chromium 证据仍未运行。
+- 当前竞品浏览器证据覆盖候选→比较→决策→保存快照与跳过；方案/文档快照链接已由隔离业务测试验证，但完整浏览器串联仍是未完成项，不虚构为 E2E PASS。
+- 仍待后续：统一跨模块草稿与冲突、完整 AI 补充思路、无资料人工确认交接、完整中文/有结果布局/125%与150%缩放、登录到交接最终 E2E，以及竞品完整浏览器串联。
+
 ## 当前状态摘要（从 0bf26ce 接续：候选页面增量）
 
 账号批次 PASS，保持关闭；竞品切片 PARTIAL；整体开放测试 PARTIAL，未部署。

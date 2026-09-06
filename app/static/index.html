@@ -353,6 +353,14 @@
     </form>
     <p id="competitor-message" role="status" aria-live="polite"></p>
     <div id="competitor-list"></div>
+    <section id="competitor-comparison" class="secondary-panel" hidden aria-labelledby="competitor-comparison-title">
+      <h3 id="competitor-comparison-title">比较参考</h3>
+      <p>AI分析参考，建议结合实际产品页面核对。没有来源支持的内容会标为“暂未确认”。</p>
+      <div id="competitor-comparison-content"></div>
+      <div id="competitor-decisions"></div>
+      <button id="competitor-save-snapshot" type="button" class="button button-primary">保存本次比较</button>
+    </section>
+    <button id="competitor-compare" type="button" class="button button-primary" hidden>生成比较参考</button>
     <button id="competitor-skip" type="button" class="button button-secondary">暂时不比较</button>
   </dialog>
   <script src="/static/app.js?v=3.0.0&amp;build=prelaunch-self-audit-p0f.1" defer></script>

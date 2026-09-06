@@ -21,6 +21,8 @@ from app.exporters import ArtifactExporter
 from app.ingestion import MAX_UPLOAD_BYTES
 from app.schemas import (
     CompetitorCandidateCreateRequest,
+    CompetitorComparisonRequest,
+    CompetitorSnapshotCreateRequest,
     CompetitorSelectionRequest,
     CanonicalExampleResponse,
     EvidenceAnalyzeRequest,
@@ -55,6 +57,7 @@ from app.schemas import (
 )
 from app.services.projects import ProjectService
 from app.services.competitors import CompetitorService
+from app.services.competitor_decisions import CompetitorDecisionService
 from app.errors import (
     BetaDailyLimitReached,
     ConflictError,
@@ -227,6 +230,9 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             )
         application.state.projects = ProjectService(db)
         application.state.competitors = CompetitorService(db, application.state.projects)
+        application.state.competitor_decisions = CompetitorDecisionService(
+            db, application.state.projects
+        )
         application.state.example_copies = ExampleCopyService(db)
         application.state.model_profiles = ModelProfileService(db)
         application.state.managed_model_registry = ManagedModelRegistry(
@@ -1228,6 +1234,34 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
     @application.delete("/api/projects/{project_id}/competitors/{candidate_id}")
     def remove_competitor(project_id: str, candidate_id: str, request: Request) -> dict[str, bool]:
         return application.state.competitors.remove(project_id, candidate_id, competitor_actor(request))
+
+    @application.post("/api/projects/{project_id}/competitor-comparisons", status_code=201)
+    def create_competitor_comparison(
+        project_id: str, payload: CompetitorComparisonRequest, request: Request
+    ) -> dict[str, Any]:
+        runtime = application.state.structured_runtime.for_project(project_id)
+        return application.state.competitor_decisions.create_comparison(
+            project_id, payload.candidate_ids, actor=competitor_actor(request), runtime=runtime
+        )
+
+    @application.get("/api/projects/{project_id}/competitor-comparisons/{comparison_id}")
+    def get_competitor_comparison(project_id: str, comparison_id: str) -> dict[str, Any]:
+        return application.state.competitor_decisions.get_comparison(project_id, comparison_id)
+
+    @application.post("/api/projects/{project_id}/competitor-snapshots", status_code=201)
+    def create_competitor_snapshot(
+        project_id: str, payload: CompetitorSnapshotCreateRequest, request: Request
+    ) -> dict[str, Any]:
+        return application.state.competitor_decisions.create_snapshot(
+            project_id,
+            payload.comparison_id,
+            [item.model_dump() for item in payload.decisions],
+            actor=competitor_actor(request),
+        )
+
+    @application.get("/api/projects/{project_id}/competitor-snapshots/{snapshot_id}")
+    def get_competitor_snapshot(project_id: str, snapshot_id: str) -> dict[str, Any]:
+        return application.state.competitor_decisions.get_snapshot(project_id, snapshot_id)
 
     @application.get("/api/source-guidance")
     def source_guidance() -> list[dict[str, Any]]:

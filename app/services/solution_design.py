@@ -159,7 +159,9 @@ class SolutionDesignService:
         )
 
     @staticmethod
-    def _brief_from_row(row: dict[str, Any]) -> IdeaBriefDraft:
+    def _brief_from_row(
+        row: dict[str, Any], competitor_context: dict[str, Any] | None = None
+    ) -> IdeaBriefDraft:
         return IdeaBriefDraft(
             original_idea=row["original_idea"],
             target_user=row["target_user"],
@@ -171,7 +173,43 @@ class SolutionDesignService:
             provenance=json.loads(row["provenance_json"]),
             clarification_required=bool(row.get("clarification_required", 0)),
             clarification_question=row.get("clarification_question"),
+            competitor_context=competitor_context,
         )
+
+    def _competitor_context(self, project_id: str) -> dict[str, Any] | None:
+        row = self.db.fetch_one(
+            "SELECT current_competitor_snapshot_id FROM projects WHERE id = ?",
+            (project_id,),
+        )
+        snapshot_id = row.get("current_competitor_snapshot_id") if row else None
+        if not snapshot_id:
+            return None
+        snapshot = self.db.fetch_one(
+            "SELECT content_json FROM competitor_decision_snapshots WHERE id=? AND project_id=?",
+            (snapshot_id, project_id),
+        )
+        if not snapshot:
+            return None
+        content = json.loads(snapshot["content_json"])
+        grouped = {"adopt": [], "avoid": [], "defer": []}
+        for decision in content.get("decisions", []):
+            grouped.setdefault(decision["decision"], []).append(
+                {"candidate_id": decision["candidate_id"], "rationale": decision.get("rationale", "")}
+            )
+        return {
+            "snapshot_id": snapshot_id,
+            "boundary": content.get("boundary", "AI分析参考，建议结合实际产品页面核对。"),
+            "adopt": grouped["adopt"],
+            "avoid": grouped["avoid"],
+            "defer": grouped["defer"],
+        }
+
+    def _brief_for_project(self, project_id: str, brief_row: dict[str, Any]) -> IdeaBriefDraft:
+        """Keep the legacy test seam when no optional snapshot is selected."""
+        competitor_context = self._competitor_context(project_id)
+        if competitor_context is None:
+            return self._brief_from_row(brief_row)
+        return self._brief_from_row(brief_row, competitor_context=competitor_context)
 
     def _confirmed_brief_row(self, project_id: str) -> dict[str, Any]:
         row = self.db.fetch_one(
@@ -227,7 +265,7 @@ class SolutionDesignService:
 
     def generate(self, project_id: str, *, actor: str, managed_selection: Any | None = None, dispatch_control: DispatchControlContext | None = None) -> dict[str, Any]:
         brief_row = self._confirmed_brief_row(project_id)
-        brief = self._brief_from_row(brief_row)
+        brief = self._brief_for_project(project_id, brief_row)
         resolver = getattr(self.runtime, "for_project", None)
         runtime = (
             resolver(project_id, managed_selection=managed_selection)
@@ -432,7 +470,7 @@ class SolutionDesignService:
         only legal after the caller creates a new durable generation intent.
         """
         brief_row = self._confirmed_brief_row(project_id)
-        brief = self._brief_from_row(brief_row)
+        brief = self._brief_for_project(project_id, brief_row)
         resolver = getattr(self.runtime, "for_project", None)
         runtime = (
             resolver(project_id, managed_selection=managed_selection)

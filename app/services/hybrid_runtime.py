@@ -12,6 +12,7 @@ from app.errors import (
     StructuredRuntimeUnavailableError,
 )
 from app.schemas import (
+    CompetitorComparisonDraft,
     EvidenceRelationSetDraft,
     IdeaBriefDraft,
     QuickStartRequest,
@@ -29,6 +30,7 @@ AfterProviderFailure = Callable[[str, Any], Any]
 PROVIDER_USAGE_OPERATIONS = {
     "design_solutions": "solution_generation",
     "analyze_evidence": "evidence_analysis",
+    "compare_competitors": "solution_generation",
 }
 SCHEMA_ERROR_CODES = {
     "invalid_content",
@@ -157,6 +159,20 @@ class _LocalGuidanceRuntime:
 
     def design_solutions(self, brief: IdeaBriefDraft) -> SolutionSetDraft:
         return self._call("design_solutions", brief)
+
+    def compare_competitors(
+        self, candidates: list[dict[str, Any]], *, project_context: dict[str, Any] | None = None
+    ) -> CompetitorComparisonDraft:
+        self._consume_round(candidates)
+        try:
+            return self._runtime.compare_competitors(candidates, project_context=project_context)
+        except StructuredRuntimeUnavailableError:
+            raise StructuredRuntimeRecoveryError(
+                error_code="LOCAL_GUIDANCE_REQUIRED",
+                message="当前本地引导模式没有可安全套用的竞品比较案例。",
+                recovery_actions=["补充候选产品信息", "配置并测试模型后重试"],
+                preserved_input=candidates,
+            ) from None
 
     def analyze_evidence(
         self, *, claim: dict[str, Any], chunks: list[dict[str, Any]]
@@ -356,6 +372,16 @@ class _ProfileStructuredRuntime:
     def design_solutions(self, brief: IdeaBriefDraft) -> SolutionSetDraft:
         return self._call(
             "design_solutions", preserved_input=brief, args=(brief,)
+        )
+
+    def compare_competitors(
+        self, candidates: list[dict[str, Any]], *, project_context: dict[str, Any] | None = None
+    ) -> CompetitorComparisonDraft:
+        return self._call(
+            "compare_competitors",
+            preserved_input={"candidates": candidates, "project_context": project_context},
+            args=(candidates,),
+            kwargs={"project_context": project_context},
         )
 
     def analyze_evidence(

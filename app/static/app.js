@@ -202,7 +202,8 @@ function reportError(error) {
     return;
   }
   if (error?.code === "APPLICATION_POSTPROCESS_FAILURE") {
-    toast(error.message || "Provider 已返回结果，但应用校验未通过；本次生成额度已释放，未自动重试。请明确发起新的生成。", 4500);
+    const settlement = error?.payload?.quota_status === "RELEASED" ? "本次操作额度已释放。" : "";
+    toast(`AI 返回的内容未通过应用校验。${settlement}未自动重试；再次生成将发起新的模型请求。`);
     return;
   }
   if (error?.code === "PROVIDER_FAILURE") { toast(error.message || "AI 服务未能完成本次请求；未自动重试。", 4500); return; }
@@ -495,7 +496,7 @@ function renderRecentProjects() {
 
 function renderGuidanceCard(node, action, scopeLabel) {
   if (!node) return;
-  if (!action) {
+  if (!action || !action.title || !action.code) {
     node.classList.add("hidden");
     node.innerHTML = "";
     return;
@@ -820,6 +821,40 @@ function detailList(title, items = []) {
   return `<div class="detail-block"><strong>${escapeHtml(title)}</strong><ul>${items.map((x) => `<li>${escapeHtml(x)}</li>`).join("") || "<li>暂无</li>"}</ul></div>`;
 }
 
+function openSolutionDetails(candidateId, trigger) {
+  const solution = state.solutions?.candidates?.find((item) => item.id === candidateId);
+  if (!solution) { toast("该方案已不可用，请重新打开方案列表。"); return; }
+  const dialog = qs("#solution-detail-dialog");
+  dialog.returnFocus = trigger;
+  if (!dialog.detailEventsBound) {
+    qs("#solution-detail-close").addEventListener("click", () => dialog.close());
+    dialog.addEventListener("close", () => {
+      if (dialog.returnFocus?.isConnected) dialog.returnFocus.focus();
+    });
+    dialog.addEventListener("click", (event) => {
+      if (event.target !== dialog) return;
+      const b = dialog.getBoundingClientRect();
+      if (event.clientX < b.left || event.clientX > b.right || event.clientY < b.top || event.clientY > b.bottom) dialog.close();
+    });
+    dialog.detailEventsBound = true;
+  }
+  qs("#solution-detail-title").textContent = solution.title || "方案详情";
+  const rows = [
+    ["目标用户", solution.target_user], ["问题", solution.problem],
+    ["典型场景", solution.scenarios], ["适合当前想法的原因", solution.why_fit],
+    ["用户流程", solution.user_flow], ["核心功能", solution.features],
+    ["最小可用版本（MVP）范围", solution.mvp_pages],
+    ["实现思路", solution.implementation_plan], ["技术组成", solution.technical_components],
+    ["核心判断逻辑", solution.decision_logic], ["取舍", solution.tradeoffs],
+    ["风险", solution.risks], ["待确认事项", solution.unknowns],
+  ];
+  qs("#solution-detail-content").innerHTML = rows.map(([title, value]) =>
+    detailList(title, Array.isArray(value) && value.length ? value : value && !Array.isArray(value) ? [value] : ["已有方案未提供此项；尚待确认。"])
+  ).join("");
+  if (!dialog.open) dialog.showModal();
+  qs("#solution-detail-close").focus();
+}
+
 function renderSolutions() {
   const target = qs("#solutions-content");
   if (!target) return;
@@ -867,9 +902,11 @@ function renderSolutions() {
         ${detailList("验收案例", solution.acceptance_cases)}
         ${detailList("当前未知项", solution.unknowns)}
       </details>
-      <button class="button button-secondary select-solution-button" type="button" data-candidate-id="${escapeHtml(solution.id)}">采用这个方案</button>
+      <button class="button button-secondary solution-detail-button" type="button" data-candidate-id="${escapeHtml(solution.id)}">查看详情</button>
+      <button class="button button-primary select-solution-button" type="button" data-candidate-id="${escapeHtml(solution.id)}">选择这个方案</button>
     </article>`).join("")}</div>`;
   qsa(".select-solution-button", target).forEach((button) => button.addEventListener("click", () => selectSolution(button.dataset.candidateId)));
+  qsa(".solution-detail-button", target).forEach((button) => button.addEventListener("click", () => openSolutionDetails(button.dataset.candidateId, button)));
 }
 
 function renderSnapshot() {
@@ -1706,6 +1743,8 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     openIdeaBriefReview,
     renderIdeaBrief,
     renderSolutions,
+    renderGuidanceCard,
+    openSolutionDetails,
     generateSolutions,
     isRecoveryPayload,
     renderRuntimeDisclosure,

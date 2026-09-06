@@ -29,6 +29,7 @@ class Settings:
     beta_session_idle_timeout_minutes: int = 30
     beta_session_cookie_secure: bool = False
     beta_timezone: str = "Asia/Shanghai"
+    daily_user_limits_enabled: bool = False
     runtime_dir: Path = Path("runtime")
 
     @classmethod
@@ -55,6 +56,7 @@ class Settings:
             beta_session_idle_timeout_minutes=int(os.getenv("BETA_SESSION_IDLE_TIMEOUT_MINUTES", "30")),
             beta_session_cookie_secure=os.getenv("BETA_SESSION_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes"},
             beta_timezone=os.getenv("BETA_TIMEZONE", "Asia/Shanghai"),
+            daily_user_limits_enabled=os.getenv("INSIGHTFORGE_DAILY_USER_LIMITS_ENABLED", "false").strip().lower() in {"1", "true", "yes"},
             runtime_dir=Path(os.getenv("RUNTIME_DIR", "runtime")),
         )
         if not 1 <= settings.max_loop_rounds <= 5:

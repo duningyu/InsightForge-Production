@@ -30,7 +30,7 @@ class UsageDecision:
 
 
 class BetaUsageService:
-    """Atomically consume participant-scoped daily real-provider allowances."""
+    """Record operation reservations independently of optional daily admission caps."""
 
     def __init__(
         self,
@@ -41,6 +41,7 @@ class BetaUsageService:
         timezone_name: str = "Asia/Shanghai",
         limits: Mapping[str, int] | None = None,
         clock: Callable[[], datetime] | None = None,
+        daily_limits_enabled: bool = False,
     ) -> None:
         try:
             self.timezone = ZoneInfo(timezone_name)
@@ -58,6 +59,7 @@ class BetaUsageService:
         self.participant_id = participant_id
         self.beta_mode = beta_mode
         self.limits = configured
+        self.daily_limits_enabled = daily_limits_enabled
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def _local_now(self) -> datetime:
@@ -77,7 +79,7 @@ class BetaUsageService:
         local_now = self._local_now()
         usage_date = local_now.date().isoformat()
         reset_at = (local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).isoformat()
-        limit = self.limits[operation]
+        limit = self.limits[operation] if self.daily_limits_enabled else None
         updated_at = local_now.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
         with self.db.connect() as connection:
@@ -90,7 +92,7 @@ class BetaUsageService:
                 (self.participant_id, usage_date, operation),
             ).fetchone()
             used = int(row[0]) if row else 0
-            if used >= limit:
+            if limit is not None and used >= limit:
                 raise BetaDailyLimitReached(
                     operation=operation,
                     limit=limit,
@@ -117,6 +119,27 @@ class BetaUsageService:
                 (reservation_id, self.participant_id, usage_date, operation, updated_at, updated_at),
             )
         return UsageDecision(True, True, operation, limit, used, reset_at, reservation_id, usage_date)
+
+    def policy(self) -> dict:
+        """Fresh operation-scoped accounting; null means unbounded, never zero uses."""
+        day = self._local_now().date().isoformat()
+        rows = self.db.fetch_all(
+            "SELECT operation_type, request_count FROM beta_daily_usage WHERE participant_id=? AND usage_date=?",
+            (self.participant_id, day),
+        )
+        counts = {row["operation_type"]: int(row["request_count"]) for row in rows}
+        enabled = self.beta_mode and self.daily_limits_enabled
+        return {
+            "daily_user_limits_enabled": enabled,
+            "usage_date": day,
+            "timezone": str(self.timezone),
+            "operations": {
+                op: {"used": counts.get(op, 0), "limit": cap if enabled else None,
+                     "remaining": max(0, cap - counts.get(op, 0)) if enabled else None}
+                for op, cap in self.limits.items()
+            },
+            "accounting": "reserved_then_committed_or_released",
+        }
 
     def commit(self, decision: UsageDecision) -> None:
         """Commit a successful user-visible operation exactly once."""

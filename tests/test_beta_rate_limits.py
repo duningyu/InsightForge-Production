@@ -75,6 +75,7 @@ def _usage(
         timezone_name="Asia/Shanghai",
         limits=limits,
         clock=clock,
+        daily_limits_enabled=True,  # Explicit legacy-policy control, not open-test default.
     )
 
 

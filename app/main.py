@@ -204,6 +204,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             participant_id=settings.beta_participant_id,
             beta_mode=settings.beta_mode,
             timezone_name=settings.beta_timezone,
+            daily_limits_enabled=settings.daily_user_limits_enabled,
             limits=(
                 {"solution_generation": 3, "document_generation": 3, "evidence_analysis": 5}
                 if settings.beta_managed_mode
@@ -517,6 +518,10 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True) ->
             "beta_release_id": settings.beta_release_id,
             "participant_id": settings.beta_participant_id if settings.beta_mode else None,
         }
+
+    @application.get("/api/usage/policy")
+    def usage_policy() -> dict[str, Any]:
+        return application.state.beta_usage.policy()
 
     @application.get("/api/beta/consent")
     def beta_consent_status() -> dict[str, Any]:

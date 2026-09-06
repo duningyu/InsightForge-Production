@@ -18,9 +18,9 @@ from test_open_accounts import claim
 from test_normal_dispatch_control_integration import _solution_payload
 
 
-@pytest.mark.parametrize("outcome", ["failure", "shutdown_cancellation", "interrupted_snapshot"])
+@pytest.mark.parametrize("outcome", ["failure", "shutdown_cancellation", "interrupted_snapshot", "user_cancellation"])
 def test_failed_transport_settles_and_reconstructed_worker_does_not_redispatch(tmp_path, monkeypatch, outcome):
-    """Shutdown cancellation is not a currently nonexistent user cancel route."""
+    """Separate shutdown, user cancellation and uncertain interruption contracts."""
     entered, release = threading.Event(), asyncio.Event()
     loops, calls = [], []
     original = AsyncModelAdapter.__init__
@@ -57,6 +57,8 @@ def test_failed_transport_settles_and_reconstructed_worker_does_not_redispatch(t
         assert response.status_code == 202, response.text
         run = response.json()["generation_run_id"]
         assert entered.wait(10)
+        facts_before = [dict(row) for row in db.fetch_all("SELECT * FROM provider_dispatch_events ORDER BY event_id")]
+        permits_before = [dict(row) for row in db.fetch_all("SELECT * FROM provider_dispatch_permits ORDER BY permit_id")]
         worker = child.state.async_generation_worker
         snapshot = tmp_path / "interrupted.sqlite3"
         if outcome == "interrupted_snapshot":
@@ -64,7 +66,20 @@ def test_failed_transport_settles_and_reconstructed_worker_does_not_redispatch(t
             # not a fabricated task row or a forced idle eviction of busy work.
             with sqlite3.connect(snapshot) as target, db.connect() as source:
                 source.backup(target)
-        if outcome in {"shutdown_cancellation", "interrupted_snapshot"}:
+        if outcome == "user_cancellation":
+            cancel_path = f"{path}/{run}/cancel"
+            client.post("/api/auth/logout")
+            assert client.post(cancel_path).status_code == 401
+            claim(app, client, 73)
+            assert client.post(cancel_path, json={"actor": account, "user_id": account,
+                "workspace": account, "participant": account}).status_code == 404
+            assert db.fetch_one("SELECT status FROM async_solution_generation_runs")["status"] == "RUNNING"
+            client.post("/api/auth/logout")
+            client.post("/api/auth/login", json={"username": "synthetic71", "password": "SYNTHETIC-only-passphrase!"})
+            accepted = client.post(cancel_path, json={"actor": "forged"})
+            assert accepted.status_code == 200, accepted.text
+            assert accepted.json()["cancel_requested"] is True
+        elif outcome in {"shutdown_cancellation", "interrupted_snapshot"}:
             worker.stop()
         else:
             loops[0].call_soon_threadsafe(release.set)
@@ -79,6 +94,17 @@ def test_failed_transport_settles_and_reconstructed_worker_does_not_redispatch(t
         assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='RESERVED'")["n"] == 0
         assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='RELEASED'")["n"] == 1
         assert (db.fetch_one("SELECT SUM(request_count) AS n FROM beta_daily_usage")["n"] or 0) == 0
+        if outcome == "user_cancellation":
+            assert terminal["error_code"] == "ASYNC_GENERATION_CANCELLED"
+            assert client.post(cancel_path).json()["status"] == "FAILED"
+            audits = db.fetch_all("SELECT actor FROM audit_events WHERE action='generation_cancel_requested'")
+            assert [row["actor"] for row in audits] == [account]
+            # Ordinary account requests have no strict acceptance dispatch context.
+            # Do not fabricate permit/events: that path has its own ledger test.
+            assert terminal["provider_call_count"] == 1
+            facts_after = [dict(row) for row in db.fetch_all("SELECT * FROM provider_dispatch_events ORDER BY event_id")]
+            assert all(row in facts_after for row in facts_before)
+            assert permits_before == [dict(row) for row in db.fetch_all("SELECT * FROM provider_dispatch_permits ORDER BY permit_id")]
         client.post("/api/auth/logout")
         idle = max(item["last_used"] for item in pool.entries.values()) + 1801
         pool.clock = lambda: idle
@@ -108,7 +134,8 @@ def test_failed_transport_settles_and_reconstructed_worker_does_not_redispatch(t
         assert calls == [run]
 
 
-def test_running_task_keeps_workspace_after_logout_and_account_switch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("late_cancel", [False, True])
+def test_running_task_keeps_workspace_after_logout_and_account_switch(tmp_path, monkeypatch, late_cancel):
     """Synchronize at real adapter transport; never seed a terminal task."""
     calls = []
     original = AsyncModelAdapter.__init__
@@ -116,6 +143,17 @@ def test_running_task_keeps_workspace_after_logout_and_account_switch(tmp_path, 
     payload["candidates"][1].update(human_role="synthetic author", core_decision_logic="manual checklist")
     entered, release = threading.Event(), asyncio.Event()
     worker_loops = []
+    at_commit, allow_commit = threading.Event(), threading.Event()
+    if late_cancel:
+        from app.services.beta_usage import BetaUsageService
+        original_commit = BetaUsageService.commit
+
+        def controlled_commit(self, decision):
+            at_commit.set()
+            assert allow_commit.wait(10)
+            return original_commit(self, decision)
+
+        monkeypatch.setattr(BetaUsageService, "commit", controlled_commit)
 
     def injected(self, **kwargs):
         async def transport(request):
@@ -168,6 +206,12 @@ def test_running_task_keeps_workspace_after_logout_and_account_switch(tmp_path, 
                 worker_loops[0].call_soon_threadsafe(release.set)
         assert client.post("/api/auth/logout").status_code == 200
         assert client.post("/api/auth/login", json={"username": "synthetic1", "password": "SYNTHETIC-only-passphrase!"}).status_code == 200
+        if late_cancel:
+            try:
+                assert at_commit.wait(10)
+                assert client.post(f"{path}/{run}/cancel").status_code == 200
+            finally:
+                allow_commit.set()
         deadline = time.monotonic() + 20
         while True:
             terminal = client.get(f"{path}/{run}").json()
@@ -179,6 +223,13 @@ def test_running_task_keeps_workspace_after_logout_and_account_switch(tmp_path, 
         assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='COMMITTED'")["n"] == 1
         assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='RESERVED'")["n"] == 0
         assert len(calls) == 1
+        if late_cancel:
+            # Actual service persisted the result and is in synchronous commit;
+            # completion wins. Repeated cancel must not release that unit.
+            assert terminal["cancel_requested"] is True
+            assert client.post(f"{path}/{run}/cancel").json()["status"] == "SUCCEEDED"
+            assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='RELEASED'")["n"] == 0
+            assert db.fetch_one("SELECT SUM(request_count) AS n FROM beta_daily_usage")["n"] == 1
 
 
 def test_four_generations_account_scope_replay_and_worker_reconstruction(tmp_path, monkeypatch):

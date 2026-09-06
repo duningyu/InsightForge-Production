@@ -888,6 +888,7 @@ class Database:
     @classmethod
     def _migrate_schema(cls, connection: sqlite3.Connection) -> None:
         async_dispatch_columns = {
+            "cancel_requested_at": "TEXT",
             "acceptance_authorization_id": "TEXT",
             "acceptance_execution_id": "TEXT",
             "forward_ledger_epoch_id": "TEXT",

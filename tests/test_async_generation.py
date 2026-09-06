@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import asyncio
+import threading
 
 from app.db import Database
 from app.services.async_generation import AsyncGenerationRepository, AsyncGenerationWorker
@@ -115,3 +116,79 @@ def test_async_worker_cancellation_finishes_run_without_sync_bridge(tmp_path):
     assert completed.status == "FAILED"
     assert completed.status_code == 503
     assert completed.response["error_code"] == "ASYNC_GENERATION_CANCELLED"
+
+
+def test_pending_user_cancel_is_durable_idempotent_and_never_claimed(tmp_path):
+    db, repository = repo(tmp_path)
+    run = repository.create_or_replay("owner", "project", "cancel")
+    worker = AsyncGenerationWorker(repository)
+    for _ in range(2):
+        worker.request_cancel("owner", "project", run.generation_run_id, actor="trusted-owner")
+    result = repository.get("owner", "project", run.generation_run_id)
+    assert result.status == "FAILED"
+    assert result.response["error_code"] == "ASYNC_GENERATION_CANCELLED"
+    assert result.provider_call_count == 0
+    assert repository.claim_next() is None
+    assert db.fetch_one("SELECT COUNT(*) AS n FROM audit_events WHERE action='generation_cancel_requested'")["n"] == 1
+    assert db.fetch_one("SELECT quota_status FROM async_solution_generation_runs")["quota_status"] == "RELEASED"
+
+
+def test_finish_cannot_overwrite_terminal_intent_or_repeat_settlement(tmp_path):
+    db, repository = repo(tmp_path)
+    run = repository.create_or_replay("owner", "project", "race")
+    repository.claim_next()
+    repository.finish(run.generation_run_id, {"candidates": [{"id": "kept"}]}, status_code=201)
+    repository.finish(run.generation_run_id, {"error_code": "ASYNC_GENERATION_CANCELLED"}, status_code=503)
+    assert repository.get("owner", "project", run.generation_run_id).status == "SUCCEEDED"
+    assert db.fetch_one("SELECT status FROM solution_generation_intents")["status"] == "SUCCEEDED"
+
+
+def test_claimed_before_executor_cancel_does_not_enter_executor(tmp_path):
+    _, repository = repo(tmp_path)
+    run = repository.create_or_replay("owner", "project", "before-boundary")
+    claimed = repository.claim_next()
+    calls = []
+    worker = AsyncGenerationWorker(repository, lambda item: calls.append(item) or {})
+    worker.request_cancel("owner", "project", run.generation_run_id, actor="owner")
+    asyncio.run(worker._execute_run(claimed))
+    assert calls == []
+    assert repository.get("owner", "project", run.generation_run_id).response["error_code"] == "ASYNC_GENERATION_CANCELLED"
+
+
+def test_controlled_completion_wins_over_late_cancel_without_second_terminal(tmp_path):
+    db, repository = repo(tmp_path)
+    run = repository.create_or_replay("owner", "project", "completion-race")
+    at_completion, allow_completion = threading.Event(), threading.Event()
+    finished = threading.Event()
+    calls = []
+    original_finish = repository.finish
+
+    def finish(*args, **kwargs):
+        original_finish(*args, **kwargs)
+        finished.set()
+
+    repository.finish = finish
+
+    async def executor(item):
+        calls.append(item.generation_run_id)
+        at_completion.set()
+        # Matches the production postprocess/persist/commit section: no await.
+        assert allow_completion.wait(5)
+        return {"candidates": [{"id": "synthetic"}]}
+
+    worker = AsyncGenerationWorker(repository, async_executor=executor)
+    worker.start()
+    try:
+        assert at_completion.wait(5)
+        worker.request_cancel("owner", "project", run.generation_run_id, actor="owner")
+        allow_completion.set()
+        assert finished.wait(5)
+    finally:
+        allow_completion.set()
+        worker.stop()
+    terminal = repository.get("owner", "project", run.generation_run_id)
+    assert terminal.status == "SUCCEEDED"
+    assert db.fetch_one("SELECT quota_status FROM async_solution_generation_runs")["quota_status"] == "CHARGED"
+    worker.request_cancel("owner", "project", run.generation_run_id, actor="owner")
+    assert calls == [run.generation_run_id]
+    assert repository.claim_next() is None

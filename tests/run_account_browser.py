@@ -33,8 +33,12 @@ with tempfile.TemporaryDirectory(prefix="insightforge-account-browser-") as temp
     from app.config import Settings
     from app.main import create_app
     import uvicorn
-    business = "--business" in sys.argv
-    if business:
+    cancel = "--cancel" in sys.argv
+    business = "--business" in sys.argv or cancel
+    if cancel:
+        from browser_cancel_fixture import install_transport, prepare, verify
+        calls = install_transport()
+    elif business:
         from browser_business_fixture import install_transport, prepare, verify
         calls = install_transport()
     app = create_app(seed=False, settings_override=Settings(
@@ -58,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix="insightforge-account-browser-") as temp
         data = {"url": f"http://127.0.0.1:{port}", "invites": [app.state.accounts.issue_invite() for _ in range(2)]}
         if business:
             data.update(prepare(app, data["url"], data["invites"][0]))
-        scenario = "account_business_browser.cjs" if business else "account_flow_browser.cjs"
+        scenario = "account_cancel_browser.cjs" if cancel else "account_business_browser.cjs" if business else "account_flow_browser.cjs"
         result = subprocess.run(["node", str(ROOT / "tests" / scenario)],
                                 input=json.dumps(data), text=True, cwd=ROOT)
         assert result.returncode == 0, "Browser scenario failed"

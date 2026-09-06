@@ -1,6 +1,43 @@
 # 开放测试改版：源码增量与未完成边界
 
-## 当前状态摘要（从 a585f32 接续）
+## 当前状态摘要（从 16c0056 接续）
+
+账号批次 PASS：取消闭环及既有账号 gate 已 fresh 验证；整体 PARTIAL，生产未部署。
+当前现存私有资源没有未解释 NOT_RUN；未来统一跨模块草稿不计入账号结项 gate。
+
+- 新入口：POST `/api/projects/{project}/solutions/generate/{run}/cancel`。
+  服务端账号 actor、workspace scoped 查找；客户端身份字段不参与路由选择。
+- PENDING 直接持久化 FAILED/ASYNC_GENERATION_CANCELLED，不进入 executor；RUNNING 请求由当前 worker 取消。
+  取消预留释放与 Provider 事实分开；已进入边界但结果未知，仍是不确定调用，不改成未调用。
+- 完成/取消竞争遵循已有同步提交合同：提交阶段完成可胜出；run/intent 终态 CAS 防止重复回调覆盖。
+- UI 明确区分关闭与停止；只缓存当前账号的 opaque task reference，刷新 GET 原任务，不重新 POST。
+  这不是统一跨模块草稿实现。浏览器取消使用合成已确认 brief 作为前置，不冒充完整 Idea 流程。
+- Phase A 已结束，不再扩充账号安全矩阵；下一步进入可选竞品垂直切片。
+- 整体剩余：统一草稿/冲突、完整 AI 补充思路、无资料人工确认交接、中文/布局（含顶部控件重叠）、
+  125%/150% 缩放、登录到交接完整 E2E。多进程 NOT_VERIFIED；不调用真实服务、不部署。
+
+### 16c0056 后取消闭环证据
+
+- RED：async regression 3 failed / 7 passed（11.64s）：缺少 request_cancel，以及重复 finish 覆盖 intent；
+  实际账号业务 1 failed / 6 passed（28.05s）：取消 HTTP 404；Node harness：缺少进度取消函数。
+- GREEN：最终业务文件 8 passed（34.20s）：真实 worker/Adapter/fake transport，取消或失败后重建不重发；
+  同步 commit barrier 控制实际成功/取消竞争，成功 COMMITTED=1、RESERVED=0、RELEASED=0、usage=1。
+- dispatch integration 6 passed（7.69s）：真实 Adapter 到 fake 边界产生 permit=1/CALL_BOUNDARY_ENTERED；
+  取消保留原事件与 permit，分类 POSSIBLY_DISPATCHED_INDETERMINATE；同执行身份重放不再发送。
+  普通账号未提供 strict dispatch context 的路径可能无这些 ledger 行，不能把 run.provider_call_count 当真实 ledger。
+- `py -3.12 tests/run_account_browser.py --cancel`：Chromium UI 生成1次、取消1次、fake传输1次；
+  FAILED/ASYNC_GENERATION_CANCELLED，RELEASED=1、RESERVED=0；关闭/重开不取消，刷新不重发，foreign404。
+  截图 `artifacts/account-cancel-browser/cancelled.png`（忽略的合成测试产物）。
+- `py -3.12 tests/run_account_browser.py --business`：Chromium 4生成动作/4任务/4传输，
+  1分析动作/6claim/6传输；成功终态持久化，COMMITTED=10、RESERVED=0，刷新 policy 正确。
+- `py -3.12 tests/run_account_browser.py`：领取/登录/创建保存/刷新/退出换账号/隔离 PASS。
+- 八个 Node harness、compileall、git diff --check PASS。以上网络 tripwire 均为外部尝试0。
+- 最终 `py -3.12 tests/run_open_test_regressions.py`：138 passed（281.78s），0失败/跳过，外部连接尝试0。
+  这是定向集合，不是全库测试。最终八个 Node harness、compileall、diff check 复跑 PASS。
+- 本批14个改动文件 secret scan：0匹配（密钥形态、私钥标记、Bearer及长字面量秘密赋值）；
+  人工完整 diff 审查未见生产内容/凭据。仅提交源码、测试、两份现有进度文档。
+
+## 历史状态摘要（从 a585f32 接续）
 
 账号批次 PARTIAL；整体 PARTIAL；生产未部署。以下历史章节保留当时的状态，
 不作为当前未完成清单。

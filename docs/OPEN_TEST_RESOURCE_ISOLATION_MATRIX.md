@@ -1,6 +1,24 @@
 # 开放测试资源隔离矩阵（源码检查点 84617b 后的有限补测）
 
-## 当前增量：a585f32 后的真实资源覆盖
+## 当前增量：16c0056 后用户取消入口
+
+现存私有 resource remaining=NONE；下面历史 NOT_IMPLEMENTED 的取消入口现已实现。
+统一跨模块草稿/竞品仍属未来接口，NOT_IMPLEMENTED；多进程 NOT_VERIFIED。
+
+| 实际 method/path | 正向与隔离结果 | 状态 / 测试 |
+| --- | --- | --- |
+| POST `/api/projects/{p}/solutions/generate/{run}/cancel` | owner RUNNING 200；foreign 404、匿名401；伪造 actor/user/workspace/participant 不改变 DB；拒绝后 owner仍RUNNING；重复取消不增加audit | VERIFIED `tests/test_account_business_paths.py::test_failed_transport_settles_and_reconstructed_worker_does_not_redispatch[user_cancellation]` |
+| 同入口 + GET 原run | 取消 FAILED/ASYNC_GENERATION_CANCELLED；释放1/活动预留0/usage0；空闲回收重建、原key重放保持原任务，不新增传输 | VERIFIED 同上；真实worker/Adapter/fake传输1次，审计actor=认证账号 |
+
+`tests/test_async_generation.py` 覆盖 pending/claimed-before-executor 不执行、terminal CAS 与重复取消。
+`test_running_task_keeps_workspace_after_logout_and_account_switch[True]` 在实际 commit 同步屏障请求取消，
+完成胜出 SUCCEEDED、COMMITTED1、RELEASED0，重复取消不改变结算。
+`tests/test_normal_dispatch_control_integration.py::test_cancel_at_real_adapter_boundary_preserves_existing_permit_and_events`
+单独证明真实边界 permit/event 保留；不确定执行身份禁止重放，fake调用1。
+`tests/run_account_browser.py --cancel` 证明正常 UI stop/close/reopen/refresh，foreign拒绝；
+关闭不发cancel，刷新不发生成。正常账号无 strict context 的 run bookkeeping 不等价于 Provider ledger。
+
+## 已完成增量：a585f32 后的真实资源覆盖
 
 新增测试位于 `tests/test_account_resource_matrix.py`，该文件现在 12 个用例。
 下列状态覆盖后文相同入口的历史 NOT_RUN 标记；历史结果不作为本轮 fresh 结果。

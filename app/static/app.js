@@ -27,6 +27,8 @@ const state = {
   modelProfiles: [],
   projectModelProfileId: null,
   generationInFlight: null,
+  activeGeneration: null,
+  generationReferenceKey: null,
   generationIntentId: null,
   generationTerminalFailure: false,
   generationFailureCode: null,
@@ -1466,6 +1468,62 @@ async function confirmIdeaBrief(event) {
   }
 }
 
+function renderGenerationProgress(result = state.activeGeneration || {}) {
+  const running = ["PENDING", "RUNNING"].includes(result.status);
+  const message = result.error_code === "ASYNC_GENERATION_CANCELLED"
+    ? "任务已停止。已发生的模型调用记录仍保留，停止任务不代表远端费用已取消。"
+    : result.status === "SUCCEEDED" ? "方案已生成。"
+    : result.status === "FAILED" ? "任务未完成，请查看页面上的具体说明。"
+    : result.cancel_requested ? "正在停止任务……请等待服务端确认。" : "方案正在生成，请稍候……";
+  if (qs("#generation-progress-state")) qs("#generation-progress-state").textContent = message;
+  if (qs("#generation-stop")) qs("#generation-stop").disabled = !running || Boolean(result.cancel_requested);
+  if (qs("#generation-progress-open")) qs("#generation-progress-open").hidden = !state.activeGeneration;
+  if (result.status === "SUCCEEDED" && qs("#generation-progress-dialog")?.open) closeGenerationProgress();
+}
+function showGenerationProgress() {
+  renderGenerationProgress();
+  const dialog = qs("#generation-progress-dialog");
+  if (dialog && !dialog.open) dialog.showModal();
+}
+function closeGenerationProgress() {
+  qs("#generation-progress-dialog")?.close();
+  qs("#generation-progress-open")?.focus();
+}
+async function cancelActiveGeneration() {
+  const task = state.activeGeneration;
+  if (!task || !["PENDING", "RUNNING"].includes(task.status) || task.cancel_requested) return;
+  qs("#generation-stop").disabled = true;
+  try {
+    const result = await api(`/api/projects/${encodeURIComponent(task.projectId)}/solutions/generate/${encodeURIComponent(task.runId)}/cancel`, {method: "POST"});
+    if (state.activeGeneration === task) {
+      Object.assign(task, result);
+      renderGenerationProgress(task);
+    }
+  } catch (error) { renderGenerationProgress(task); reportError(error); }
+}
+function rememberGeneration(projectId, runId) {
+  // Only opaque task references; no content, credentials, cached policy or terminal state.
+  if (state.generationReferenceKey) {
+    try { sessionStorage.setItem(state.generationReferenceKey, JSON.stringify({projectId, runId})); } catch (_) {}
+  }
+}
+async function restoreGenerationReference() {
+  try {
+    const account = await api("/api/auth/me");
+    state.generationReferenceKey = `insightforge-generation:${account.id}`;
+    const saved = JSON.parse(sessionStorage.getItem(state.generationReferenceKey) || "null");
+    if (!saved || typeof saved.projectId !== "string" || typeof saved.runId !== "string") return;
+    // Authoritative scoped GET must succeed before exposing or loading a saved project.
+    const result = await api(`/api/projects/${encodeURIComponent(saved.projectId)}/solutions/generate/${encodeURIComponent(saved.runId)}`);
+    await loadProject(saved.projectId);
+    state.activeGeneration = {...saved, ...result};
+    renderGenerationProgress();
+    const request = pollSolutionGeneration(saved.runId, saved.projectId);
+    state.generationInFlight = request;
+    try { await request; } finally { if (state.generationInFlight === request) state.generationInFlight = null; }
+  } catch (_) { /* Missing/expired task references never authorize access or dispatch a new task. */ }
+}
+
 async function generateSolutions({newIntent = false} = {}) {
   if (state.generationInFlight) return state.generationInFlight;
   if (newIntent || !state.generationIntentId) {
@@ -1480,17 +1538,21 @@ async function generateSolutions({newIntent = false} = {}) {
     button.textContent = "正在生成方案…";
   }
   const attemptId = state.generationIntentId;
+  const projectId = state.currentProjectId;
   const loading = beginLoading("正在提交方案生成任务，请勿重复提交…");
   let request;
   request = (async () => {
     try {
-      const result = await api(`/api/projects/${state.currentProjectId}/solutions/generate`, {
+      const result = await api(`/api/projects/${projectId}/solutions/generate`, {
         method: "POST",
         headers: {"X-Idempotency-Key": attemptId, "X-Generation-Mode": "async", "X-Managed-Model-Preference": state.managedModelPreference || "AUTO"},
       });
       if (["PENDING", "RUNNING"].includes(result.status) && result.generation_run_id) {
+        state.activeGeneration = {projectId, runId: result.generation_run_id, ...result};
+        rememberGeneration(projectId, result.generation_run_id);
+        showGenerationProgress();
         loading.update("方案正在处理中，正在等待结果。请勿重复提交…");
-        return await pollSolutionGeneration(result.generation_run_id);
+        return await pollSolutionGeneration(result.generation_run_id, projectId);
       }
       if (isRecoveryPayload(result)) {
         state.solutions = null;
@@ -1526,13 +1588,18 @@ async function generateSolutions({newIntent = false} = {}) {
   return request;
 }
 
-async function pollSolutionGeneration(runId) {
+async function pollSolutionGeneration(runId, projectId = state.currentProjectId) {
   while (true) {
-    const result = await api(`/api/projects/${state.currentProjectId}/solutions/generate/${encodeURIComponent(runId)}`);
+    const result = await api(`/api/projects/${encodeURIComponent(projectId)}/solutions/generate/${encodeURIComponent(runId)}`);
+    if (state.activeGeneration?.runId === runId) {
+      Object.assign(state.activeGeneration, result);
+      renderGenerationProgress(result);
+    }
     if (["PENDING", "RUNNING"].includes(result.status)) {
       await new Promise((resolve) => setTimeout(resolve, Number(result.poll_after_ms || 2000)));
       continue;
     }
+    if (state.currentProjectId !== projectId) return result;
     if (isRecoveryPayload(result) || result.status === "FAILED") {
       state.solutions = null;
       state.generationTerminalFailure = true;
@@ -1722,6 +1789,10 @@ async function exportHandoff() {
 }
 
 function wireEvents() {
+  qs("#generation-progress-open")?.addEventListener("click", showGenerationProgress);
+  qs("#generation-progress-close")?.addEventListener("click", closeGenerationProgress);
+  qs("#generation-progress-dialog")?.addEventListener("cancel", (event) => { event.preventDefault(); closeGenerationProgress(); });
+  qs("#generation-stop")?.addEventListener("click", cancelActiveGeneration);
   qs("#beta-feedback-button")?.addEventListener("click", () => qs("#beta-feedback-dialog")?.showModal());
   qs("#beta-feedback-cancel")?.addEventListener("click", () => qs("#beta-feedback-dialog")?.close());
   qs("#beta-feedback-form")?.addEventListener("submit", submitBetaFeedback);
@@ -1774,6 +1845,9 @@ function wireEvents() {
 const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
   __test: {
     beginLoading,
+    showGenerationProgress,
+    closeGenerationProgress,
+    cancelActiveGeneration,
     state,
     quickStart,
     confirmIdeaBrief,
@@ -1813,6 +1887,7 @@ async function bootstrap() {
     renderEvidence();
     renderDocuments();
     renderHandoff();
+    void restoreGenerationReference();
   } catch (error) { reportError(error); }
 }
 

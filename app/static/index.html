@@ -339,5 +339,13 @@
   <script src="/static/app.js?v=3.0.0&amp;build=prelaunch-self-audit-p0f.1" defer></script>
   <script src="/static/model-settings.js?v=3.0.0&amp;build=secure-profiles.1" defer></script>
   <script src="/static/account-session.js" defer></script>
+  <button id="generation-progress-open" type="button" class="button" hidden>查看生成进度</button>
+  <dialog id="generation-progress-dialog" aria-labelledby="generation-progress-title">
+    <h2 id="generation-progress-title">方案生成进度</h2>
+    <p id="generation-progress-state" role="status" aria-live="polite"></p>
+    <p>关闭窗口不会停止任务。停止任务也不保证已发生的模型调用或远端费用被取消。</p>
+    <button id="generation-stop" type="button" class="button">停止生成</button>
+    <button id="generation-progress-close" type="button" class="button">关闭窗口</button>
+  </dialog>
 </body>
 </html>

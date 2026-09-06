@@ -23,6 +23,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _cancelled_payload() -> dict[str, Any]:
+    return {"error_code": "ASYNC_GENERATION_CANCELLED",
+            "message": "任务已停止，项目内容已保留。已发生的模型调用记录仍保留；停止任务不代表远端调用或费用已取消。",
+            "recovery_actions": ["发起新的生成"], "retryable": False,
+            "quota_status": "RELEASED"}
+
+
 @dataclass(frozen=True, slots=True)
 class AsyncRun:
     generation_run_id: str
@@ -40,6 +47,7 @@ class AsyncRun:
     provider_call_count: int
     acceptance_authorization_id: str | None = None
     dispatch_control: DispatchControlContext | None = None
+    cancel_requested_at: str | None = None
 
     def public(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -50,6 +58,7 @@ class AsyncRun:
             "request_count": self.request_count,
             "replay_count": self.replay_count,
             "provider_call_count": self.provider_call_count,
+            "cancel_requested": bool(self.cancel_requested_at),
         }
         if self.requested_model_preference:
             payload["requested_model_preference"] = self.requested_model_preference
@@ -83,6 +92,7 @@ class AsyncGenerationRepository:
             request_count=row["request_count"], replay_count=row["replay_count"],
             provider_call_count=row["provider_call_count"],
             acceptance_authorization_id=row["acceptance_authorization_id"],
+            cancel_requested_at=row["cancel_requested_at"],
             dispatch_control=(DispatchControlContext(
                 acceptance_execution_id=row["acceptance_execution_id"],
                 forward_ledger_epoch_id=row["forward_ledger_epoch_id"],
@@ -292,6 +302,28 @@ class AsyncGenerationRepository:
             ).fetchone()
         return self._row(claimed)
 
+    def request_cancel(self, participant_id: str, project_id: str, run_id: str, *, actor: str) -> AsyncRun | None:
+        # One durable request per run. The worker owns in-flight settlement;
+        # a request must never rewrite dispatch evidence or pre-empt a commit.
+        with self.db.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM async_solution_generation_runs WHERE generation_run_id=? AND participant_id=? AND project_id=?",
+                (run_id, participant_id or "default", project_id),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["status"] in {"PENDING", "RUNNING"} and not row["cancel_requested_at"]:
+                connection.execute("UPDATE async_solution_generation_runs SET cancel_requested_at=? WHERE generation_run_id=?", (_now(), run_id))
+                self.db.insert_audit_tx(connection, actor=actor, action="generation_cancel_requested",
+                    entity_type="project", entity_id=project_id,
+                    payload={"generation_run_id": run_id, "result": "accepted", "previous_status": row["status"]})
+                if row["status"] == "PENDING":
+                    payload = json.dumps(_cancelled_payload(), ensure_ascii=False)
+                    connection.execute("UPDATE async_solution_generation_runs SET status='FAILED',response_json=?,status_code=503,quota_status='RELEASED',completed_at=? WHERE generation_run_id=?", (payload, _now(), run_id))
+                    connection.execute("UPDATE solution_generation_intents SET status='FAILED',response_json=?,status_code=503,completed_at=? WHERE generation_run_id=?", (payload, _now(), run_id))
+        return self.get(participant_id, project_id, run_id)
+
     def mark_provider_call(self, run_id: str) -> None:
         with self.db.connect() as connection:
             connection.execute("UPDATE async_solution_generation_runs SET provider_call_count=1,worker_heartbeat_at=? WHERE generation_run_id=? AND status='RUNNING'", (_now(), run_id))
@@ -302,10 +334,13 @@ class AsyncGenerationRepository:
         status = "SUCCEEDED" if status_code < 400 else "FAILED"
         quota_status = "CHARGED" if status == "SUCCEEDED" else "RELEASED"
         with self.db.connect() as connection:
-            connection.execute(
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
                 "UPDATE async_solution_generation_runs SET status=?,response_json=?,status_code=?,solution_run_id=?,quota_status=?,completed_at=?,worker_heartbeat_at=? WHERE generation_run_id=? AND status='RUNNING'",
                 (status, json.dumps(safe, ensure_ascii=False, separators=(",", ":")), status_code, solution_run_id, quota_status, _now(), _now(), run_id),
-            )
+            ).rowcount
+            if not changed:
+                return
             connection.execute(
                 """UPDATE solution_generation_intents SET status=?,response_json=?,status_code=?,
                     solution_run_id=?,completed_at=? WHERE generation_run_id=?""",
@@ -321,6 +356,20 @@ class AsyncGenerationWorker:
         self._thread: threading.Thread | None = None
         self._active_loop: asyncio.AbstractEventLoop | None = None
         self._active_task: asyncio.Task[Any] | None = None
+        self._active_run_id: str | None = None
+
+    def request_cancel(self, participant_id: str, project_id: str, run_id: str, *, actor: str) -> AsyncRun | None:
+        run = self.repository.request_cancel(participant_id, project_id, run_id, actor=actor)
+        loop = self._active_loop
+        if run and run.status == "RUNNING" and loop and not loop.is_closed():
+            def signal():
+                if self._active_run_id == run_id and self._active_task and not self._active_task.done() and not self._active_task.cancelling():
+                    self._active_task.cancel()
+            try:
+                loop.call_soon_threadsafe(signal)
+            except RuntimeError:
+                pass  # Durable request remains; never re-dispatch an uncertain run.
+        return run
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -340,8 +389,14 @@ class AsyncGenerationWorker:
     async def _execute_run(self, run: AsyncRun) -> None:
         self._active_loop = asyncio.get_running_loop()
         self._active_task = asyncio.current_task()
-        self.repository.mark_provider_call(run.generation_run_id)
+        self._active_run_id = run.generation_run_id
         try:
+            current = self.repository.get(run.participant_id, run.project_id, run.generation_run_id)
+            if current is None or current.status != "RUNNING":
+                return
+            if current.cancel_requested_at:
+                raise asyncio.CancelledError
+            self.repository.mark_provider_call(run.generation_run_id)
             if self.async_executor is not None:
                 payload = await self.async_executor(run)
             elif self.executor is not None:
@@ -354,11 +409,7 @@ class AsyncGenerationWorker:
             status_code = 503 if payload.get("error_code") or not (payload.get("candidates") or []) else 201
             self.repository.finish(run.generation_run_id, payload, status_code=status_code, solution_run_id=solution_run_id)
         except asyncio.CancelledError:
-            self.repository.finish(run.generation_run_id, {
-                "error_code": "ASYNC_GENERATION_CANCELLED",
-                "message": "生成已停止，你的项目内容已经保留，请重新生成。",
-                "recovery_actions": ["重新生成"], "retryable": True,
-            }, status_code=503)
+            self.repository.finish(run.generation_run_id, _cancelled_payload(), status_code=503)
         except Exception:
             self.repository.finish(run.generation_run_id, {
                 "error_code": "ASYNC_GENERATION_FAILED",
@@ -366,6 +417,7 @@ class AsyncGenerationWorker:
                 "recovery_actions": ["重新生成"], "retryable": True,
             }, status_code=503)
         finally:
+            self._active_run_id = None
             self._active_task = None
             self._active_loop = None
 

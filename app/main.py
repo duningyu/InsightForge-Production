@@ -1013,6 +1013,17 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             raise HTTPException(status_code=404, detail="生成任务不存在。")
         return run.public()
 
+    @application.post("/api/projects/{project_id}/solutions/generate/{generation_run_id}/cancel")
+    def cancel_async_solution_generation(project_id: str, generation_run_id: str, request: Request) -> dict[str, Any]:
+        participant = application.state.beta_context.participant_id
+        actor = request.scope.get("workspace_account", {}).get("id") or participant
+        run = application.state.async_generation_worker.request_cancel(
+            participant, project_id, generation_run_id, actor=actor
+        )
+        if run is None:
+            raise HTTPException(status_code=404, detail="生成任务不存在。")
+        return run.public()
+
     @application.get("/api/projects/{project_id}/solutions")
     def list_solutions(project_id: str) -> dict[str, Any]:
         return application.state.solution_design.list_candidates(project_id)

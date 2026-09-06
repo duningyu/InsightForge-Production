@@ -108,6 +108,41 @@ def test_same_acceptance_execution_replay_cannot_dispatch_twice(tmp_path):
     assert len(calls) == 1
 
 
+def test_cancel_at_real_adapter_boundary_preserves_existing_permit_and_events(tmp_path):
+    """Cancellation cannot turn an entered boundary into proven-not-dispatched."""
+    db = Database(tmp_path / "cancel-ledger.sqlite3")
+    db.init_schema()
+    calls = []
+    control = _context("synthetic-cancel-ledger")
+
+    async def scenario():
+        entered = asyncio.Event()
+
+        async def handler(request):
+            calls.append(request)
+            entered.set()
+            await asyncio.Event().wait()
+
+        runtime = _runtime(db, handler, calls)
+        task = asyncio.create_task(runtime.async_design_solutions(_brief(), dispatch_control=control))
+        await asyncio.wait_for(entered.wait(), 5)
+        permits = [dict(r) for r in db.fetch_all("SELECT * FROM provider_dispatch_permits")]
+        events = [dict(r) for r in db.fetch_all("SELECT * FROM provider_dispatch_events")]
+        assert len(permits) == 1
+        assert any(r["event_type"] == "CALL_BOUNDARY_ENTERED" for r in events)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert permits == [dict(r) for r in db.fetch_all("SELECT * FROM provider_dispatch_permits")]
+        assert events == [dict(r) for r in db.fetch_all("SELECT * FROM provider_dispatch_events")]
+        assert ProviderDispatchLedger(db).classify(control.acceptance_execution_id) is DispatchClassification.POSSIBLY_DISPATCHED_INDETERMINATE
+        with pytest.raises(Exception):
+            await runtime.async_design_solutions(_brief(), dispatch_control=control)
+        assert len(calls) == 1
+
+    asyncio.run(scenario())
+
+
 def test_timeout_after_boundary_is_indeterminate_and_replay_is_blocked(tmp_path):
     db = Database(tmp_path / "timeout.sqlite3")
     db.init_schema()

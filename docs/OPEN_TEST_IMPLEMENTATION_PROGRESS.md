@@ -177,3 +177,46 @@
 
 整体后续仍包括模块/刷新草稿与冲突检测、同模型AI参考、无资料人工确认交接、
 中文/布局/缩放和完整浏览器任务。当前增量不构成开放测试版本可发布证据。
+
+## 追加：真实业务链与单进程空闲回收（2026-09-06，账号批次仍 PARTIAL）
+
+- 接续 069b043，不修改生产配置、数据库、凭据或运行实例。
+- 新增 WorkspacePool：同账号复用 child app/worker；ASGI 响应（包括流式响应）完成前持有租约。
+  每30秒检查，闲置30分钟且无 PENDING/RUNNING 任务才回收。检查失败保留对象。
+  状态不确定的 RUNNING 不自动重试，也不被空闲清理。仅单进程范围，多进程 NOT_VERIFIED。
+- `tests/test_account_workspace_lifecycle.py`：可控时钟/事件验证并发首次初始化唯一、
+  租约及 busy 保留、真实账号 worker 复用、退出后空闲回收和持久项目重开。
+- `tests/test_account_business_paths.py`：真实账号 HTTP、业务 worker、Adapter，仅替换 httpx transport。
+  同一合成日期，A连续4次方案成功，B用相同幂等键独立成功一次；共5次传输，每个 intent/run 各一次。
+  全部终态 SUCCEEDED，业务响应201，run quota_status 为既有 CHARGED，reservation 为 COMMITTED；
+  使用记录 A=4/B=1，活动 reservation=0。重放、轮询、已完成任务回收重建未增加调用。
+  B读取A真实任务并伪造 workspace/user_id/participant 被拒绝。
+- 6个不同 claim 各执行实际 evidence/analyze，真实 ModelAdapter fake传输6次；
+  非缓存命中，全部处理完成，usage=6、COMMITTED=6、RESERVED=0。
+  当前计量单元是 claim，不把一个多claim HTTP动作写成一次分析。
+  合成无来源输入返回空关系，不制造来源。测试未修改计数来跨过旧限额。
+
+### 本轮 RED/GREEN 与 fresh 结果
+
+- 空闲生命周期新增测试初始 RED：2 failed（缺少 WorkspacePool）；最小实现后2 passed in 0.58s。
+  并发首次访问及完整业务链是新增覆盖，没有人为破坏已有正确行为制造RED。
+- 完整业务链开发中两次失败分别因测试误断言响应200（实际201）、run状态COMMITTED（实际CHARGED）。
+  已按既有合同修正测试，不修改生产终态语义；不把这些测试构造错误当产品缺陷。
+- `py -3.12 tests/run_open_test_regressions.py test_account_business_paths.py`：2 passed in 11.19s。
+- 最终 `py -3.12 tests/run_open_test_regressions.py`：114 passed in 164.31s，0 failed/0 skipped；
+  保留原109项并新增5项；blocked_external_attempts=0、real_external_connections=0。不是全库测试。
+- `py -3.12 tests/run_account_browser.py`：真实 Chromium 1366×768账号领取/登录/创建/保存/刷新/
+  退出/换账号/后端拒绝 PASS；lifespan已执行，生成0、外部连接及阻断尝试0。
+  这是既有账号流程复跑，**不限政策超过旧限额的浏览器流程 NOT_RUN**。
+- `node tests/loading_progress_harness.js` PASS；相关4个Python文件 compileall PASS；git diff --check PASS。
+
+### 本批具体剩余项（不进入发布）
+
+1. 资源矩阵仍为分组清单，尚未逐个(method,path)穷举计数；详见原矩阵逐行 NOT_RUN。
+   资料/检索、交接导出、设置及全局对象还缺真实owner/foreign/匿名组合，文档草稿commit仍缺跨账号测试。
+2. 真实Adapter阻塞期间退出/切账号、运行中worker重建、任务匿名访问，以及取消/失败后回收组合尚未验证。
+   已完成任务重建和pool层busy保护不能替代这些组合。
+3. 第4/第6次后端完整链已通过；前端实际policy超额提交/刷新、旧耗尽缓存与文案、
+   无秘密开放测试目标配置实际加载仍未闭环。
+4. 旧库兼容范围保持v206 fixture和当前schema，不扩大；统一跨模块草稿 NOT_IMPLEMENTED。
+   完成以上缺口后才进入用户级草稿恢复与冲突检测，后续AI参考/无资料交接/完整中文布局E2E仍待做。

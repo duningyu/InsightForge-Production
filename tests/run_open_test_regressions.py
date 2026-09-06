@@ -32,6 +32,8 @@ def main():
     socket.socket.connect_ex = guarded
     files = [
         "test_open_accounts.py",
+        "test_account_workspace_lifecycle.py",
+        "test_account_business_paths.py",
         "test_account_registry_boundaries.py", "test_v3_schema_migration.py",
         "test_open_test_usage.py", "test_beta_rate_limits.py", "test_p0_hotfix_red.py",
         "test_pilot_p0_hotfix_red.py", "test_async_generation.py",
@@ -42,6 +44,11 @@ def main():
         "test_v4_document_evidence_ux.py", "test_v2_document_lifecycle.py",
         "test_v3_handoff_and_tools.py", "test_v3_document_health.py",
     ]
+    if len(sys.argv) > 1:
+        selected = sys.argv[1:]
+        if any(name not in files for name in selected):
+            raise SystemExit("Select only a named test file from the offline allowlist")
+        files = selected
     with tempfile.TemporaryDirectory(prefix="insightforge-open-test-") as directory:
         os.environ["INSIGHTFORGE_DATABASE_PATH"] = str(Path(directory) / "default.sqlite3")
         os.environ["RUNTIME_DIR"] = str(Path(directory) / "runtime")

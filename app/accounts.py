@@ -4,7 +4,9 @@ Each app's services and background worker use only its bound database/runtime.
 Unclaimed legacy data is never mounted into a new account's app.
 """
 import asyncio
-from contextlib import AsyncExitStack, asynccontextmanager
+import logging
+import time
+from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
 from pathlib import Path
 
@@ -20,6 +22,55 @@ COOKIE = "insightforge_account"
 STATIC = Path(__file__).parent / "static"
 
 
+class WorkspacePool:
+    """Single-process child lifespans, leased until the ASGI response completes.
+
+    Idle means no request for 30 minutes AND no pending/running durable task.
+    Uncertain RUNNING tasks deliberately prevent eviction; they are not retried.
+    """
+
+    def __init__(self, factory, busy, *, clock=time.monotonic, idle_seconds=1800):
+        self.factory, self.busy = factory, busy
+        self.clock, self.idle_seconds = clock, idle_seconds
+        self.entries = {}
+        self.lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def lease(self, account):
+        key = account["id"]
+        async with self.lock:
+            if key not in self.entries:
+                context = self.factory(account)
+                child = await context.__aenter__()
+                self.entries[key] = {"child": child, "context": context,
+                                     "leases": 0, "last_used": self.clock()}
+            entry = self.entries[key]
+            entry["leases"] += 1
+        try:
+            yield entry["child"]
+        finally:
+            async with self.lock:
+                entry["leases"] -= 1
+                entry["last_used"] = self.clock()
+
+    async def sweep(self):
+        async with self.lock:
+            for key, entry in list(self.entries.items()):
+                if entry["leases"] or self.clock() - entry["last_used"] < self.idle_seconds:
+                    continue
+                # Failure to inspect durable state is fail-closed: retain the child.
+                if await run_in_threadpool(self.busy, entry["child"]):
+                    continue
+                await entry["context"].__aexit__(None, None, None)
+                del self.entries[key]
+
+    async def close(self):
+        async with self.lock:
+            for entry in self.entries.values():
+                await entry["context"].__aexit__(None, None, None)
+            self.entries.clear()
+
+
 class Login(BaseModel):
     model_config = ConfigDict(extra="forbid")
     username: str = Field(min_length=1, max_length=64)
@@ -31,16 +82,45 @@ class Claim(Login):
 
 
 def create_account_app(settings):
-    children = {}
-    lock = asyncio.Lock()
-    stack = AsyncExitStack()
+    @asynccontextmanager
+    async def child_lifespan(account):
+        from app.main import create_app
+        child = create_app(seed=False, settings_override=replace(
+            settings, accounts_enabled=False, database_path=Path(account["database_path"]),
+            runtime_dir=Path(account["runtime_path"]), beta_participant_id=account["participant"],
+            access_username=None, access_password=None))
+        async with child.router.lifespan_context(child):
+            yield child
+
+    def has_work(child):
+        with child.state.async_generation_repository.db.connect() as connection:
+            return connection.execute(
+                "SELECT 1 FROM async_solution_generation_runs "
+                "WHERE status IN ('PENDING','RUNNING') LIMIT 1"
+            ).fetchone() is not None
+
+    pool = WorkspacePool(child_lifespan, has_work)
+
+    async def reap_idle():
+        while True:
+            await asyncio.sleep(30)
+            try:
+                await pool.sweep()
+            except Exception:
+                logging.getLogger(__name__).warning("Account idle cleanup deferred")
 
     @asynccontextmanager
     async def lifespan(app):
         app.state.accounts = AccountRegistry(settings.accounts_dir)
-        async with stack:
+        app.state.workspace_pool = pool
+        reaper = asyncio.create_task(reap_idle())
+        try:
             yield
-        children.clear()
+        finally:
+            reaper.cancel()
+            with suppress(asyncio.CancelledError):
+                await reaper
+            await pool.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -112,28 +192,20 @@ def create_account_app(settings):
             if path == "/api/auth/me":
                 response = await call_next(request)
             else:
-                async with lock:
-                    if account["id"] not in children:
-                        from app.main import create_app
-                        child = create_app(seed=False, settings_override=replace(
-                            settings, accounts_enabled=False, database_path=Path(account["database_path"]),
-                            runtime_dir=Path(account["runtime_path"]), beta_participant_id=account["participant"],
-                            access_username=None, access_password=None))
-                        await stack.enter_async_context(child.router.lifespan_context(child))
-                        children[account["id"]] = child
                 # Dispatch through a mounted ASGI app, including streaming/download responses.
                 # Never allow caller-supplied actor identity to become the audit header.
                 request.scope["headers"] = [(k, v) for k, v in request.scope["headers"]
                                             if k.lower() not in {b"x-actor", b"authorization"}]
                 request.scope["headers"].append((b"x-actor", account["id"].encode()))
-                request.scope["workspace_app"] = children[account["id"]]
+                request.scope["workspace_account"] = account
                 response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "same-origin"
         return response
 
     async def workspace(scope, receive, send):
-        await scope["workspace_app"](scope, receive, send)
+        async with pool.lease(scope["workspace_account"]) as child:
+            await child(scope, receive, send)
 
     app.mount("/", workspace)
     return app

@@ -1,6 +1,34 @@
 # 开放测试资源隔离矩阵（源码检查点 84617b 后的有限补测）
 
-## 当前增量：9ff9e5b 后的真实资源覆盖
+## 当前增量：a585f32 后的真实资源覆盖
+
+新增测试位于 `tests/test_account_resource_matrix.py`，该文件现在 12 个用例。
+下列状态覆盖后文相同入口的历史 NOT_RUN 标记；历史结果不作为本轮 fresh 结果。
+
+| 实际 method/path | 正向与隔离结果 | 状态 / 测试 |
+| --- | --- | --- |
+| GET `/api/documents/diff` | owner A1→A2 / B1→B2 200；混合两端及完全 foreign 404；匿名401；不返回 foreign 正文 | VERIFIED `test_diff_checks_both_versions_and_private_downloads` |
+| GET `/api/documents/{version}/export?format=md/json/docx` | owner200 attachment；foreign404；匿名401；原内容不变 | VERIFIED 同上，无独立裸露文件 URL |
+| POST `/api/document-versions/{version}/confirm`; POST `/api/documents/{version}/approve` | owner200；foreign404；匿名401；拒绝后状态不变；伪造 actor/header 不影响真实 audit.actor | VERIFIED `test_confirmation_uses_server_actor_and_rejects_foreign_version` 两参数 |
+| GET `/api/audit` | owner200含自己真实事件；foreign query/filter 不能切换 DB，不返回另一账号/项目/版本标记；匿名401 | VERIFIED `test_audit_content_is_account_scoped_even_with_foreign_filters` |
+| POST `/api/settings/model-profiles/{id}/test`, `/live-test` | owner200；foreign真实UUID404且不调用；匿名401；同局部ID1只用本账号模型；secret值不返回 | VERIFIED `test_settings_transport_and_same_local_profile_id_are_workspace_scoped`，真实service/Adapter，fake HTTP 每用户3次 |
+
+设置分类：model-profiles 为 USER_SETTING；mode 为 GLOBAL_SAFE_SETTING；api_key 为
+SECRET_SETTING（使用合成内存凭据后端，不读取真实密钥）；test/live-test 为 PROVIDER_TEST_ACTION。
+上述确认测试仅以 fixture 提供 validation/health 前置条件，不冒充校验到交接 E2E。
+
+生命周期：`test_failed_transport_settles_and_reconstructed_worker_does_not_redispatch`
+验证传输失败和 worker shutdown cancellation，释放后重建不重发，两个参数各 fake 1 次。
+进程中断后不确定调用重建 VERIFIED：同函数 interrupted_snapshot 参数，在实际传输边界
+SQLite backup 获取 RUNNING，停止原隔离 writer 后恢复测试快照；重建保留 RUNNING/RESERVED，
+claim_next 不领取，原 key 返回原202，foreign404，fake调用仍1。
+用户取消 HTTP 入口 NOT_IMPLEMENTED，不能将 worker.stop 当成该入口权限 PASS；
+本次要求的 owner/foreign 用户取消流程仍未交付。已有 completed 重建、运行中切换账号和 busy 保留测试继续保留。
+真实 Chromium 第4次生成 / 第6 claim 终态与持久化已 VERIFIED：
+`tests/run_account_browser.py --business`、`tests/account_business_browser.cjs`。
+账号批次仍 PARTIAL；竞品和统一跨模块草稿仍 NOT_IMPLEMENTED，多进程 NOT_VERIFIED。
+
+## 既有资源覆盖（继续保留）
 
 下表优先于后文历史状态。共同认证入口为服务端账号会话及 WorkspacePool 独立 DB；
 下列每项均使用实际合成资源，owner 正向成功、匿名401、foreign拒绝后重新核对原资源。
@@ -22,9 +50,7 @@
 设置未提供API key，未读取真实凭据；test/live-test不在本次覆盖中。
 资料没有独立原文件下载路由的既有结论不变，不能虚构下载验收。
 
-仍NOT_RUN：文档diff双端ID、匿名版本下载和跨账号confirm组合；audit实际内容；
-settings test/live-test安全传输集成及相同局部profile ID；中断重建/取消失败回收组合；
-Chromium第4次生成和第6个claim到业务终态。全局快照/提案不再列为NOT_RUN。
+本段历史 NOT_RUN 已由顶部当前增量替代；本轮列出的现存入口已覆盖，用户取消入口仍未实现。
 统一跨模块草稿和竞品候选/快照接口 NOT_IMPLEMENTED；账号批次仍PARTIAL。
 
 ## 历史矩阵（保留当时状态，以顶部当前增量为准）

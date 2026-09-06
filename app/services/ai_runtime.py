@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -455,6 +456,12 @@ class ManagedQwenStructuredRuntime:
             result = await async_method(*args, **kwargs)
             self.last_provider_diagnostic = dict(getattr(adapter, "last_safe_diagnostic", {}))
             return result
+        except asyncio.CancelledError:
+            # Cancellation is not proof that the Provider was never dispatched.
+            # Settle only the user reservation; leave dispatch evidence intact.
+            if operation is not None and self._after_provider_failure is not None:
+                self._release_reservation(operation, reservation)
+            raise
         except ProviderCallError as exc:
             if operation is not None and self._after_provider_failure is not None:
                 self._release_reservation(operation, reservation)

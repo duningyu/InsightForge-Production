@@ -10,6 +10,170 @@ def login(client, number):
     assert response.status_code == 200, response.text
 
 
+def document_pair(app, client, number):
+    """Real document/draft routes; synthetic local document generation only."""
+    from test_v3_handoff_and_tools import _prepare_v3
+    claim(app, client, number)
+    identity = client.get('/api/auth/me').json()['id']
+    project_id, _ = _prepare_v3(client)
+    response = client.post(f'/api/projects/{project_id}/documents/generate',
+        json={'doc_type': 'prd', 'idempotency_key': f'local-doc-{number}'})
+    assert response.status_code == 200, response.text
+    first = response.json()['version_id']
+    route = f'/api/projects/{project_id}/documents/prd/draft'
+    marker = f'PRIVATE_DOCUMENT_CONTENT_{number}'
+    assert client.put(route, json={'base_version_id': first, 'content': marker}).status_code == 200
+    response = client.post(route + '/commit', json={'expected_base_version_id': first})
+    assert response.status_code == 201, response.text
+    second = response.json()['id']
+    return identity, project_id, first, second, marker
+
+
+def test_diff_checks_both_versions_and_private_downloads(portal):
+    app, client = portal
+    a = document_pair(app, client, 151)
+    b = document_pair(app, client, 152)
+
+    def diff(first, second):
+        return client.get('/api/documents/diff', params={
+            'from_version_id': first, 'to_version_id': second})
+
+    for number, own, foreign in ((151, a, b), (152, b, a)):
+        login(client, number)
+        result = diff(own[2], own[3])
+        assert result.status_code == 200 and own[4] in result.text
+        for first, second in ((own[2], foreign[3]), (foreign[2], own[3]),
+                              (foreign[2], foreign[3])):
+            rejected = diff(first, second)
+            assert rejected.status_code == 404, rejected.text
+            assert foreign[4] not in rejected.text
+        for fmt in ('md', 'json', 'docx'):
+            response = client.get(f'/api/documents/{own[3]}/export', params={'format': fmt})
+            assert response.status_code == 200, response.text
+            assert 'attachment' in response.headers['content-disposition']
+            response = client.get(f'/api/documents/{foreign[3]}/export', params={'format': fmt})
+            assert response.status_code == 404 and foreign[4] not in response.text
+    client.post('/api/auth/logout')
+    assert diff(a[2], a[3]).status_code == 401
+    for fmt in ('md', 'json', 'docx'):
+        assert client.get(f'/api/documents/{a[3]}/export', params={'format': fmt}).status_code == 401
+    login(client, 151)
+    assert client.get(f'/api/documents/{a[3]}').json()['content'] == a[4]
+
+
+@pytest.mark.parametrize('route_template', [
+    '/api/document-versions/{version}/confirm', '/api/documents/{version}/approve'])
+def test_confirmation_uses_server_actor_and_rejects_foreign_version(portal, route_template):
+    app, client = portal
+    a = document_pair(app, client, 161)
+    db = app.state.workspace_pool.entries[a[0]]['child'].state.db
+    # Authorization precondition, not a claim of validator or handoff E2E success.
+    db.execute("UPDATE document_versions SET validation_status='passed' WHERE id=?", (a[3],))
+    db.execute("UPDATE artifact_health SET health_status='current' WHERE artifact_type='document_version' AND artifact_id=?", (a[3],))
+    before = db.fetch_one('SELECT * FROM document_versions WHERE id=?', (a[3],))
+    route = route_template.format(version=a[3])
+    payload = {'actor': 'forged-body', 'human_confirmed': True}
+    client.post('/api/auth/logout')
+    assert client.post(route, json=payload).status_code == 401
+    document_pair(app, client, 162)
+    response = client.post(route, json=payload, params={'workspace': a[0], 'participant': a[0]})
+    assert response.status_code == 404, response.text
+    assert a[4] not in response.text
+    assert db.fetch_one('SELECT * FROM document_versions WHERE id=?', (a[3],)) == before
+    login(client, 161)
+    response = client.post(route, headers={'X-Actor': 'forged-header'}, json=payload)
+    assert response.status_code == 200, response.text
+    event = db.fetch_one("SELECT * FROM audit_events WHERE action='document_version_confirmed' AND entity_id=?", (a[3],))
+    assert event['actor'] == a[0]
+    approved = db.fetch_one('SELECT * FROM document_versions WHERE id=?', (a[3],))
+    assert approved['status'] == 'approved' and approved['content'] == before['content']
+
+
+def test_audit_content_is_account_scoped_even_with_foreign_filters(portal):
+    app, client = portal
+    a = document_pair(app, client, 171)
+    b = document_pair(app, client, 172)
+    for number, own, foreign in ((171, a, b), (172, b, a)):
+        login(client, number)
+        response = client.get('/api/audit', params={'limit': 500, 'project_id': foreign[1],
+            'document_id': foreign[3], 'workspace': foreign[0], 'user_id': foreign[0]})
+        assert response.status_code == 200, response.text
+        assert own[3] in response.text
+        for private in foreign:
+            assert private not in response.text
+    client.post('/api/auth/logout')
+    assert client.get('/api/audit').status_code == 401
+
+
+def test_settings_transport_and_same_local_profile_id_are_workspace_scoped(portal):
+    import json
+    import httpx
+    from app.services.credential_store import CredentialStore
+    from app.services.provider_adapters import ModelAdapter
+    from test_model_profile_api import MemoryCredentialBackend
+    app, client = portal
+    calls = {181: [], 182: []}
+    records = {}
+    clients = []
+    collection = '/api/settings/model-profiles'
+    try:
+        for number in (181, 182):
+            claim(app, client, number)
+            identity = client.get('/api/auth/me').json()['id']
+            # Trigger the real child lifespan before injecting only credential/HTTP boundaries.
+            assert client.get(collection).status_code == 200
+            child = app.state.workspace_pool.entries[identity]['child']
+            child.state.model_profiles.credential_store = CredentialStore(MemoryCredentialBackend())
+            def transport(request, number=number):
+                body = json.loads(request.content)
+                calls[number].append(body['model'])
+                return httpx.Response(200, json={'model': body['model'],
+                    'choices': [{'message': {'content': '{"ok":true}'}}],
+                    'usage': {'prompt_tokens': 1, 'completion_tokens': 1}})
+            http = httpx.Client(transport=httpx.MockTransport(transport))
+            clients.append(http)
+            child.state.model_profiles.adapter_factory = lambda http=http, **kwargs: ModelAdapter(client=http, **kwargs)
+            response = client.post(collection, json={'display_name': f'PRIVATE_PROFILE_{number}',
+                'provider': 'openai', 'model_id': f'synthetic-model-{number}',
+                'api_key': f'TEST_ONLY_SYNTHETIC_{number}'})
+            assert response.status_code == 201, response.text
+            original_id = response.json()['id']
+            # Explicit collision fixture in independent DBs. Account/profile creation above is real.
+            row = child.state.db.fetch_one('SELECT * FROM model_profiles WHERE id=?', (original_id,))
+            row.update(id='1', is_default=0)
+            child.state.db.execute(f"INSERT INTO model_profiles ({','.join(row)}) VALUES ({','.join('?' for _ in row)})", tuple(row.values()))
+            records[number] = (identity, original_id, child.state.db)
+
+        for number, other in ((181, 182), (182, 181)):
+            login(client, number)
+            other_id = records[other][1]
+            before_other = records[other][2].fetch_all('SELECT * FROM model_profiles ORDER BY id')
+            for suffix, payload in (('test', None), ('live-test', {'confirm_live_call': True})):
+                foreign = client.post(f'{collection}/{other_id}/{suffix}', json=payload)
+                assert foreign.status_code == 404, foreign.text
+                assert calls[other] == ([] if other == 182 else [f'synthetic-model-{other}'] * 3)
+                own = client.post(f'{collection}/1/{suffix}', json=payload, params={
+                    'workspace': records[other][0], 'user_id': records[other][0],
+                    'database_path': 'other-workspace', 'participant': str(other)})
+                assert own.status_code == 200, own.text
+                assert f'synthetic-model-{number}' in own.text
+                assert f'synthetic-model-{other}' not in own.text
+                assert 'TEST_ONLY_SYNTHETIC' not in own.text
+            assert calls[number] == [f'synthetic-model-{number}'] * 3
+            assert records[other][2].fetch_all('SELECT * FROM model_profiles ORDER BY id') == before_other
+            listing = client.get(collection)
+            assert f'PRIVATE_PROFILE_{number}' in listing.text
+            assert f'PRIVATE_PROFILE_{other}' not in listing.text
+            assert 'TEST_ONLY_SYNTHETIC' not in client.get('/api/audit').text
+        client.post('/api/auth/logout')
+        for suffix, payload in (('test', None), ('live-test', {'confirm_live_call': True})):
+            assert client.post(f'{collection}/1/{suffix}', json=payload).status_code == 401
+        assert calls == {181: ['synthetic-model-181'] * 3, 182: ['synthetic-model-182'] * 3}
+    finally:
+        for http in clients:
+            http.close()
+
+
 def project(client, title):
     response = client.post('/api/projects', json={'title': title, 'summary': 'synthetic'})
     assert response.status_code == 201, response.text

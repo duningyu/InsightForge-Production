@@ -33,8 +33,15 @@ with tempfile.TemporaryDirectory(prefix="insightforge-account-browser-") as temp
     from app.config import Settings
     from app.main import create_app
     import uvicorn
+    business = "--business" in sys.argv
+    if business:
+        from browser_business_fixture import install_transport, prepare, verify
+        calls = install_transport()
     app = create_app(seed=False, settings_override=Settings(
-        accounts_enabled=True, accounts_dir=Path(temporary) / "accounts"))
+        accounts_enabled=True, accounts_dir=Path(temporary) / "accounts",
+        beta_mode=business, beta_managed_mode=business, daily_user_limits_enabled=False,
+        managed_qwen_api_key="TEST_ONLY_SYNTHETIC" if business else None,
+        managed_bailian_api_key="TEST_ONLY_SYNTHETIC" if business else None))
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     port = listener.getsockname()[1]
@@ -49,9 +56,14 @@ with tempfile.TemporaryDirectory(prefix="insightforge-account-browser-") as temp
         assert server.started, "lifespan startup failed"
         import json
         data = {"url": f"http://127.0.0.1:{port}", "invites": [app.state.accounts.issue_invite() for _ in range(2)]}
-        result = subprocess.run(["node", str(ROOT / "tests/account_flow_browser.cjs")],
+        if business:
+            data.update(prepare(app, data["url"], data["invites"][0]))
+        scenario = "account_business_browser.cjs" if business else "account_flow_browser.cjs"
+        result = subprocess.run(["node", str(ROOT / "tests" / scenario)],
                                 input=json.dumps(data), text=True, cwd=ROOT)
         assert result.returncode == 0, "Browser scenario failed"
+        if business:
+            verify(app, data, calls)
         assert not blocked, "External attempt detected"
         print("Application lifespan executed; real external connections=0; blocked attempts=0")
     finally:

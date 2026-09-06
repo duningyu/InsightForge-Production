@@ -1479,16 +1479,18 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
     @application.post("/api/document-versions/{version_id}/confirm")
     def confirm_document(version_id: str, payload: ApprovalRequest, request: Request) -> dict[str, Any]:
         result = application.state.document_versions.confirm(
-            version_id, actor=payload.actor, note=payload.note, human_confirmed=payload.human_confirmed
+            version_id, actor=request.scope.get("workspace_account", {}).get("id", payload.actor),
+            note=payload.note, human_confirmed=payload.human_confirmed
         )
         if result.get("doc_type") == "prd":
             record_product_event(request, "prd_version_confirmed", {"doc_type": "prd", "version_no": result.get("version", 1)}, project_id=result.get("project_id"))
         return result
 
     @application.post("/api/documents/{version_id}/approve", deprecated=True)
-    def approve_document(version_id: str, payload: ApprovalRequest) -> dict[str, Any]:
+    def approve_document(version_id: str, payload: ApprovalRequest, request: Request) -> dict[str, Any]:
         return application.state.document_versions.confirm(
-            version_id, actor=payload.actor, note=payload.note, human_confirmed=payload.human_confirmed
+            version_id, actor=request.scope.get("workspace_account", {}).get("id", payload.actor),
+            note=payload.note, human_confirmed=payload.human_confirmed
         )
 
     @application.get("/api/documents/{version_id}/export")

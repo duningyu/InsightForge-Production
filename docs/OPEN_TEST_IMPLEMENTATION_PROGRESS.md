@@ -1,6 +1,6 @@
 # 开放测试改版：源码增量与未完成边界
 
-## 当前状态摘要（从 9ff9e5b 接续）
+## 当前状态摘要（从 a585f32 接续）
 
 账号批次 PARTIAL；整体 PARTIAL；生产未部署。以下历史章节保留当时的状态，
 不作为当前未完成清单。
@@ -12,15 +12,45 @@
 - 本轮已验证：资料上传/读取/归档/恢复及项目内检索、持久化检索结果，
   实际交接 ZIP 导出、全局快照、变更提案 accept/reject/defer，用户模型配置读写/默认/绑定，
   文档草稿 commit。修复 commit 审计 actor 信任客户端的问题；账号模式改用服务端认证主体。
-- 仍需补：文档 diff 两端版本/匿名下载/跨账号人工确认、audit 内容隔离、
-  设置 test/live-test 的传输边界覆盖及同局部 profile ID 控制；
-  Chromium 第 4 次生成/第 6 个 claim 到业务终态；取消/失败/中断重建组合。
+- 新增 VERIFIED：文档 diff 双端版本、md/json/docx 私有版本下载、跨账号 confirm/approve、
+  audit 内容、settings test/live-test 真实 Adapter/fake HTTP、相同局部 profile ID=1。
+  confirm/approve 的 actor 改为服务端账号身份，非账号入口保留原合同。
+- 新增 VERIFIED：真实 Chromium 正常按钮完成同账号 4 次生成及一次 6 claim 分析；
+  fake transport 分别 4/6 次，终态及持久化结果成功，10 次 COMMITTED、0 活动预留；刷新 policy 正确。
+- 新增 VERIFIED：真实 worker 传输失败及 shutdown cancellation 后释放预留，空闲回收、
+  登录重建、同 key 重放保持原 FAILED，不再次调用。取消此前存在实际 reservation 泄漏，已最小修复。
+- 新增 VERIFIED：在真实 fake 传输等待时 SQLite backup 捕获 RUNNING，原测试 writer 停止后
+  仅恢复隔离库快照再重建 child；保留 RUNNING/RESERVED、不重新领取、不重复调用，foreign404。
+- 剩余明确差距：用户取消 HTTP 入口当前 NOT_IMPLEMENTED；worker.stop 的取消测试不等于
+  本次要求的 owner/foreign 取消 API 流程。没有用这个内部控制测试宣称 Phase A 的用户取消 gate 通过。
 - 账号通过后：可选竞品候选→服务端项目快照→生成上下文→文档版本引用的最小切片。
 - 后续仍未完成：统一用户草稿恢复/冲突检测、同模型 AI 参考完整体验、
   无资料人工确认交接、完整中文/缩放/登录到交接 E2E。统一跨模块草稿接口 NOT_IMPLEMENTED；
   多进程 NOT_VERIFIED。真实模型/搜索未验收，不自动部署。
 
-### 本轮验证记录
+### a585f32 后本轮验证记录
+
+- 有效 RED：confirm/approve 的两个用例因 audit.actor 为 forged-body 失败；修复后资源矩阵 12 passed（56.63s）。
+- 有效 RED：取消 fake 传输后 run FAILED，但 RESERVED=1，业务测试 1 failed / 4 passed（17.16s）。
+  `ManagedQwenStructuredRuntime._call_async` 显式捕获 CancelledError，只释放用户预留并重新抛出；
+  不修改 Provider ledger 或将已进入边界的调用改成未调用。GREEN 5 passed（17.23s）。
+- `py -3.12 tests/run_account_browser.py --business`：真实 Chromium 正常 UI 4 个生成动作、
+  4 个终态任务，1 个分析动作、6 个不同 claim、6 次 fake HTTP；真实 lifespan，外部连接尝试 0。
+  合成 confirmed brief/claim 为前置 fixture，未写成功状态、计数或结果；不宣称完成 Idea 到交接 E2E。
+- `py -3.12 tests/run_account_browser.py`：原账号领取/登录/创建保存/刷新/退出换账号/后端拒绝 PASS；
+  生成 0、外部连接尝试 0。截图在被忽略的 artifacts/account-browser/，不含生产数据。
+- 业务浏览器复跑 PASS；终态截图分别在 artifacts/account-business-browser/
+  fourth-generation-terminal.png 和 six-claim-analysis-terminal.png，刷新截图 completed.png 不是终态证据。
+  截图人工检查发现项目页顶部账号控件挤压/重叠，留在整体布局缺口；本批浏览器 PASS 仅指业务操作与隔离，不代表布局验收。
+- 七个 `tests/*harness.js` PASS；Python compileall 与 git diff --check PASS。
+- `py -3.12 tests/run_open_test_regressions.py`：fresh 130 passed（181.21s），0失败/跳过，外部尝试0；
+  随后加入中断快照覆盖并加强重放断言，业务文件 fresh 6 passed（20.99s），外部尝试0。
+  130项为定向集合，不是全库；不把新增后的6项结果与130简单相加。
+- 最终重新执行同一完整定向命令：131 passed（178.51s），0失败/跳过，外部尝试0。
+  七个 Node harness、compileall 再次 PASS；9个改动文件的秘密模式扫描0命中，人工diff未发现真实凭据/用户内容。
+- Phase A 尚未结项，因此 Phase B NOT_STARTED；不是搜索未配置导致阻塞。
+
+### 历史：上一轮验证记录
 
 - 有效 RED：新增资料/草稿两项测试初跑 1 failed / 1 passed（9.69s）；
   草稿 commit audit.actor 实为客户端 forged-body，而非认证账号 ID。

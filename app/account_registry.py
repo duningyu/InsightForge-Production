@@ -23,6 +23,59 @@ def password_hash(password, salt):
                           r=8, p=1, maxmem=64 * 1024 * 1024).hex()
 
 
+def validate_legacy_schema(database):
+    """Read-only structural floor: repository v206 and its additive successors.
+
+    This is admission validation, not migration or proof of arbitrary historical
+    schema compatibility. The old writer must be stopped before binding.
+    """
+    tables = {
+        "projects", "project_canvas", "project_canvas_versions", "sources",
+        "source_chunks", "documents", "document_versions", "generation_runs",
+        "validation_issues", "guided_sessions", "guided_messages", "project_decisions",
+        "retrieval_runs", "retrieval_hits", "document_claims", "claim_evidence_links",
+        "handoff_runs", "audit_events",
+    }
+    required = {
+        "projects": {"id", "title", "summary", "status", "created_at", "updated_at"},
+        "documents": {"id", "project_id", "doc_type", "title", "created_at"},
+        "document_versions": {"id", "document_id", "project_id", "doc_type", "version",
+                              "status", "content", "created_at"},
+        "sources": {"id", "project_id", "content", "source_type", "sha256"},
+    }
+    try:
+        db = sqlite3.connect(Path(database).as_uri() + "?mode=ro", uri=True)
+        try:
+            actual = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not tables <= actual:
+                raise ValueError("Unsupported legacy schema: required tables missing")
+            for table, columns in required.items():
+                present = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
+                if not columns <= present:
+                    raise ValueError("Unsupported legacy schema: required columns missing")
+        finally:
+            db.close()
+    except sqlite3.DatabaseError:
+        raise ValueError("Unsupported legacy schema: invalid SQLite database") from None
+
+
+def same_location(first, second):
+    if not first or not second:
+        return False
+    a, b = Path(first), Path(second)
+    return a.resolve() == b.resolve() or (a.exists() and b.exists() and a.samefile(b))
+
+
+def ensure_unbound(db, database, runtime, participant, *, exclude_invite=None):
+    rows = db.execute("SELECT database_path, runtime_path, participant FROM accounts").fetchall()
+    rows += db.execute("SELECT database_path, runtime_path, participant FROM invites "
+                       "WHERE hash != ?", (exclude_invite or "",)).fetchall()
+    for row in rows:
+        if (same_location(database, row["database_path"]) or
+                same_location(runtime, row["runtime_path"]) or participant == row["participant"]):
+            raise ValueError("Legacy ownership already bound")
+
+
 class AccountRegistry:
     def __init__(self, root):
         self.root = Path(root).resolve()
@@ -69,14 +122,24 @@ class AccountRegistry:
                 raise ValueError("Explicit legacy paths must already exist")
             if not re.fullmatch(r"beta_[0-9]{3}", participant):
                 raise ValueError("Explicit legacy participant required")
+            validate_legacy_schema(database)
         token = secrets.token_urlsafe(32)
         with self.connect() as db:
-            if database and db.execute("SELECT 1 FROM accounts WHERE database_path=? OR runtime_path=? OR participant=?",
-                                       (database, runtime, participant)).fetchone():
-                raise ValueError("Legacy ownership already bound")
+            db.execute("BEGIN IMMEDIATE")
+            if database:
+                ensure_unbound(db, database, runtime, participant)
             db.execute("INSERT INTO invites VALUES (?, ?, NULL, ?, ?, ?)",
                        (digest(token), time.time() + 86400, database, runtime, participant))
         return token
+
+    def revoke_invite(self, token):
+        """Operator-only, idempotent revocation; retain the original invite row.
+
+        Revoking a claimed invite does not revoke its owner's account/session.
+        """
+        with self.connect() as db:
+            db.execute("UPDATE invites SET expires=MIN(expires, ?) WHERE hash=? AND claimed_by IS NULL",
+                       (time.time(), digest(token)))
 
     def claim(self, token, username, password):
         username = username.strip().lower()
@@ -91,6 +154,10 @@ class AccountRegistry:
                                 (digest(token), time.time())).fetchone()
             if not invite:
                 raise ValueError("邀请无效、已领取或已过期")
+            if invite["database_path"]:
+                validate_legacy_schema(invite["database_path"])
+                ensure_unbound(db, invite["database_path"], invite["runtime_path"],
+                               invite["participant"], exclude_invite=digest(token))
             workspace = self.root / "workspaces" / identity
             try:
                 db.execute("INSERT INTO accounts VALUES (?, ?, ?, ?, ?, ?, ?)",

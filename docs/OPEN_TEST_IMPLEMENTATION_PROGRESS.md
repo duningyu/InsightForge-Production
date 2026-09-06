@@ -132,3 +132,48 @@
   前端所有旧额度文案和发布配置闭环仍未完成。现有12/22次计数服务测试不能替代它们。
 - 下一步先完成上述账号全资源矩阵、配置/限额闭环，再做用户级草稿冲突、AI参考接线、
   无资料人工确认交接、全中文和真实缩放/完整浏览器任务。统一清单继续使用本文件。
+
+## 追加：旧库绑定与资源边界定向补齐（2026-09-06，仍为 PARTIAL）
+
+- 从 84617b 接续，保留既有认证、加载提示、文档 UX、不限默认值和生产卷配置。
+- 资源证据附件：`docs/OPEN_TEST_RESOURCE_ISOLATION_MATRIX.md`。按实际路由列出已有证据及
+  缺口，不把不存在的接口或随机 ID 的404视为完整资源隔离。
+- 修复旧库签发/领取准入：只读检查 v206 基础结构；拒绝空库、无关库和截断库。
+  事务内检查已签发/已绑定路径及物理文件别名，避免同一旧库重复分配。
+  新增操作员服务级幂等撤销邀请，保留原记录；没有新增公开签发/撤销入口。
+- 合成 v206 fixture 经显式绑定、实际登录、两次已有 additive migration 后原项目 ID/内容保留。
+  当前 schema 的旧归属控制测试复用。仅此明确范围有证据，不保证所有历史 schema。
+  发布仍须先停用旧写入者、保持映射路径稳定；没有访问生产旧库。
+- 新增同局部项目 ID 的两个真实文档草稿隔离测试：owner 读写、匿名拒绝、伪造 actor、
+  user_id/participant/workspace/database_path 参数不能选择另一用户库，另一份资源保持不变。
+- 新增撤销/过期邀请、双线程同邀请领取唯一所有者、30分钟滑动闲置过期、退出失效，
+  缺自定义头403、失效会话不降级到共享空间。不是完整安全认证。
+
+### 本轮实际 RED / GREEN 与 fresh 验证
+
+- `py -3.12 -m pytest tests/test_account_registry_boundaries.py -q --tb=short`：
+  RED **5 failed, 3 passed in 4.44s**。三种不支持旧库未拒绝、硬链接重复绑定未拒绝、
+  缺少 revoke_invite；最小修复后 GREEN **8 passed in 3.40s**。
+  草稿/请求头新增测试覆盖已有正确行为，没有人为制造 RED。
+- `py -3.12 tests/run_open_test_regressions.py`：**109 passed in 106.93s**；
+  blocked_external_attempts=0、real_external_connections=0。包含账号、v206迁移及原
+  quota/异步/文档/ledger/strict acceptance 定向控制，不是全库测试。
+- `py -3.12 tests/run_account_browser.py`：实际 Chromium 账号领取/登录/建项目/保存/刷新/
+  退出/换账号/跨账号拒绝 PASS；应用 lifespan 执行，外部连接与生成请求0。
+  截图本地 `artifacts/account-browser/`，不提交。范围为1366×768已有账号流程，
+  不等于不限政策浏览器、真实缩放或想法到交接 E2E。
+- 加载提示回归 `node tests/loading_progress_harness.js` PASS；不是浏览器布局证明。
+  一次误写的 loading_progress_behavior.cjs 命令因文件不存在失败，已纠正到现有入口。
+- `py -3.12 -m compileall -q app/account_registry.py tests/test_account_registry_boundaries.py tests/test_open_accounts.py`
+  PASS；git diff --check PASS；本轮六个变更文件常见真实凭据模式扫描0命中，人工检查仅合成测试值。
+  不读取真实私密配置，不修改生产运行状态或数据。
+
+### 本批仍未闭环（必须先完成，再进入用户级草稿恢复）
+
+1. 矩阵内真实任务、资料、导出、设置及其他全局资源的 owner/foreign/匿名组合。
+2. 实际 worker + Adapter fake 的跨账号任务归属、重建和同幂等键证明。
+3. 第4次方案、第6次分析完整业务终态测试；前端不限政策及无秘密目标配置读取验证。
+4. app/worker 空闲回收策略、并发首次初始化和运行中任务保护；多进程未验证。
+
+整体后续仍包括模块/刷新草稿与冲突检测、同模型AI参考、无资料人工确认交接、
+中文/布局/缩放和完整浏览器任务。当前增量不构成开放测试版本可发布证据。

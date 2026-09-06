@@ -135,3 +135,58 @@ def test_explicit_legacy_mapping_does_not_adopt_unclaimed_data(portal, tmp_path)
             assert client.post(f"/api/documents/{version}/{suffix}", json={}).status_code == 404
         assert client.delete(f"/api/documents/{version}").status_code == 404
         assert db.fetch_one("SELECT id FROM document_versions WHERE id=?", (version,))
+
+
+def test_existing_drafts_same_local_project_id_and_anonymous_boundary(portal, tmp_path):
+    """Local IDs may collide; server session, not a client hint, chooses the DB."""
+    from app.db import Database
+    from app.services.loop import DocumentLoop
+    app, client = portal
+    resources = []
+    project = "project_insightforge_demo"
+    route = f"/api/projects/{project}/documents/prd/draft"
+    for number in (1, 2):
+        path = tmp_path / f"owner{number}.sqlite3"
+        runtime = tmp_path / f"owner{number}-runtime"
+        runtime.mkdir()
+        db = Database(path)
+        db.init_schema()
+        db.seed_demo_data()
+        version = DocumentLoop(db).run(project, "prd", idempotency_key="same-local-key")["version_id"]
+        invite = app.state.accounts.issue_invite(legacy_binding={
+            "database_path": path, "runtime_path": runtime, "participant": f"beta_00{number}"})
+        login = {"username": f"draft-owner{number}", "password": "SYNTHETIC-only-passphrase!"}
+        assert client.post("/api/auth/claim", json={**login, "invite": invite}).status_code == 201
+        assert client.post("/api/auth/login", json=login).status_code == 200
+        identity = client.get("/api/auth/me").json()["id"]
+        content = f"Synthetic private draft owner {number}"
+        response = client.put(route, headers={"X-Actor": "forged-owner"},
+                              json={"base_version_id": version, "content": content})
+        assert response.status_code == 200, response.text
+        assert response.json()["updated_by"] == identity
+        resources.append((db, login, content))
+        assert client.post("/api/auth/logout").status_code == 200
+        assert client.get(route).status_code == 401
+        assert client.put(route, json={"base_version_id": version, "content": "attack"}).status_code == 401
+    for index, (db, login, content) in enumerate(resources):
+        assert client.post("/api/auth/login", json=login).status_code == 200
+        other_db = resources[1-index][0]
+        before = other_db.fetch_one("SELECT * FROM document_edit_drafts")
+        response = client.get(route, params={"user_id": "other", "participant": "beta_002",
+                              "workspace": "other", "database_path": str(other_db.path)})
+        assert response.status_code == 200
+        assert response.json()["content"] == content
+        assert resources[1-index][2] not in response.text
+        assert other_db.fetch_one("SELECT * FROM document_edit_drafts") == before
+        assert client.post("/api/auth/logout").status_code == 200
+
+
+def test_missing_header_and_invalid_sessions_never_fall_back(portal):
+    app, client = portal
+    claim(app, client, 9)
+    client.headers.pop("X-InsightForge-Request")
+    assert client.post("/api/projects", json={"title": "blocked", "summary": "blocked"}).status_code == 403
+    client.cookies.clear()
+    client.cookies.set("insightforge_account", "SYNTHETIC-invalid-session")
+    for route in ("/api/projects", "/api/settings/model-profiles", "/api/audit", "/api/usage/policy"):
+        assert client.get(route).status_code == 401

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InsightForge · 账号登录</title></head>
+<body><main style="max-width:30rem;margin:4rem auto;padding:1rem">
+<h1>登录个人工作空间</h1>
+<p>每个账号的项目和资料独立保存。没有账号？请向操作员领取邀请。</p>
+<form id="account-form">
+<p><label>账号 <input name="username" autocomplete="username" required minlength="3" maxlength="64"></label></p>
+<p><label>密码 <input name="password" type="password" autocomplete="current-password" required maxlength="128"></label></p>
+<details><summary>首次领取账号</summary><p><label>邀请凭证 <input name="invite" autocomplete="off" maxlength="128"></label></p>
+<button name="action" value="claim" type="submit">领取独立账号</button></details>
+<p><button name="action" value="login" type="submit">登录</button></p>
+</form><p id="account-message" role="status"></p></main>
+<script src="/account.js" defer></script></body></html>

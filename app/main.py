@@ -140,8 +140,12 @@ def _sanitize_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, 
     return sanitized
 
 
-def create_app(*, database_path: str | Path | None = None, seed: bool = True) -> FastAPI:
-    settings = Settings.from_env()
+def create_app(*, database_path: str | Path | None = None, seed: bool = True,
+               settings_override: Settings | None = None) -> FastAPI:
+    settings = settings_override or Settings.from_env()
+    if settings.accounts_enabled:
+        from app.accounts import create_account_app
+        return create_account_app(settings)
     db = Database(database_path or settings.database_path)
     beta_context = BetaInstanceContext.from_settings(settings)
 

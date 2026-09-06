@@ -31,6 +31,8 @@ class Settings:
     beta_timezone: str = "Asia/Shanghai"
     daily_user_limits_enabled: bool = False
     runtime_dir: Path = Path("runtime")
+    accounts_enabled: bool = False
+    accounts_dir: Path = Path("data/accounts")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -58,6 +60,8 @@ class Settings:
             beta_timezone=os.getenv("BETA_TIMEZONE", "Asia/Shanghai"),
             daily_user_limits_enabled=os.getenv("INSIGHTFORGE_DAILY_USER_LIMITS_ENABLED", "false").strip().lower() in {"1", "true", "yes"},
             runtime_dir=Path(os.getenv("RUNTIME_DIR", "runtime")),
+            accounts_enabled=os.getenv("INSIGHTFORGE_ACCOUNTS_ENABLED", "false").lower() == "true",
+            accounts_dir=Path(os.getenv("INSIGHTFORGE_ACCOUNTS_DIR", "data/accounts")),
         )
         if not 1 <= settings.max_loop_rounds <= 5:
             raise ValueError("INSIGHTFORGE_MAX_LOOP_ROUNDS must be in [1, 5]")

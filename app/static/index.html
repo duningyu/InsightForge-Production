@@ -44,6 +44,10 @@
         <button id="new-idea-button" class="button button-quiet" type="button">＋ 新 Idea</button>
       </div>
       <button id="settings-button" class="button button-secondary header-settings-button" type="button" aria-controls="model-settings-view">设置</button>
+      <span id="account-controls" hidden><span id="account-name"></span>
+        <button id="account-new-project" type="button" class="button button-secondary">新建空白项目</button>
+        <button id="account-logout" type="button" class="button button-secondary">退出账号</button>
+      </span>
       <button id="mobile-nav-button" class="mobile-nav-button hidden" type="button" aria-controls="primary-nav" aria-expanded="false">☰</button>
     </header>
 
@@ -333,5 +337,6 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/static/app.js?v=3.0.0&amp;build=prelaunch-self-audit-p0f.1" defer></script>
   <script src="/static/model-settings.js?v=3.0.0&amp;build=secure-profiles.1" defer></script>
+  <script src="/static/account-session.js" defer></script>
 </body>
 </html>

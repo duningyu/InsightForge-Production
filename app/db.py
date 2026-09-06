@@ -54,6 +54,16 @@ def chunk_text(text: str, max_chars: int = 520, overlap: int = 60) -> list[str]:
 
 
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS competitor_candidates (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    name TEXT NOT NULL,
+    url TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    selected INTEGER NOT NULL DEFAULT 0 CHECK(selected IN (0, 1)),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_competitor_candidates_project ON competitor_candidates(project_id);
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,

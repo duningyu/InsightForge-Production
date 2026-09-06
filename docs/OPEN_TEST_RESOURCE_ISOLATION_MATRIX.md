@@ -1,9 +1,23 @@
 # 开放测试资源隔离矩阵（源码检查点 84617b 后的有限补测）
 
-## 当前增量：16c0056 后用户取消入口
+## 当前增量：账号结项后竞品候选后端
+
+账号批次 PASS，不因后续产品接口未实现重新打开账号批次。
+下列入口复用服务端账号到 child SQLite 的路由，以及项目服务归属判断；不读取客户端身份参数。
+
+| 实际 method/path | 正向与隔离结果 | 状态 / 测试 |
+| --- | --- | --- |
+| POST `/api/projects/{p}/competitors` | owner201，严格载荷/安全URL；不生成source；项目归属由当前库决定 | VERIFIED `tests/test_competitor_candidates.py` |
+| GET `/api/projects/{p}/competitors` | owner200；foreign404、匿名401；空列表明确搜索未配置 | VERIFIED 同上 |
+| GET `/api/projects/{p}/competitors/{id}` | owner200；同账号不同项目404、foreign404；相同局部ID仅返回当前账号对象，伪造身份query不切库 | VERIFIED 同上 |
+| PUT `/api/projects/{p}/competitors/{id}/selection` | owner200；wrong-project/foreign404、匿名401；拒绝不改变原对象；重复选择审计一次，actor可信；confirmed/actor额外payload422 | VERIFIED 同上 |
+
+候选页面、搜索、AI比较、决策快照及文档引用：NOT_IMPLEMENTED，不列为已验收。
+
+## 已完成增量：16c0056 后用户取消入口
 
 现存私有 resource remaining=NONE；下面历史 NOT_IMPLEMENTED 的取消入口现已实现。
-统一跨模块草稿/竞品仍属未来接口，NOT_IMPLEMENTED；多进程 NOT_VERIFIED。
+统一跨模块草稿仍属未来接口，NOT_IMPLEMENTED；竞品候选以后文历史记录之外的当前增量为准；多进程 NOT_VERIFIED。
 
 | 实际 method/path | 正向与隔离结果 | 状态 / 测试 |
 | --- | --- | --- |

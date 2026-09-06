@@ -20,6 +20,8 @@ from app.db import Database
 from app.exporters import ArtifactExporter
 from app.ingestion import MAX_UPLOAD_BYTES
 from app.schemas import (
+    CompetitorCandidateCreateRequest,
+    CompetitorSelectionRequest,
     CanonicalExampleResponse,
     EvidenceAnalyzeRequest,
     ExampleCopyResponse,
@@ -52,6 +54,7 @@ from app.schemas import (
     BetaFeedbackRequest,
 )
 from app.services.projects import ProjectService
+from app.services.competitors import CompetitorService
 from app.errors import (
     BetaDailyLimitReached,
     ConflictError,
@@ -223,6 +226,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                 idle_timeout_minutes=settings.beta_session_idle_timeout_minutes,
             )
         application.state.projects = ProjectService(db)
+        application.state.competitors = CompetitorService(db, application.state.projects)
         application.state.example_copies = ExampleCopyService(db)
         application.state.model_profiles = ModelProfileService(db)
         application.state.managed_model_registry = ManagedModelRegistry(
@@ -1196,6 +1200,30 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             **payload.model_dump(),
             actor=x_actor,
         )
+
+    def competitor_actor(request: Request) -> str:
+        return (request.scope.get("workspace_account", {}).get("id")
+                or application.state.beta_context.participant_id)
+
+    @application.get("/api/projects/{project_id}/competitors")
+    def list_competitors(project_id: str) -> dict[str, Any]:
+        return application.state.competitors.list(project_id)
+
+    @application.post("/api/projects/{project_id}/competitors", status_code=201)
+    def create_competitor(project_id: str, payload: CompetitorCandidateCreateRequest,
+                          request: Request) -> dict[str, Any]:
+        return application.state.competitors.create(
+            project_id, **payload.model_dump(), actor=competitor_actor(request))
+
+    @application.get("/api/projects/{project_id}/competitors/{candidate_id}")
+    def get_competitor(project_id: str, candidate_id: str) -> dict[str, Any]:
+        return application.state.competitors.get(project_id, candidate_id)
+
+    @application.put("/api/projects/{project_id}/competitors/{candidate_id}/selection")
+    def select_competitor(project_id: str, candidate_id: str, payload: CompetitorSelectionRequest,
+                          request: Request) -> dict[str, Any]:
+        return application.state.competitors.select(
+            project_id, candidate_id, payload.selected, competitor_actor(request))
 
     @application.get("/api/source-guidance")
     def source_guidance() -> list[dict[str, Any]]:

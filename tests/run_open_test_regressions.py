@@ -31,6 +31,7 @@ def main():
     socket.socket.connect = guarded
     socket.socket.connect_ex = guarded
     files = [
+        "test_competitor_candidates.py",
         "test_open_accounts.py",
         "test_account_resource_matrix.py",
         "test_account_workspace_lifecycle.py",

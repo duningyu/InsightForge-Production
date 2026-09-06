@@ -30,6 +30,38 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class CompetitorCandidateCreateRequest(StrictModel):
+    name: str = Field(min_length=1, max_length=160)
+    url: str = Field(default="", max_length=2000)
+    description: str = Field(default="", max_length=3000)
+
+    @field_validator("name")
+    @classmethod
+    def nonblank_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("请输入产品名称")
+        return value.strip()
+
+    @field_validator("url")
+    @classmethod
+    def safe_reference_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+
+        value = value.strip()
+        if not value:
+            return value
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or any(char.isspace() for char in value)):
+            raise ValueError("请填写不含账号密码的 HTTP 或 HTTPS 网址")
+        return value
+
+
+class CompetitorSelectionRequest(StrictModel):
+    selected: bool = Field(strict=True)
+
+
 class ProjectCreateRequest(StrictModel):
     title: str = Field(min_length=1, max_length=160)
     summary: str = Field(min_length=1, max_length=3000)

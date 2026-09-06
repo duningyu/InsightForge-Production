@@ -1,6 +1,32 @@
 # 开放测试改版：源码增量与未完成边界
 
-## 当前状态摘要（从 16c0056 接续）
+## 当前状态摘要（账号结项提交 7b11fa7 后）
+
+账号批次 PASS，已经结束；竞品切片 PARTIAL；整体开放测试 PARTIAL，未部署。
+
+- 本增量只实现候选后端：项目范围手动添加、列表、详情、显式选择。
+  使用现有账号 child SQLite、项目服务与可信 actor；候选不创建 source、不自动进入 RAG，选择仍为 UNVERIFIED。
+- 新表 `competitor_candidates` 是 additive；项目永久删除沿用现有显式删除图。
+  URL 仅保存合法 HTTP(S) 引用，不抓取、不判定其真实或可靠；禁止带用户名密码的 URL。
+- `tests/test_competitor_candidates.py` RED：3 failed（5.51s），缺失路由404。
+  GREEN：4 passed（11.17s），涵盖同账号跨项目、跨账号及同局部ID、匿名拒绝、可信审计、
+  重复选择不重复审计、候选/来源分离、重开数据库以及项目删除兼容。网络尝试0。
+- 竞品页面 NOT_IMPLEMENTED；AI 比较、搜索 adapter 业务路径、决策快照、生成上下文、文档版本引用均 NOT_IMPLEMENTED。
+  新 GET 列表返回 NOT_CONFIGURED 和中文说明，但尚未接入页面，不能称浏览器披露通过。
+- 下一接线位置：`app/static/app.js` / `index.html` 方案入口；`app/services/competitors.py` 候选服务；
+  现有 `ai_runtime.py` / `provider_adapters.py` 的模型配置与传输；`solution_design.py` 实际 brief/context；
+  `snapshots.py`、文档生成/版本机制的不可变引用。每段继续 RED/GREEN，不复制参考包模型或鉴权实现。
+- 本增量 fresh 验证：`py -3.12 tests/run_open_test_regressions.py`：142 passed（241.57s），
+  blocked_external_attempts=0、real_external_connections=0；这是定向集合，不是全库。
+  候选补充匿名/foreign create 断言后单独重跑：4 passed（11.15s），外部连接0。
+  `py -3.12 tests/run_account_browser.py` 与 `--cancel` 均 PASS，实际 Chromium、lifespan 已执行；
+  前者 claim/login/create/save/reload/logout/switch/denial，generation=0；后者 UI生成1、取消1、fake传输1，刷新无新增调用。
+  八个现有 Node harness、compileall、git diff --check PASS；本增量9个文件 secret pattern扫描0命中并人工检查。
+  没有竞品 Chromium 流程证据，不能把账号浏览器通过写成竞品页面通过。
+- 整体旧缺口仍保留：统一跨模块草稿与多标签页冲突、完整 AI 补充思路、无资料人工确认交接、
+  完整中文/布局/125%与150%缩放/登录到交接 E2E。多进程 NOT_VERIFIED。
+
+## 已完成：从 16c0056 接续的账号结项
 
 账号批次 PASS：取消闭环及既有账号 gate 已 fresh 验证；整体 PARTIAL，生产未部署。
 当前现存私有资源没有未解释 NOT_RUN；未来统一跨模块草稿不计入账号结项 gate。

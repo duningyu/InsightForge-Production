@@ -182,6 +182,7 @@ class ProjectService:
         # must be explicit and auditable whenever a new project-scoped table is added.
         with self.db.connect() as connection:
             connection.execute("DELETE FROM document_edit_drafts WHERE project_id = ?", (project_id,))
+            connection.execute("DELETE FROM competitor_candidates WHERE project_id = ?", (project_id,))
             connection.execute("DELETE FROM project_tour_progress WHERE project_id = ?", (project_id,))
             connection.execute("DELETE FROM project_model_profiles WHERE project_id = ?", (project_id,))
             connection.execute(

@@ -1225,6 +1225,10 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         return application.state.competitors.select(
             project_id, candidate_id, payload.selected, competitor_actor(request))
 
+    @application.delete("/api/projects/{project_id}/competitors/{candidate_id}")
+    def remove_competitor(project_id: str, candidate_id: str, request: Request) -> dict[str, bool]:
+        return application.state.competitors.remove(project_id, candidate_id, competitor_actor(request))
+
     @application.get("/api/source-guidance")
     def source_guidance() -> list[dict[str, Any]]:
         return application.state.sources.guidance.describe_categories()

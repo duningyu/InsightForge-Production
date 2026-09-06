@@ -93,6 +93,32 @@ def test_invalid_url_and_unconfigured_search_are_honest(portal):
     assert '联网查找暂未开启' in response.json()['search_disclosure']
 
 
+def test_remove_real_candidate_checks_owner_and_preserves_other_resources(portal):
+    app, client = portal
+    claim(app, client, 306)
+    p = project(client, 'Synthetic removal')
+    route = f'/api/projects/{p}/competitors'
+    candidate = client.post(route, json={'name': 'PRIVATE_REMOVE_A'}).json()
+    keep = client.post(route, json={'name': 'KEEP_A'}).json()
+    detail = route + '/' + candidate['id']
+    client.post('/api/auth/logout')
+    assert client.delete(detail).status_code == 401
+    claim(app, client, 307)
+    denied = client.delete(detail)
+    assert denied.status_code == 404 and 'PRIVATE_REMOVE_A' not in denied.text
+    login(client, 306)
+    assert client.get(detail).json() == candidate
+    result = client.delete(detail)
+    assert result.status_code == 200, result.text
+    assert result.json() == {'removed': True}
+    assert client.get(detail).status_code == 404
+    assert client.get(route).json()['candidates'] == [keep]
+    assert client.get(f'/api/projects/{p}/sources').json() == []
+    identity = client.get('/api/auth/me').json()['id']
+    db = app.state.workspace_pool.entries[identity]['child'].state.db
+    assert db.fetch_all("SELECT actor FROM audit_events WHERE action='competitor_candidate_removed'") == [{'actor': identity}]
+
+
 def test_candidate_persistence_and_existing_project_purge_contract(portal):
     app, client = portal
     claim(app, client, 305)

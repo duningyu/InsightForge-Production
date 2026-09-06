@@ -1,6 +1,41 @@
 # 开放测试改版：源码增量与未完成边界
 
-## 当前状态摘要（账号结项提交 7b11fa7 后）
+## 当前状态摘要（从 0bf26ce 接续：候选页面增量）
+
+账号批次 PASS，保持关闭；竞品切片 PARTIAL；整体开放测试 PARTIAL，未部署。
+
+- 已完成候选页面：方案页“看看已有产品”，手动添加、查看、显式加入/移出比较、移除候选、关闭/Esc/焦点恢复。
+  复用现有候选表与项目/账号服务，仅增加 scoped DELETE；不创建来源，不自动进入 RAG，不新增模型配置。
+- 搜索 NOT_CONFIGURED，页面明确披露且无搜索执行按钮。选择仍是用户意向，不证明真实性。
+  输入仅在当前页面内按项目暂存，关闭可恢复；不宣称刷新恢复或统一跨模块草稿已完成。
+- 当前未完成：AI 比较与异步接线、比较/决策快照持久化及权限、实际方案 context 取舍、
+  PRD/TechDoc 精确快照引用和旧版本稳定性、竞品完整与跳过到文档 Chromium 流程。
+  候选页面跳过只证明关闭不删候选、不创建来源，不能替代方案/文档跳过验收。
+- 新 DELETE 回归有效 RED：1 failed / 4 passed（15.17s），foreign 请求405，缺少删除路由；
+  GREEN：5 passed（14.72s），owner删除、foreign/匿名拒绝、拒绝不改变对象、可信审计、其他来源/候选保留。
+- Chromium 有效 RED：缺少 `#competitor-open`；另有保存期间关闭按钮禁用的受控请求失败；
+  修复后关闭不撤销请求，保存期间输入锁定，避免新输入被覆盖。
+  模拟503另取得有效 RED：错误文案错误附带网址诊断；GREEN改为中性错误并保留输入。
+  一次前置导航超时不计产品 RED：账号控件先于首页 bootstrap 出现，runner改为等待初始网络空闲后创建项目。
+- Fresh `py -3.12 tests/run_open_test_regressions.py`：143 passed（238.11s），0失败/跳过，
+  blocked_external_attempts=0、real_external_connections=0；是定向集合，不是全库。
+- Fresh `py -3.12 tests/run_account_browser.py --competitor`：Chromium 候选页面 PASS（最终9.37s），
+  正常领取/登录/创建项目/添加2个/查看不选择/选择1个/关闭与重开/移除/跳过；模拟503保留输入。
+  Provider/Search请求尝试0，实际 lifespan 执行，真实外部连接0。
+  合成截图：`artifacts/competitor-browser/panel.png`、`candidates.png`；1366×768 面板已人工查看。
+  失败图按 runner 约定保留在忽略目录。
+  这不是 AI→快照→方案→文档 E2E。
+- Fresh 账号 browser 与 `--cancel` PASS；取消：生成1/取消1/fake传输1，释放1/活动预留0，刷新无新增调用。
+  8个现有 Node harness、JS语法、compileall、git diff --check PASS。
+  9个改动文件 credential pattern扫描0命中、完整diff人工审查；只含合成测试口令，无真实凭据。
+  账号结项不重新打开。
+- 下一具体实现位置：`ai_runtime.py` / `provider_adapters.py` 复用配置的一次比较调用；
+  `async_generation.py` 现有任务执行/结果判定扩展；`competitors.py` 服务端比较与不可变快照；
+  `solution_design.py` 实际 context；`snapshots.py` 与文档版本精确引用。上述代码本增量未修改。
+- 整体旧缺口不变：统一草稿恢复与冲突、完整 AI 补充思路、无资料人工确认交接、完整中文、
+  有结果布局、125%/150%缩放、登录到交接最终 E2E。无生产修改或真实服务请求。
+
+## 历史记录：0bf26ce 候选后端增量（非当前未完成清单）
 
 账号批次 PASS，已经结束；竞品切片 PARTIAL；整体开放测试 PARTIAL，未部署。
 

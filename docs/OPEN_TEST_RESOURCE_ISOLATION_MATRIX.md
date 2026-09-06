@@ -1,6 +1,6 @@
 # 开放测试资源隔离矩阵（源码检查点 84617b 后的有限补测）
 
-## 当前增量：账号结项后竞品候选后端
+## 当前增量：账号结项后竞品候选与页面
 
 账号批次 PASS，不因后续产品接口未实现重新打开账号批次。
 下列入口复用服务端账号到 child SQLite 的路由，以及项目服务归属判断；不读取客户端身份参数。
@@ -11,8 +11,13 @@
 | GET `/api/projects/{p}/competitors` | owner200；foreign404、匿名401；空列表明确搜索未配置 | VERIFIED 同上 |
 | GET `/api/projects/{p}/competitors/{id}` | owner200；同账号不同项目404、foreign404；相同局部ID仅返回当前账号对象，伪造身份query不切库 | VERIFIED 同上 |
 | PUT `/api/projects/{p}/competitors/{id}/selection` | owner200；wrong-project/foreign404、匿名401；拒绝不改变原对象；重复选择审计一次，actor可信；confirmed/actor额外payload422 | VERIFIED 同上 |
+| DELETE `/api/projects/{p}/competitors/{id}` | owner200；foreign404无内容、匿名401；拒绝后对象不变，其他候选与来源保留；删除audit actor为认证账号 | VERIFIED `test_remove_real_candidate_checks_owner_and_preserves_other_resources` |
 
-候选页面、搜索、AI比较、决策快照及文档引用：NOT_IMPLEMENTED，不列为已验收。
+候选页面：VERIFIED `tests/competitor_browser.cjs` / `tests/run_account_browser.py --competitor`，
+真实Chromium领取/登录、手动添加2个、查看不选择、选择1个、移除与关闭/跳过；未调用模型或搜索。
+搜索业务、AI比较、决策快照及文档引用：NOT_IMPLEMENTED，不列为已验收。
+新资源 snapshot/comparison 的跨用户及同局部ID测试：NOT_RUN（相应接口尚未实现）；
+已有 candidate 的同局部ID及账号隔离复用候选测试，不冒充 snapshot 已通过。
 
 ## 已完成增量：16c0056 后用户取消入口
 

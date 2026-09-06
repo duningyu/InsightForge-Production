@@ -62,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix="insightforge-account-browser-") as temp
         data = {"url": f"http://127.0.0.1:{port}", "invites": [app.state.accounts.issue_invite() for _ in range(2)]}
         if business:
             data.update(prepare(app, data["url"], data["invites"][0]))
-        scenario = "account_cancel_browser.cjs" if cancel else "account_business_browser.cjs" if business else "account_flow_browser.cjs"
+        scenario = "competitor_browser.cjs" if "--competitor" in sys.argv else "account_cancel_browser.cjs" if cancel else "account_business_browser.cjs" if business else "account_flow_browser.cjs"
         result = subprocess.run(["node", str(ROOT / "tests" / scenario)],
                                 input=json.dumps(data), text=True, cwd=ROOT)
         assert result.returncode == 0, "Browser scenario failed"

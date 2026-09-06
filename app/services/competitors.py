@@ -66,3 +66,16 @@ class CompetitorService:
                     entity_type="competitor_candidate", entity_id=candidate_id,
                     payload={"project_id": project_id, "selected": selected})
         return self.get(project_id, candidate_id)
+
+    def remove(self, project_id: str, candidate_id: str, actor: str) -> dict[str, bool]:
+        self.get(project_id, candidate_id)
+        with self.db.connect() as connection:
+            removed = connection.execute(
+                "DELETE FROM competitor_candidates WHERE project_id=? AND id=?",
+                (project_id, candidate_id),
+            )
+            if removed.rowcount:
+                self.db.insert_audit_tx(connection, actor=actor, action="competitor_candidate_removed",
+                    entity_type="competitor_candidate", entity_id=candidate_id,
+                    payload={"project_id": project_id})
+        return {"removed": True}

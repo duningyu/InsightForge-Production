@@ -203,6 +203,11 @@
           </section>
           <section id="solutions-view" class="workspace-view hidden" data-workspace-view="solutions">
             <div id="idea-brief-content"></div>
+            <section class="secondary-panel" aria-labelledby="competitor-entry-title">
+              <h2 id="competitor-entry-title">看看已有产品</h2>
+              <p>了解别人怎样解决类似问题，帮助你判断哪些值得借鉴、哪些没有必要重复做。现在不比较也可以继续。</p>
+              <button id="competitor-open" type="button" class="button button-secondary">添加一个产品 / 查看已有候选</button>
+            </section>
             <div id="solutions-content"></div>
           </section>
           <section id="evidence-view" class="workspace-view hidden" data-workspace-view="evidence">
@@ -336,6 +341,20 @@
     <div id="solution-detail-content"></div>
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="competitor-dialog" class="solution-detail-dialog" aria-labelledby="competitor-title">
+    <header class="solution-detail-header"><h2 id="competitor-title">看看已有产品</h2><button id="competitor-close" class="button button-secondary" type="button">关闭窗口</button></header>
+    <p>联网查找暂未开启，你可以先手动添加已有产品，或者跳过这一步。</p>
+    <p>添加或选择只记录你的参考意向，不证明产品功能或来源真实可靠。</p>
+    <form id="competitor-form" class="evidence-form">
+      <label>产品名称<input id="competitor-name" required maxlength="160"></label>
+      <label>产品网址（可选）<input id="competitor-url" type="url" maxlength="2000" placeholder="https://…"></label>
+      <label>一句说明（可选）<textarea id="competitor-description" maxlength="3000" rows="3"></textarea></label>
+      <button id="competitor-add" type="submit" class="button button-primary">添加候选产品</button>
+    </form>
+    <p id="competitor-message" role="status" aria-live="polite"></p>
+    <div id="competitor-list"></div>
+    <button id="competitor-skip" type="button" class="button button-secondary">暂时不比较</button>
+  </dialog>
   <script src="/static/app.js?v=3.0.0&amp;build=prelaunch-self-audit-p0f.1" defer></script>
   <script src="/static/model-settings.js?v=3.0.0&amp;build=secure-profiles.1" defer></script>
   <script src="/static/account-session.js" defer></script>

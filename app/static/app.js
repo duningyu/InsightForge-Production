@@ -1788,7 +1788,92 @@ async function exportHandoff() {
   } catch (error) { reportError(error); }
 }
 
+// Only ephemeral per-project input here; this is not the cross-module draft system.
+const competitorPanel = {project: null, opener: null, busy: false, revision: 0, drafts: new Map()};
+function rememberCompetitorInput() {
+  if (competitorPanel.project) competitorPanel.drafts.set(competitorPanel.project,
+    ["name", "url", "description"].map(key => qs(`#competitor-${key}`).value));
+}
+function closeCompetitors() {
+  rememberCompetitorInput();
+  qs("#competitor-dialog").close();
+  competitorPanel.opener?.focus();
+}
+async function openCompetitors() {
+  if (!state.currentProjectId) { toast("请先创建或打开一个项目。"); return; }
+  rememberCompetitorInput();
+  competitorPanel.project = state.currentProjectId;
+  competitorPanel.opener = document.activeElement;
+  const draft = competitorPanel.drafts.get(competitorPanel.project) || ["", "", ""];
+  ["name", "url", "description"].forEach((key, i) => { qs(`#competitor-${key}`).value = draft[i]; });
+  qs("#competitor-dialog").showModal();
+  await loadCompetitors();
+}
+async function loadCompetitors() {
+  const project = competitorPanel.project, revision = ++competitorPanel.revision;
+  qs("#competitor-message").textContent = "正在读取候选产品…";
+  qs("#competitor-list").replaceChildren();
+  try {
+    const result = await api(`/api/projects/${encodeURIComponent(project)}/competitors`);
+    if (revision !== competitorPanel.revision) return;
+    qs("#competitor-message").textContent = result.candidates.length ? "候选只是参考，加入比较不等于事实已经核实。" : "还没有候选产品，可以添加，也可以直接继续。";
+    const list = qs("#competitor-list");
+    result.candidates.forEach(candidate => {
+      const card = document.createElement("article");
+      card.className = "secondary-panel";
+      card.dataset.candidate = candidate.id;
+      card.innerHTML = `<h3>${escapeHtml(candidate.name)}</h3><p>用户提供，尚未核实 · ${candidate.selected ? "已加入" : "候选产品"}</p><p>${escapeHtml(candidate.description || "暂未确认")}</p><p>${escapeHtml(candidate.url || "未提供网址")}</p>`;
+      const details = document.createElement("p"); details.hidden = true;
+      details.textContent = "目标用户、主要流程、可以借鉴和不适合照搬之处：暂未确认。此处仅展示用户输入，不是已完成的 AI 比较。";
+      const view = document.createElement("button"); view.type = "button"; view.className = "button button-secondary"; view.textContent = "查看";
+      view.setAttribute("aria-expanded", "false");
+      view.onclick = () => { details.hidden = !details.hidden; view.setAttribute("aria-expanded", String(!details.hidden)); };
+      const select = document.createElement("button"); select.type = "button"; select.className = "button button-secondary";
+      select.textContent = candidate.selected ? "移出本次比较" : "加入本次比较";
+      select.onclick = () => mutateCompetitors(`/api/projects/${encodeURIComponent(project)}/competitors/${encodeURIComponent(candidate.id)}/selection`, {method:"PUT", body:JSON.stringify({selected:!candidate.selected})});
+      const remove = document.createElement("button"); remove.type = "button"; remove.className = "button button-quiet"; remove.textContent = "移除候选";
+      remove.onclick = () => mutateCompetitors(`/api/projects/${encodeURIComponent(project)}/competitors/${encodeURIComponent(candidate.id)}`, {method:"DELETE"});
+      card.append(view, select, remove, details); list.append(card);
+    });
+  } catch(error) {
+    if (revision === competitorPanel.revision) qs("#competitor-message").textContent = "候选产品读取失败，请关闭后重新打开。你的输入仍保留在当前页面。";
+  }
+}
+function renderCompetitorBusy() {
+  qsa("#competitor-form input, #competitor-form textarea, #competitor-form button, #competitor-list button")
+    .forEach(control => { control.disabled = competitorPanel.busy; });
+}
+async function mutateCompetitors(path, options, adding = false) {
+  if (competitorPanel.busy) return;
+  if (competitorPanel.project !== state.currentProjectId) { closeCompetitors(); toast("项目已切换，请重新打开候选产品。"); return; }
+  competitorPanel.busy = true;
+  const project = competitorPanel.project;
+  renderCompetitorBusy();
+  qs("#competitor-message").textContent = "正在保存…";
+  try {
+    await api(path, options);
+    if (adding) competitorPanel.drafts.delete(project);
+    if (competitorPanel.project === project) {
+      if (adding) { qs("#competitor-form").reset(); rememberCompetitorInput(); }
+      await loadCompetitors();
+    }
+  } catch(error) {
+    if (competitorPanel.project === project) qs("#competitor-message").textContent = "保存未完成，你的输入仍保留在当前页面。请稍后重试。";
+  } finally {
+    competitorPanel.busy = false;
+    renderCompetitorBusy();
+  }
+}
 function wireEvents() {
+  qs("#competitor-open")?.addEventListener("click", openCompetitors);
+  qs("#competitor-close")?.addEventListener("click", closeCompetitors);
+  qs("#competitor-skip")?.addEventListener("click", closeCompetitors);
+  qs("#competitor-dialog")?.addEventListener("cancel", event => { event.preventDefault(); closeCompetitors(); });
+  qs("#competitor-form")?.addEventListener("submit", event => {
+    event.preventDefault();
+    const body = Object.fromEntries(["name", "url", "description"].map(key => [key, qs(`#competitor-${key}`).value.trim()]));
+    void mutateCompetitors(`/api/projects/${encodeURIComponent(competitorPanel.project)}/competitors`, {method:"POST", body:JSON.stringify(body)}, true);
+  });
   qs("#generation-progress-open")?.addEventListener("click", showGenerationProgress);
   qs("#generation-progress-close")?.addEventListener("click", closeGenerationProgress);
   qs("#generation-progress-dialog")?.addEventListener("cancel", (event) => { event.preventDefault(); closeGenerationProgress(); });

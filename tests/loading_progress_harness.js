@@ -1,0 +1,51 @@
+"use strict";
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const nodes = new Map();
+function node(key) {
+  if (!nodes.has(key)) nodes.set(key, {hidden:true, textContent:'', attrs:{},
+    setAttribute(k,v){this.attrs[k]=String(v);}, removeAttribute(k){delete this.attrs[k];}});
+  return nodes.get(key);
+}
+global.document = {querySelector:node, querySelectorAll:()=>[], addEventListener(){}};
+global.window = {__INSIGHTFORGE_TEST__:true};
+let requests = [];
+global.fetch = (...args) => new Promise((resolve,reject)=>requests.push({args,resolve,reject}));
+vm.runInThisContext(fs.readFileSync('app/static/app.js','utf8'));
+const api=window.InsightForgeUi.api;
+const shell=node('#loading-status');
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+(async()=>{
+  const first=api('/api/projects');
+  assert.equal(shell.hidden,false,'pending actual request must display loading progress');
+  assert.equal(node('#loading-progress').attrs['aria-valuenow'],undefined,'unknown progress must not invent percent');
+  const second=api('/api/projects/synthetic/documents');
+  let finishBody;
+  requests[0].resolve({ok:true,headers:{get:()=> 'application/json'},json:()=>new Promise(r=>finishBody=r)});
+  await tick();
+  assert.equal(shell.hidden,false,'reading response body remains busy');
+  finishBody([]); await first;
+  assert.equal(shell.hidden,false,'concurrent request keeps progress visible');
+  requests[1].resolve({ok:true,headers:{get:()=> 'application/json'},json:async()=>[]});
+  await second;
+  assert.equal(shell.hidden,true,'last completed request clears indicator');
+  const failure=api('/api/projects/missing');
+  requests[2].reject(new Error('synthetic transport failure'));
+  await assert.rejects(failure,/synthetic transport failure/);
+  assert.equal(shell.hidden,true,'network failure clears indicator without success claim');
+  const malformed=api('/api/projects/malformed');
+  requests[3].resolve({ok:true,headers:{get:()=> 'application/json'},json:async()=>{throw Error('synthetic parse failure');}});
+  await assert.rejects(malformed,/synthetic parse failure/);
+  assert.equal(shell.hidden,true,'parse failure clears indicator');
+  const task=window.InsightForgeUi.__test.beginLoading('方案正在处理中，请勿重复提交。');
+  const poll=api('/api/projects/synthetic/solutions/generate/run');
+  requests[4].resolve({ok:true,headers:{get:()=> 'application/json'},json:async()=>({status:'RUNNING'})});
+  await poll;
+  assert.equal(shell.hidden,false,'task remains busy between polls');
+  assert.match(node('#loading-message').textContent,/方案正在处理中/);
+  task.finish(); task.finish();
+  assert.equal(shell.hidden,true,'completion is idempotent');
+  assert.equal(requests.length,5,'indicator never creates requests or retries');
+  console.log('loading progress PASS: pending/body/concurrency/failure/task gap/idempotent cleanup; requests mocked, external requests 0');
+})().catch(e=>{console.error(e);process.exitCode=1;});

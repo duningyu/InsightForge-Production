@@ -172,6 +172,35 @@ async function main() {
   await exerciseQuickStart(recoveryCases.credential, "credential");
   await exerciseSolutions(recoveryCases.quota, "quota");
   await exerciseSolutions(recoveryCases.schema, "schema");
+  // Exercise the actual async orchestration, including the idle polling gap.
+  const originalFetch = global.fetch;
+  const originalTimeout = global.setTimeout;
+  const asyncCalls = [];
+  let resumePoll;
+  let polls = 0;
+  global.setTimeout = (callback) => { resumePoll = callback; };
+  global.fetch = async (path, options = {}) => {
+    asyncCalls.push({path, options});
+    if (options.method === "POST") return jsonResponse({status: "PENDING", generation_run_id: "synthetic-run"}, 202);
+    assert.ok(path.endsWith("/synthetic-run"), "polls the original run only");
+    return jsonResponse(++polls === 1 ? {status: "RUNNING", poll_after_ms: 2000} : {...recoveryCases.schema, status: "FAILED"}, 200);
+  };
+  try {
+    const generation = hooks.generateSolutions();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(typeof resumePoll, "function", "actual polling loop reached its wait");
+    assert.equal(getElement("#loading-status").hidden, false, "progress remains visible between GET polls");
+    assert.match(getElement("#loading-message").textContent, /方案正在处理中/);
+    const duplicate = hooks.generateSolutions();
+    assert.equal(asyncCalls.filter(call => call.options.method === "POST").length, 1, "busy state never resubmits");
+    resumePoll();
+    await Promise.all([generation, duplicate]);
+    assert.equal(getElement("#loading-status").hidden, true, "terminal failure clears progress");
+    assert.equal(asyncCalls.length, 3, "one POST and two GETs, no additional generation");
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalTimeout;
+  }
   console.log("generation-recovery-behavior=PASS");
 }
 

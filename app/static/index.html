@@ -8,6 +8,10 @@
   <link rel="stylesheet" href="/static/styles.css?v=3.0.0&amp;build=user-feedback-complete.1">
 </head>
 <body>
+  <div id="loading-status" class="loading-status" hidden role="status" aria-live="polite" aria-atomic="true">
+    <span id="loading-message">正在加载，请稍候…</span>
+    <progress id="loading-progress" aria-label="操作正在进行，完成比例暂不可知"></progress>
+  </div>
   <dialog id="beta-consent-dialog" class="beta-consent-dialog" aria-labelledby="beta-consent-title">
     <div class="beta-consent-card">
       <p class="eyebrow">CLOSED BETA</p>

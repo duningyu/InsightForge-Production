@@ -43,6 +43,30 @@
 
 ## 统一后续清单（仍需源码实现，非部署许可）
 
+### 追加：真实等待状态进度条（2026-09-06）
+
+- 新增统一页面加载提示，使用原生不定进度条和中文阶段文案。后端没有完成比例时不制造百分比。
+- 覆盖 API 请求、响应体读取、并发请求；成功或异常均清理对应等待状态。
+- 方案生成使用独立任务等待标记，轮询间隙不闪退；重复点击不新增生成 POST。
+- 不改变超时、重试、取消、Provider、quota 或认证行为；不宣称关闭页面等于取消任务。
+- RED：新增 `tests/loading_progress_harness.js` 首次运行在
+  `pending actual request must display loading progress` 断言失败（true !== false）。
+- GREEN：loading_progress、generation_recovery、document_evidence_ux、open_test_messages、
+  solution_detail、guidance_navigation 六个 Node harness 本轮 fresh PASS。
+- fresh Python 定向链：`py -3.12 tests/run_open_test_regressions.py`，
+  **91 passed in 117.73s**；blocked_external_attempts=0，real_external_connections=0。
+  这是定向回归，不是全库测试。
+- 真实 Chromium + 当前静态页面 + 拦截的合成 GET：1366×768、1440×900、1920×1080、390×844。
+  实际 bootstrap 等待时进度可见、原生 progress.position=-1、响应完成后隐藏，无横向溢出；
+  非预设请求 0，页面异常 0。无真实 Provider/Search 请求。
+- 浏览器证据：`artifacts/loading-progress-browser/result.json` 和 `pending-*.png`（本地、不提交）。
+  这是加载专项浏览器测试，不是新用户到交接 E2E；125%/150% 缩放仍 NOT_RUN。
+- `node --check app/static/app.js`、compileall、git diff --check PASS；
+  修改范围常见密钥模式扫描 0 命中，未读取真实凭据，未修改生产运行环境或数据。
+
+本增量只完成新增加载提示需求；附件 A–D 的账号隔离、草稿、AI 参考、无资料交接等缺口仍在下列清单中。
+尚未完成，不应部署或报告整体 PASS。
+
 1. 完成有结果布局、折叠输入、全局按钮和弹层草稿保护；真实缩放/加载/错误状态验证。
 2. 基于认证身份实现可扩展账号/workspace、旧数据归属迁移和全资源授权检查。
    不能通过移除 Basic Auth、共享账号或复制 Docker 实例替代。

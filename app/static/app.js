@@ -41,7 +41,39 @@ const qs = (selector, root = document) => root.querySelector(selector);
 const qsa = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 
+// Tokens represent actual pending work, not elapsed-time estimates.
+const pendingLoading = new Map();
+function renderLoading() {
+  const shell = qs("#loading-status");
+  if (!shell) return;
+  shell.hidden = pendingLoading.size === 0;
+  const message = qs("#loading-message");
+  if (message) message.textContent = pendingLoading.values().next().value || "";
+}
+function beginLoading(message = "正在加载，请稍候…") {
+  const token = Symbol("pending-work");
+  pendingLoading.set(token, message);
+  renderLoading();
+  return {
+    update(nextMessage) {
+      if (pendingLoading.has(token)) pendingLoading.set(token, nextMessage);
+      renderLoading();
+    },
+    finish() { pendingLoading.delete(token); renderLoading(); },
+  };
+}
+
 async function api(path, options = {}) {
+  const loading = beginLoading(options.method && options.method !== "GET"
+    ? "正在处理请求，请勿重复提交…" : "正在加载，请稍候…");
+  try {
+    return await requestApi(path, options);
+  } finally {
+    loading.finish();
+  }
+}
+
+async function requestApi(path, options = {}) {
   const response = await fetch(path, {
     headers: {"Content-Type": "application/json", ...(options.headers || {})},
     ...options,
@@ -1447,6 +1479,7 @@ async function generateSolutions({newIntent = false} = {}) {
     button.textContent = "正在生成方案…";
   }
   const attemptId = state.generationIntentId;
+  const loading = beginLoading("正在提交方案生成任务，请勿重复提交…");
   let request;
   request = (async () => {
     try {
@@ -1455,6 +1488,7 @@ async function generateSolutions({newIntent = false} = {}) {
         headers: {"X-Idempotency-Key": attemptId, "X-Generation-Mode": "async", "X-Managed-Model-Preference": state.managedModelPreference || "AUTO"},
       });
       if (["PENDING", "RUNNING"].includes(result.status) && result.generation_run_id) {
+        loading.update("方案正在处理中，正在等待结果。请勿重复提交…");
         return await pollSolutionGeneration(result.generation_run_id);
       }
       if (isRecoveryPayload(result)) {
@@ -1478,6 +1512,7 @@ async function generateSolutions({newIntent = false} = {}) {
       reportError(error);
       return null;
     } finally {
+      loading.finish();
       if (state.generationInFlight === request) state.generationInFlight = null;
       if (button?.isConnected && !state.solutions?.candidates?.length) {
         button.disabled = false;
@@ -1737,6 +1772,7 @@ function wireEvents() {
 
 const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
   __test: {
+    beginLoading,
     state,
     quickStart,
     confirmIdeaBrief,

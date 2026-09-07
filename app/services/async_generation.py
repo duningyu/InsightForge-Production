@@ -45,6 +45,8 @@ class AsyncRun:
     request_count: int
     replay_count: int
     provider_call_count: int
+    competitor_snapshot_id: str | None = None
+    use_competitor_snapshot: bool = True
     acceptance_authorization_id: str | None = None
     dispatch_control: DispatchControlContext | None = None
     cancel_requested_at: str | None = None
@@ -91,6 +93,8 @@ class AsyncGenerationRepository:
             resolved_model_id=row["resolved_model_id"],
             request_count=row["request_count"], replay_count=row["replay_count"],
             provider_call_count=row["provider_call_count"],
+            competitor_snapshot_id=row["competitor_snapshot_id"],
+            use_competitor_snapshot=bool(row["use_competitor_snapshot"]),
             acceptance_authorization_id=row["acceptance_authorization_id"],
             cancel_requested_at=row["cancel_requested_at"],
             dispatch_control=(DispatchControlContext(
@@ -109,6 +113,8 @@ class AsyncGenerationRepository:
         *, requested_model_preference: str | None = None,
         resolved_model_family: str | None = None, resolved_model_id: str | None = None,
         dispatch_control: DispatchControlContext | None = None,
+        competitor_snapshot_id: str | None = None,
+        use_competitor_snapshot: bool = True,
     ) -> AsyncRun:
         participant = participant_id or "default"
         with self.db.connect() as connection:
@@ -124,20 +130,24 @@ class AsyncGenerationRepository:
                         id,participant_id,project_id,operation_type,idempotency_key,status,
                         quota_reservation_id,request_count,replay_count,provider_call_count,
                         requested_model_preference,resolved_model_family,resolved_model_id,created_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        ,competitor_snapshot_id,use_competitor_snapshot
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (intent_id, participant, project_id, "solution_generation", idempotency_key,
                      "IN_PROGRESS", intent_id, 1, 0, 0, requested_model_preference,
-                     resolved_model_family, resolved_model_id, _now()),
+                     resolved_model_family, resolved_model_id, _now(), competitor_snapshot_id,
+                     int(use_competitor_snapshot)),
                 )
                 connection.execute(
                     """INSERT INTO async_solution_generation_runs(
                         generation_run_id,generation_intent_id,participant_id,project_id,
                         operation_type,idempotency_key,status,requested_model_preference,
-                        resolved_model_family,resolved_model_id,quota_reservation_id,created_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        resolved_model_family,resolved_model_id,competitor_snapshot_id,use_competitor_snapshot,
+                        quota_reservation_id,created_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (run_id, intent_id, participant, project_id, "solution_generation",
                      idempotency_key, "PENDING", requested_model_preference,
-                     resolved_model_family, resolved_model_id, intent_id, _now()),
+                     resolved_model_family, resolved_model_id, competitor_snapshot_id,
+                     int(use_competitor_snapshot), intent_id, _now()),
                 )
                 if dispatch_control is not None:
                     connection.execute(
@@ -163,6 +173,10 @@ class AsyncGenerationRepository:
                     raise ValueError("IDEMPOTENCY_DISPATCH_CONTROL_MISMATCH")
                 if row["resolved_model_id"] and resolved_model_id and row["resolved_model_id"] != resolved_model_id:
                     raise ValueError("IDEMPOTENCY_MODEL_MISMATCH")
+                if competitor_snapshot_id is not None and row["competitor_snapshot_id"] != competitor_snapshot_id:
+                    raise ValueError("IDEMPOTENCY_COMPETITOR_SNAPSHOT_MISMATCH")
+                if bool(row["use_competitor_snapshot"]) != bool(use_competitor_snapshot):
+                    raise ValueError("IDEMPOTENCY_COMPETITOR_SNAPSHOT_MODE_MISMATCH")
                 connection.execute(
                     "UPDATE async_solution_generation_runs SET request_count=request_count+1,replay_count=replay_count+1 WHERE generation_run_id=?",
                     (row["generation_run_id"],),
@@ -182,6 +196,8 @@ class AsyncGenerationRepository:
         requested_model_preference: str,
         resolved_model_family: str,
         resolved_model_id: str,
+        competitor_snapshot_id: str | None = None,
+        use_competitor_snapshot: bool = True,
     ) -> AsyncRun:
         """Atomically redeem server authorization and bind the async run.
 
@@ -200,6 +216,10 @@ class AsyncGenerationRepository:
             if row is not None:
                 if row["acceptance_authorization_id"] != authorization_id:
                     raise ValueError("IDEMPOTENCY_ACCEPTANCE_AUTHORIZATION_MISMATCH")
+                if competitor_snapshot_id is not None and row["competitor_snapshot_id"] != competitor_snapshot_id:
+                    raise ValueError("IDEMPOTENCY_COMPETITOR_SNAPSHOT_MISMATCH")
+                if bool(row["use_competitor_snapshot"]) != bool(use_competitor_snapshot):
+                    raise ValueError("IDEMPOTENCY_COMPETITOR_SNAPSHOT_MODE_MISMATCH")
                 connection.execute(
                     "UPDATE async_solution_generation_runs SET request_count=request_count+1,replay_count=replay_count+1 WHERE generation_run_id=?",
                     (row["generation_run_id"],),
@@ -250,24 +270,27 @@ class AsyncGenerationRepository:
                     id,participant_id,project_id,operation_type,idempotency_key,status,
                     quota_reservation_id,request_count,replay_count,provider_call_count,
                     requested_model_preference,resolved_model_family,resolved_model_id,created_at,
-                    generation_run_id
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    competitor_snapshot_id,use_competitor_snapshot,generation_run_id
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (intent_id, participant, project_id, "solution_generation", idempotency_key,
                  "IN_PROGRESS", intent_id, 1, 0, 0, requested_model_preference,
-                 resolved_model_family, resolved_model_id, now, run_id),
+                 resolved_model_family, resolved_model_id, now, competitor_snapshot_id,
+                 int(use_competitor_snapshot), run_id),
             )
             connection.execute(
                 """INSERT INTO async_solution_generation_runs(
                     generation_run_id,generation_intent_id,participant_id,project_id,
                     operation_type,idempotency_key,status,requested_model_preference,
-                    resolved_model_family,resolved_model_id,quota_reservation_id,created_at,
+                    resolved_model_family,resolved_model_id,competitor_snapshot_id,use_competitor_snapshot,
+                    quota_reservation_id,created_at,
                     acceptance_authorization_id,acceptance_execution_id,forward_ledger_epoch_id,
                     dispatch_beta_instance,dispatch_expected_provider,dispatch_expected_model,
                     dispatch_ordinal,strict_at_most_once
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (run_id, intent_id, participant, project_id, "solution_generation", idempotency_key,
                  "PENDING", requested_model_preference, resolved_model_family, resolved_model_id,
-                 intent_id, now, authorization_id, execution_id, auth["forward_ledger_epoch_id"],
+                 competitor_snapshot_id, int(use_competitor_snapshot), intent_id, now,
+                 authorization_id, execution_id, auth["forward_ledger_epoch_id"],
                  "beta001", "bailian", "qwen3.7-flash", 1, 1),
             )
             row = connection.execute(

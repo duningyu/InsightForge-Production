@@ -176,12 +176,17 @@ class SolutionDesignService:
             competitor_context=competitor_context,
         )
 
-    def _competitor_context(self, project_id: str) -> dict[str, Any] | None:
+    def _competitor_context(
+        self, project_id: str, competitor_snapshot_id: str | None = None,
+        *, use_competitor_snapshot: bool = True,
+    ) -> dict[str, Any] | None:
+        if not use_competitor_snapshot:
+            return None
         row = self.db.fetch_one(
             "SELECT current_competitor_snapshot_id FROM projects WHERE id = ?",
             (project_id,),
         )
-        snapshot_id = row.get("current_competitor_snapshot_id") if row else None
+        snapshot_id = competitor_snapshot_id or (row.get("current_competitor_snapshot_id") if row else None)
         if not snapshot_id:
             return None
         snapshot = self.db.fetch_one(
@@ -189,6 +194,8 @@ class SolutionDesignService:
             (snapshot_id, project_id),
         )
         if not snapshot:
+            if competitor_snapshot_id:
+                raise ConflictError("COMPETITOR_SNAPSHOT_NOT_FOUND")
             return None
         content = json.loads(snapshot["content_json"])
         grouped = {"adopt": [], "avoid": [], "defer": []}
@@ -204,9 +211,16 @@ class SolutionDesignService:
             "defer": grouped["defer"],
         }
 
-    def _brief_for_project(self, project_id: str, brief_row: dict[str, Any]) -> IdeaBriefDraft:
+    def _brief_for_project(
+        self, project_id: str, brief_row: dict[str, Any],
+        competitor_snapshot_id: str | None = None,
+        *, use_competitor_snapshot: bool = True,
+    ) -> IdeaBriefDraft:
         """Keep the legacy test seam when no optional snapshot is selected."""
-        competitor_context = self._competitor_context(project_id)
+        competitor_context = self._competitor_context(
+            project_id, competitor_snapshot_id,
+            use_competitor_snapshot=use_competitor_snapshot,
+        )
         if competitor_context is None:
             return self._brief_from_row(brief_row)
         return self._brief_from_row(brief_row, competitor_context=competitor_context)
@@ -263,9 +277,15 @@ class SolutionDesignService:
             payload[field] = bool(payload[field])
         return payload
 
-    def generate(self, project_id: str, *, actor: str, managed_selection: Any | None = None, dispatch_control: DispatchControlContext | None = None) -> dict[str, Any]:
+    def generate(self, project_id: str, *, actor: str, managed_selection: Any | None = None,
+                 dispatch_control: DispatchControlContext | None = None,
+                 competitor_snapshot_id: str | None = None,
+                 use_competitor_snapshot: bool = True) -> dict[str, Any]:
         brief_row = self._confirmed_brief_row(project_id)
-        brief = self._brief_for_project(project_id, brief_row)
+        brief = self._brief_for_project(
+            project_id, brief_row, competitor_snapshot_id,
+            use_competitor_snapshot=use_competitor_snapshot,
+        )
         resolver = getattr(self.runtime, "for_project", None)
         runtime = (
             resolver(project_id, managed_selection=managed_selection)
@@ -301,13 +321,15 @@ class SolutionDesignService:
                 INSERT INTO solution_runs(
                     id, project_id, idea_brief_id, provider, model, prompt_version,
                     schema_version, generator_version, input_sha256, output_sha256,
-                    status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'validating', ?)
+                    status, competitor_snapshot_id, use_competitor_snapshot, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'validating', ?, ?, ?)
                 """,
                 (
                     run_id, project_id, brief_row["id"], runtime.provider, runtime.model,
                     runtime.prompt_version, runtime.schema_version, self.GENERATOR_VERSION,
-                    input_sha, initial_output_sha, now,
+                    input_sha, initial_output_sha,
+                    competitor_snapshot_id if use_competitor_snapshot else None,
+                    int(use_competitor_snapshot), now,
                 ),
             )
 
@@ -463,6 +485,8 @@ class SolutionDesignService:
         generation_intent_id: str | None = None,
         generation_run_id: str | None = None,
         dispatch_control: DispatchControlContext | None = None,
+        competitor_snapshot_id: str | None = None,
+        use_competitor_snapshot: bool = True,
     ) -> dict[str, Any]:
         """Generate through the real async provider boundary.
 
@@ -470,7 +494,10 @@ class SolutionDesignService:
         only legal after the caller creates a new durable generation intent.
         """
         brief_row = self._confirmed_brief_row(project_id)
-        brief = self._brief_for_project(project_id, brief_row)
+        brief = self._brief_for_project(
+            project_id, brief_row, competitor_snapshot_id,
+            use_competitor_snapshot=use_competitor_snapshot,
+        )
         resolver = getattr(self.runtime, "for_project", None)
         runtime = (
             resolver(project_id, managed_selection=managed_selection)
@@ -547,11 +574,13 @@ class SolutionDesignService:
                 """INSERT INTO solution_runs(
                     id, project_id, idea_brief_id, provider, model, prompt_version,
                     schema_version, generator_version, input_sha256, output_sha256,
-                    status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)""",
+                    status, competitor_snapshot_id, use_competitor_snapshot, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)""",
                 (run_id, project_id, brief_row["id"], runtime.provider, runtime.model,
                  runtime.prompt_version, runtime.schema_version, self.GENERATOR_VERSION,
-                 input_sha, output_sha, now),
+                 input_sha, output_sha,
+                 competitor_snapshot_id if use_competitor_snapshot else None,
+                 int(use_competitor_snapshot), now),
             )
             for candidate in candidates:
                 candidate_id = f"solution_{uuid.uuid4().hex}"

@@ -7,7 +7,7 @@ from test_normal_dispatch_control_integration import _solution_payload
 
 
 def install_transport():
-    calls = {"generation": [], "claims": [], "competitors": []}
+    calls = {"generation": [], "generation_contexts": [], "claims": [], "competitors": []}
     payload = _solution_payload()
     payload["candidates"][1].update(human_role="synthetic author", core_decision_logic="manual checklist")
     async_init, sync_init = AsyncModelAdapter.__init__, ModelAdapter.__init__
@@ -56,6 +56,7 @@ def install_transport():
                     "uncertainty_notice": "AI分析参考，建议结合实际产品页面核对。",
                 }
                 return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(comparison, ensure_ascii=False)}}]})
+            calls["generation_contexts"].append(message_text(body["messages"][-1]["content"]))
             calls["generation"].append(kwargs.get("generation_run_id"))
             return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(payload)}}]})
         async_init(self, **{**kwargs, "client": httpx.AsyncClient(transport=httpx.MockTransport(send))})
@@ -142,6 +143,13 @@ def prepare_competitor(app, url, invite):
         response = client.post("/api/projects", json={"title": "Synthetic competitor UI", "summary": "test"})
         assert response.status_code == 201, response.text
         project = response.json()["id"]
+        child = app.state.workspace_pool.entries[account]["child"]
+        db = child.state.async_generation_repository.db
+        db.execute("""INSERT INTO idea_briefs(id,project_id,version,original_idea,target_user,problem,
+            desired_outcome,known_resources_json,constraints_json,unknowns_json,provenance_json,
+            confirmation_status,created_at) VALUES (?,?,1,?,?,?,?, '[]','[]','[]','{}','confirmed',?)""",
+            ("browser-competitor-brief", project, "Synthetic competitor idea", "synthetic users",
+             "synthetic problem", "synthetic outcome", "2026-09-06T00:00:00+00:00"))
         client.post("/api/auth/logout")
     return {**credentials, "account": account, "project": project, "prepared": True}
 
@@ -165,5 +173,13 @@ def verify_competitor(app, data, calls):
     db = app.state.workspace_pool.entries[data["account"]]["child"].state.async_generation_repository.db
     assert db.fetch_one("SELECT COUNT(*) AS n FROM competitor_comparisons")["n"] == 1
     assert db.fetch_one("SELECT COUNT(*) AS n FROM competitor_decision_snapshots")["n"] == 1
-    assert not calls["generation"] and not calls["claims"]
-    print("PASS browser competitor business wiring: comparison UI -> business runtime -> AsyncModelAdapter fake transport=1; snapshot=1; generation/analysis=0")
+    generation_runs = db.fetch_all("SELECT * FROM async_solution_generation_runs WHERE status='SUCCEEDED'")
+    assert len(generation_runs) == 1
+    snapshot_id = db.fetch_one("SELECT id FROM competitor_decision_snapshots")["id"]
+    assert generation_runs[0]["competitor_snapshot_id"] == snapshot_id
+    assert len(calls["generation"]) == 1
+    assert any("借鉴分步引导" in context for context in calls["generation_contexts"])
+    versions = db.fetch_all("SELECT doc_type, competitor_snapshot_id FROM document_versions WHERE project_id=?", (data["project"],))
+    assert {row["doc_type"] for row in versions} == {"prd", "techdoc"}
+    assert all(row["competitor_snapshot_id"] == snapshot_id for row in versions)
+    print("PASS browser competitor business wiring: candidate -> comparison=1 -> snapshot=1 -> generation=1 -> PRD/TechDoc snapshot refs; fake transport=3")

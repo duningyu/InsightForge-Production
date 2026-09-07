@@ -18,13 +18,15 @@ const assert = require('node:assert/strict');
         '/api/settings/mode':{managed_beta_mode:true},
         '/api/projects':[], '/api/examples':[],
         '/api/projects/history':{items:[],total:0,pages:1}, '/api/home/next-action':null,
+        '/api/usage/policy':{daily_user_limits_enabled:false,limit:null,remaining:null},
       };
       await page.route('**/*',async route=>{
         const url=new URL(route.request().url());
-        const assets={'/':'index.html','/static/app.js':'app.js','/static/styles.css':'styles.css','/static/model-settings.js':'model-settings.js'};
+        const assets={'/':'index.html','/static/app.js':'app.js','/static/styles.css':'styles.css','/static/model-settings.js':'model-settings.js','/static/account-session.js':'account-session.js'};
         if (url.origin==='http://insightforge.test' && assets[url.pathname]) {
           return route.fulfill({body:fs.readFileSync('app/static/'+assets[url.pathname]),contentType:url.pathname.endsWith('.js')?'text/javascript':url.pathname.endsWith('.css')?'text/css':'text/html'});
         }
+        if (url.pathname==='/api/auth/me') return route.fulfill({status:404,body:'Not found',contentType:'text/plain'});
         if (url.origin!=='http://insightforge.test'||route.request().method()!=='GET'||!(url.pathname in fixtures)) {
           unexpected.push(route.request().method()+' '+url.pathname); return route.abort();
         }

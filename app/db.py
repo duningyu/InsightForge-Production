@@ -411,6 +411,8 @@ CREATE TABLE IF NOT EXISTS solution_runs (
     input_sha256 TEXT NOT NULL,
     output_sha256 TEXT,
     status TEXT NOT NULL,
+    competitor_snapshot_id TEXT,
+    use_competitor_snapshot INTEGER NOT NULL DEFAULT 1 CHECK(use_competitor_snapshot IN (0,1)),
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_solution_runs_project
@@ -475,9 +477,11 @@ CREATE TABLE IF NOT EXISTS solution_generation_intents (
     replay_count INTEGER NOT NULL DEFAULT 0,
     provider_call_count INTEGER NOT NULL DEFAULT 0,
     requested_model_preference TEXT,
-    resolved_model_family TEXT,
-    resolved_model_id TEXT,
-    created_at TEXT NOT NULL,
+        resolved_model_family TEXT,
+        resolved_model_id TEXT,
+        competitor_snapshot_id TEXT,
+        use_competitor_snapshot INTEGER NOT NULL DEFAULT 1 CHECK(use_competitor_snapshot IN (0,1)),
+        created_at TEXT NOT NULL,
     completed_at TEXT,
     UNIQUE(participant_id, project_id, operation_type, idempotency_key)
 );
@@ -520,6 +524,8 @@ CREATE TABLE IF NOT EXISTS async_solution_generation_runs (
     requested_model_preference TEXT,
     resolved_model_family TEXT,
     resolved_model_id TEXT,
+    competitor_snapshot_id TEXT,
+    use_competitor_snapshot INTEGER NOT NULL DEFAULT 1 CHECK(use_competitor_snapshot IN (0,1)),
     response_json TEXT,
     status_code INTEGER,
     solution_run_id TEXT REFERENCES solution_runs(id),
@@ -951,6 +957,9 @@ class Database:
         }
         for column, definition in async_dispatch_columns.items():
             cls._ensure_column(connection, "async_solution_generation_runs", column, definition)
+        for table in ("solution_runs", "async_solution_generation_runs"):
+            cls._ensure_column(connection, table, "competitor_snapshot_id", "TEXT")
+            cls._ensure_column(connection, table, "use_competitor_snapshot", "INTEGER NOT NULL DEFAULT 1")
         cls._ensure_column(connection, "projects", "current_snapshot_id", "TEXT")
         cls._ensure_column(connection, "projects", "project_origin", "TEXT NOT NULL DEFAULT 'user'")
         cls._ensure_column(connection, "projects", "exclude_from_beta_metrics", "INTEGER NOT NULL DEFAULT 0")
@@ -1007,6 +1016,8 @@ class Database:
             "requested_model_preference": "TEXT",
             "resolved_model_family": "TEXT",
             "resolved_model_id": "TEXT",
+            "competitor_snapshot_id": "TEXT",
+            "use_competitor_snapshot": "INTEGER NOT NULL DEFAULT 1",
         }
         for column, definition in generation_intent_columns.items():
             cls._ensure_column(connection, "solution_generation_intents", column, definition)

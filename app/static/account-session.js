@@ -9,6 +9,7 @@ async function accountSession() {
   const account = await response.json();
   window.__INSIGHTFORGE_ACCOUNT_ID__ = account.id;
   window.InsightForgeUi?.setAccountContext?.(account.id);
+  window.dispatchEvent(new CustomEvent("insightforge-account-ready", {detail: {accountId: account.id}}));
   document.querySelector("#account-name").textContent = account.username;
   document.querySelector("#account-controls").hidden = false;
   document.querySelector("#account-logout").onclick = async () => {

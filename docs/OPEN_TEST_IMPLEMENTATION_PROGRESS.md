@@ -1,5 +1,15 @@
 # 开放测试改版：源码增量与未完成边界
 
+## 当前状态摘要（竞品决策贯通链 fresh 验证）
+
+开发检查点：`646598975e5b3b6e1e56b9fc6d117a5c67e5fa8b` 的后继工作区；账号批次保持 PASS，竞品决策切片本轮完成，整体开放测试仍为 PARTIAL；未部署。
+
+- 贯通链已接通：已选候选 → 复用方案生成的业务模型服务/Adapter 做一次有界比较 → 用户采用/暂不采用/以后再考虑及原因 → 项目级不可变竞品决策快照 → 方案生成 context → PRD/TechDoc 精确 `competitor_snapshot_id` 引用。
+- 竞品上下文为显式 opt-in。普通生成和“暂时不比较”不会继承项目最新竞品快照；文档生成仍保留既有项目 Snapshot 完整性校验，不因跳过竞品而放宽文档门槛。
+- Fresh 后端证据：`py -3.12 -m pytest -q tests/test_v3_document_health.py tests/test_competitor_decision_slice.py --tb=short`：13 passed；`py -3.12 tests/run_open_test_regressions.py`：146 passed，外部连接尝试 0。
+- Fresh 真实 Chromium：`py -3.12 tests/run_account_browser.py --competitor` PASS，覆盖候选→比较→三类决策→快照→方案→PRD/TechDoc 快照引用，以及跳过比较不注入旧快照；fake transport 仅用于隔离验证，Provider/Search 真实请求 0。
+- 搜索仍为 `NOT_CONFIGURED`，未显示 fake 搜索结果。真实 Provider verification 未运行。整体仍待：统一草稿浏览器完整证据、完整 AI 补充思路、无资料人工确认交接、完整中文/有结果布局/缩放、最终登录到交接 E2E。
+
 ## 当前状态摘要（统一草稿恢复与多标签冲突增量）
 
 开发基线：`0100891113e8151d744d31a361e63cca262bc069`，本轮保留此前账号隔离与竞品决策改动，未部署、未调用真实 Provider/Search。

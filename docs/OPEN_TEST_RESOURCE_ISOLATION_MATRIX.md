@@ -1,4 +1,17 @@
-# 开放测试资源隔离矩阵（源码检查点 84617b 后的有限补测）
+# 开放测试资源隔离矩阵（竞品决策贯通链 fresh 验证）
+
+## 当前竞品决策贯通链（后继工作区）
+
+账号批次保持 PASS。竞品 comparison、decision snapshot、方案上下文和文档版本引用均在当前账号/项目边界内；搜索 `NOT_CONFIGURED`，没有真实搜索调用。
+
+| 实际 method/path 或资源 | 正向与隔离结果 | 状态 / 测试 |
+| --- | --- | --- |
+| POST `/api/projects/{p}/competitor-comparisons` | owner 对已选择候选创建一次有界比较；候选内容在任务创建时固定；复用现有业务模型服务/Adapter | VERIFIED `tests/test_competitor_decision_slice.py` |
+| POST `/api/projects/{p}/competitor-snapshots` | 服务端重新校验项目、候选和决策归属；保存当时比较内容与用户取舍；快照不可原地改写 | VERIFIED 同上 |
+| POST `/api/projects/{p}/solutions/generate`（显式竞品快照） | context 实际包含采用/不采用/延后事项及原因；普通/跳过模式不隐式继承最新竞品快照 | VERIFIED 同上；浏览器 `tests/run_account_browser.py --competitor` |
+| POST `/api/projects/{p}/documents/generate` | PRD/TechDoc 从本次生成选择继承精确 `competitor_snapshot_id`；项目 Snapshot 完整性校验保留 | VERIFIED `tests/test_v3_document_health.py`, `tests/test_competitor_decision_slice.py` |
+| comparison/snapshot/document version 跨用户读取 | foreign/错误项目不能读取、引用或注入其他用户资源；旧版本引用不随新快照改变 | VERIFIED `tests/test_competitor_decision_slice.py` |
+| 真实 Chromium 贯通链 | 添加候选、选择、比较、三类取舍、保存快照、方案、PRD/TechDoc 引用和跳过路线 | VERIFIED `tests/run_account_browser.py --competitor`；真实外部连接 0 |
 
 ## 当前增量：统一草稿与文档草稿并发边界
 

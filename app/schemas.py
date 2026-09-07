@@ -290,6 +290,10 @@ class HandoffExportRequest(StrictModel):
 class GenerateRequest(StrictModel):
     doc_type: DocType
     idempotency_key: str | None = Field(default=None, max_length=200)
+    competitor_snapshot_id: str | None = Field(default=None, max_length=200)
+    # Competitor context is opt-in for each generation. Ordinary and
+    # "暂时不比较" flows must not inherit a project's latest snapshot.
+    use_competitor_snapshot: bool = False
 
 
 class ApprovalRequest(StrictModel):

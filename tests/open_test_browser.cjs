@@ -19,8 +19,9 @@ const assert = require('node:assert/strict');
       await page.route('**/*', async route => {
         const url = new URL(route.request().url());
         if (url.origin !== 'http://insightforge.test') { failures.push('external request: ' + url.origin); return route.abort(); }
-        const assets = {'/':'index.html','/static/app.js':'app.js','/static/model-settings.js':'model-settings.js','/static/styles.css':'styles.css'};
+        const assets = {'/':'index.html','/static/app.js':'app.js','/static/model-settings.js':'model-settings.js','/static/styles.css':'styles.css','/static/account-session.js':'account-session.js'};
         if (assets[url.pathname]) return route.fulfill({body:fs.readFileSync(path.join('app/static',assets[url.pathname])), contentType: url.pathname.endsWith('.css')?'text/css':url.pathname.endsWith('.js')?'text/javascript':'text/html'});
+        if (url.pathname==='/api/auth/me') return route.fulfill({status:404,body:'Not found',contentType:'text/plain'});
         requests.push({method:route.request().method(), path:url.pathname});
         const fixtures = {
           '/api/beta/consent':{beta_mode:false,consented:true},
@@ -29,6 +30,7 @@ const assert = require('node:assert/strict');
           '/api/projects':[], '/api/examples':[],
           '/api/projects/history':{items:[],total:0,pages:1},
           '/api/home/next-action':null,
+          '/api/usage/policy':{daily_user_limits_enabled:false,limit:null,remaining:null},
         };
         if (!(url.pathname in fixtures) || route.request().method() !== 'GET') {
           failures.push('unexpected API request: '+route.request().method()+' '+url.pathname);

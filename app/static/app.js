@@ -11,6 +11,8 @@ const state = {
   ideaBrief: null,
   solutions: null,
   snapshot: null,
+  competitorSnapshotId: null,
+  useCompetitorSnapshot: true,
   sources: [],
   claims: [],
   impacts: {claims: [], change_proposals: []},
@@ -353,6 +355,7 @@ const STATUS_PRESENTATION = {
 const draftRecovery = {
   timers: new Map(),
   requests: new Map(),
+  revisions: new Map(),
   localPrefix: "insightforge-draft-recovery:",
 };
 
@@ -387,6 +390,7 @@ async function loadUnifiedDraft(projectId, scopeType, scopeKey) {
     throw error;
   });
   const local = readRecoveryCopy(projectId, scopeType, scopeKey);
+  draftRecovery.revisions.set(context, response ? Number(response.revision) : 0);
   if (local?.dirty) {
     if (!response || Number(local.baseRevision ?? 0) >= Number(response.revision ?? 0)) {
       showDraftStatus("发现未同步内容，已暂时保留在本机。");
@@ -411,6 +415,7 @@ function queueUnifiedDraft(projectId, scopeType, scopeKey, payload, {baseRevisio
   writeRecoveryCopy(projectId, scopeType, scopeKey, payload, baseRevision);
   showDraftStatus("正在保存…");
   const key = draftContext(projectId, scopeType, scopeKey);
+  if (baseRevision == null && draftRecovery.revisions.has(key)) baseRevision = draftRecovery.revisions.get(key);
   clearTimeout(draftRecovery.timers.get(key));
   const requestId = (draftRecovery.requests.get(key) || 0) + 1;
   draftRecovery.requests.set(key, requestId);
@@ -420,6 +425,7 @@ function queueUnifiedDraft(projectId, scopeType, scopeKey, payload, {baseRevisio
         method: "PUT", body: JSON.stringify({payload, base_revision: baseRevision}),
       });
       if (draftRecovery.requests.get(key) !== requestId || draftContext(projectId, scopeType, scopeKey) !== key) return;
+      draftRecovery.revisions.set(key, Number(result.revision));
       clearRecoveryCopy(projectId, scopeType, scopeKey);
       showDraftStatus("已保存");
       return result;
@@ -447,6 +453,9 @@ function recoverNewIdeaDraft() {
     if (node && value != null) node.value = Array.isArray(value) ? value.join("\n") : value;
   }
   showDraftStatus("发现未同步内容，已暂时保留在本机。");
+}
+if (typeof window.addEventListener === "function") {
+  window.addEventListener("insightforge-account-ready", recoverNewIdeaDraft);
 }
 function persistViewContext() {
   if (!state.currentProjectId) return;
@@ -1686,7 +1695,15 @@ async function generateSolutions({newIntent = false} = {}) {
     try {
       const result = await api(`/api/projects/${projectId}/solutions/generate`, {
         method: "POST",
-        headers: {"X-Idempotency-Key": attemptId, "X-Generation-Mode": "async", "X-Managed-Model-Preference": state.managedModelPreference || "AUTO"},
+        headers: {
+          "X-Idempotency-Key": attemptId,
+          "X-Generation-Mode": "async",
+          "X-Managed-Model-Preference": state.managedModelPreference || "AUTO",
+          "X-Use-Competitor-Snapshot": String(Boolean(state.useCompetitorSnapshot)),
+          ...(state.useCompetitorSnapshot && state.competitorSnapshotId
+            ? {"X-Competitor-Snapshot-Id": state.competitorSnapshotId}
+            : {}),
+        },
       });
       if (["PENDING", "RUNNING"].includes(result.status) && result.generation_run_id) {
         state.activeGeneration = {projectId, runId: result.generation_run_id, ...result};
@@ -1786,12 +1803,21 @@ async function loadProject(projectId) {
   try { state.ideaBrief = await api(`/api/projects/${projectId}/idea-brief`); } catch (_) { state.ideaBrief = null; }
   try { state.solutions = await api(`/api/projects/${projectId}/solutions`); } catch (_) { state.solutions = null; }
   try { state.snapshot = await api(`/api/projects/${projectId}/snapshot`); } catch (_) { state.snapshot = null; }
+  try {
+    const project = await api(`/api/projects/${projectId}`);
+    state.competitorSnapshotId = project.current_competitor_snapshot_id || null;
+  } catch (_) { state.competitorSnapshotId = null; }
+  state.useCompetitorSnapshot = Boolean(state.competitorSnapshotId);
   renderIdeaBrief();
   renderSolutions();
   renderSnapshot();
   try {
     const recovered = await loadUnifiedDraft(projectId, "ui_context", "main");
     const context = preferredRecoveryPayload(recovered);
+    if (context && Object.prototype.hasOwnProperty.call(context, "useCompetitorSnapshot")) {
+      state.useCompetitorSnapshot = Boolean(context.useCompetitorSnapshot);
+      state.competitorSnapshotId = context.competitorSnapshotId || null;
+    }
     if (context?.evidenceTab) state.evidenceTab = context.evidenceTab;
     if (context?.activeView && WORKSPACE_VIEWS.has(context.activeView) && context.activeView !== state.activeView) {
       activateView(context.activeView);
@@ -1883,7 +1909,14 @@ async function loadDocuments() {
 
 async function generateDocument(docType) {
   try {
-    const result = await api(`/api/projects/${state.currentProjectId}/documents/generate`, {method: "POST", body: JSON.stringify({doc_type: docType})});
+    const result = await api(`/api/projects/${state.currentProjectId}/documents/generate`, {
+      method: "POST",
+      body: JSON.stringify({
+        doc_type: docType,
+        competitor_snapshot_id: state.useCompetitorSnapshot ? state.competitorSnapshotId : null,
+        use_competitor_snapshot: Boolean(state.useCompetitorSnapshot),
+      }),
+    });
     toast(`${docType.toUpperCase()} 已生成：${result.version_id || result.id || "新版本"}`);
     state.documentWorkspace.docType = docType;
     await Promise.all([loadDocuments(), loadHandoff(), loadProjectNextAction()]);
@@ -1949,6 +1982,21 @@ function closeCompetitors() {
   rememberCompetitorInput();
   qs("#competitor-dialog").close();
   competitorPanel.opener?.focus();
+}
+function skipCompetitorComparison() {
+  state.competitorSnapshotId = null;
+  state.useCompetitorSnapshot = false;
+  if (state.currentProjectId) {
+    queueUnifiedDraft(state.currentProjectId, "ui_context", "main", {
+      activeView: state.activeView,
+      evidenceTab: state.evidenceTab,
+      docType: state.documentWorkspace.docType,
+      useCompetitorSnapshot: false,
+      competitorSnapshotId: null,
+    }, {delay: 0});
+  }
+  closeCompetitors();
+  toast("本次生成不使用竞品比较；你仍可继续完善方案。");
 }
 async function openCompetitors() {
   if (!state.currentProjectId) { toast("请先创建或打开一个项目。"); return; }
@@ -2039,7 +2087,19 @@ async function saveCompetitorSnapshot() {
   if (competitorPanel.busy || !competitorPanel.comparison) return;
   const decisions = [...qs("#competitor-decisions").querySelectorAll("select")].map(select => ({candidate_id: select.dataset.candidateId, decision: select.value, rationale: qs(`[data-reason-for="${CSS.escape(select.dataset.candidateId)}"]`).value.trim()}));
   competitorPanel.busy = true; renderCompetitorBusy(); qs("#competitor-message").textContent = "正在保存你的决策…";
-  try { await api(`/api/projects/${encodeURIComponent(competitorPanel.project)}/competitor-snapshots`, {method:"POST", body:JSON.stringify({comparison_id:competitorPanel.comparison.id, decisions})}); qs("#competitor-message").textContent = "本次比较已保存，可继续完善方案。"; }
+  try {
+    const snapshot = await api(`/api/projects/${encodeURIComponent(competitorPanel.project)}/competitor-snapshots`, {method:"POST", body:JSON.stringify({comparison_id:competitorPanel.comparison.id, decisions})});
+    state.competitorSnapshotId = snapshot.id || snapshot.decision_snapshot?.id || null;
+    state.useCompetitorSnapshot = Boolean(state.competitorSnapshotId);
+    queueUnifiedDraft(competitorPanel.project, "ui_context", "main", {
+      activeView: state.activeView,
+      evidenceTab: state.evidenceTab,
+      docType: state.documentWorkspace.docType,
+      useCompetitorSnapshot: state.useCompetitorSnapshot,
+      competitorSnapshotId: state.competitorSnapshotId,
+    }, {delay: 0});
+    qs("#competitor-message").textContent = "本次比较已保存，可继续完善方案。";
+  }
   catch(error) { qs("#competitor-message").textContent = "保存决策失败，当前页面内容仍保留。"; }
   finally { competitorPanel.busy = false; renderCompetitorBusy(); }
 }
@@ -2071,7 +2131,7 @@ async function mutateCompetitors(path, options, adding = false) {
 function wireEvents() {
   qs("#competitor-open")?.addEventListener("click", openCompetitors);
   qs("#competitor-close")?.addEventListener("click", closeCompetitors);
-  qs("#competitor-skip")?.addEventListener("click", closeCompetitors);
+  qs("#competitor-skip")?.addEventListener("click", skipCompetitorComparison);
   qs("#competitor-dialog")?.addEventListener("cancel", event => { event.preventDefault(); closeCompetitors(); });
   qs("#competitor-form")?.addEventListener("submit", event => {
     event.preventDefault();

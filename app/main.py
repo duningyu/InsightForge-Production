@@ -302,6 +302,8 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                 generation_intent_id=run.generation_intent_id,
                 generation_run_id=run.generation_run_id,
                 dispatch_control=run.dispatch_control,
+                competitor_snapshot_id=run.competitor_snapshot_id,
+                use_competitor_snapshot=run.use_competitor_snapshot,
             )
             if selection:
                 result = {
@@ -893,6 +895,8 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         x_acceptance_authorization_id: str | None = Header(default=None, alias="X-Acceptance-Authorization-Id"),
         x_acceptance_execution_id: str | None = Header(default=None, alias="X-Acceptance-Execution-Id"),
         x_forward_ledger_epoch_id: str | None = Header(default=None, alias="X-Forward-Ledger-Epoch-Id"),
+        x_competitor_snapshot_id: str | None = Header(default=None, alias="X-Competitor-Snapshot-Id"),
+        x_use_competitor_snapshot: bool = Header(default=False, alias="X-Use-Competitor-Snapshot"),
     ) -> dict[str, Any]:
         if x_acceptance_authorization_id and (x_acceptance_execution_id or x_forward_ledger_epoch_id):
             return JSONResponse(status_code=422, content={
@@ -904,6 +908,17 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                 "error_code": "CLIENT_DISPATCH_IDENTITY_FORBIDDEN",
                 "message": "验收执行身份必须来自服务端授权。",
             })
+
+        if x_use_competitor_snapshot and x_competitor_snapshot_id:
+            snapshot = application.state.db.fetch_one(
+                "SELECT project_id FROM competitor_decision_snapshots WHERE id = ?",
+                (x_competitor_snapshot_id,),
+            )
+            if snapshot is None or snapshot["project_id"] != project_id:
+                return JSONResponse(status_code=409, content={
+                    "error_code": "COMPETITOR_SNAPSHOT_NOT_FOUND",
+                    "message": "本次竞品比较不属于当前项目，无法用于生成方案。",
+                })
 
         if x_generation_mode == "async":
             participant_id = application.state.beta_context.participant_id
@@ -930,6 +945,8 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                         idempotency_key=idempotency_key,
                         requested_model_preference=selection.preference.value,
                         resolved_model_family=selection.family, resolved_model_id=selection.model_id,
+                        competitor_snapshot_id=x_competitor_snapshot_id if x_use_competitor_snapshot else None,
+                        use_competitor_snapshot=x_use_competitor_snapshot,
                     )
                 else:
                     run = application.state.async_generation_repository.create_or_replay(
@@ -937,6 +954,8 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                         requested_model_preference=selection.preference.value if selection else managed_preference,
                         resolved_model_family=selection.family if selection else None,
                         resolved_model_id=selection.model_id if selection else None,
+                        competitor_snapshot_id=x_competitor_snapshot_id if x_use_competitor_snapshot else None,
+                        use_competitor_snapshot=x_use_competitor_snapshot,
                     )
             except ValueError as error:
                 if str(error) == "IDEMPOTENCY_MODEL_MISMATCH":
@@ -994,6 +1013,14 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                 "actor": x_actor,
                 "managed_selection": selection,
             }
+            # Keep the ordinary generation call compatible with existing
+            # service doubles and legacy callers.  Competitor context is an
+            # explicit opt-in, so only that mode needs the extended kwargs.
+            if x_use_competitor_snapshot:
+                generate_kwargs.update({
+                    "competitor_snapshot_id": x_competitor_snapshot_id,
+                    "use_competitor_snapshot": True,
+                })
             result = application.state.solution_design.generate(project_id, **generate_kwargs)
             if selection:
                 result = {**result, "requested_model_preference": selection.preference.value,
@@ -1405,7 +1432,13 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
     ) -> dict[str, Any]:
         key = payload.idempotency_key or f"v3:{project_id}:{payload.doc_type}:{uuid.uuid4().hex}"
         result = application.state.document_loop.run(
-            project_id, payload.doc_type, idempotency_key=key, require_snapshot=True
+            project_id, payload.doc_type, idempotency_key=key,
+            # The document pipeline retains its existing project-snapshot
+            # integrity gate.  Competitor usage is separately opt-in below;
+            # skipping competitor comparison must not bypass document checks.
+            require_snapshot=True,
+            competitor_snapshot_id=(payload.competitor_snapshot_id if payload.use_competitor_snapshot else None),
+            use_competitor_snapshot=payload.use_competitor_snapshot,
         )
         event_name = "prd_generated" if payload.doc_type == "prd" else "techdoc_generated"
         record_product_event(request, event_name, {"doc_type": payload.doc_type, "generation_status": "succeeded"}, project_id=project_id)

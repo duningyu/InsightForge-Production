@@ -333,6 +333,89 @@ def test_document_version_records_exact_competitor_snapshot_and_old_version_stay
     assert db.fetch_one("SELECT competitor_snapshot_id FROM document_versions WHERE id=?", (first["version_id"],))["competitor_snapshot_id"] == first_snapshot
 
 
+def test_generation_and_document_chain_keeps_the_snapshot_bound_at_start(db):
+    """A later project snapshot must not change an in-flight generation's lineage."""
+    from app.schemas import SolutionSetDraft
+    from app.services.loop import DocumentLoop
+    from app.services.solution_design import SolutionDesignService
+    from test_v3_solution_design import candidate
+
+    project_id = "project_insightforge_demo"
+    now = "2026-09-06T00:00:00+00:00"
+    snapshots = (("competitor_snapshot_chain_v1", "S1: 借鉴分步引导"), ("competitor_snapshot_chain_v2", "S2: 改为团队协作"))
+    for snapshot_id, marker in snapshots:
+        comparison_id = "comparison-" + snapshot_id
+        db.execute(
+            "INSERT INTO competitor_comparisons(id, project_id, created_by, candidate_ids_json, result_json, created_at) VALUES (?,?,?,?,?,?)",
+            (comparison_id, project_id, "synthetic-owner", "[]", json.dumps({"competitors": []}), now),
+        )
+        db.execute(
+            """
+            INSERT INTO competitor_decision_snapshots(
+                id, project_id, created_by, comparison_id, candidate_ids_json,
+                content_json, content_sha256, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (snapshot_id, project_id, "synthetic-owner", comparison_id, "[]",
+             json.dumps({"marker": marker, "decisions": [{"candidate_id": "candidate-chain", "decision": "adopt", "rationale": marker}]}, ensure_ascii=False),
+             "hash-" + snapshot_id, now),
+        )
+
+    class CaptureRuntime:
+        provider = "fake"
+        model = "fake-model"
+        mode = "test"
+        prompt_version = "test"
+        schema_version = "test"
+
+        def __init__(self):
+            self.captured = None
+
+        def design_solutions(self, brief, **_kwargs):
+            self.captured = brief
+            return SolutionSetDraft(
+                    candidates=[
+                        candidate("rule_based", "profile", "low", "confirm", "threshold", "sqlite", title="链路方案"),
+                        candidate("workflow_based", "profile", "medium", "review", "checklist", "web", title="备选方案"),
+                    ],
+                llm_core_required=False,
+            )
+
+    first_snapshot, _ = snapshots[0]
+    second_snapshot, _ = snapshots[1]
+    db.execute(
+        """
+        INSERT INTO idea_briefs(
+            id, project_id, version, original_idea, target_user, problem,
+            desired_outcome, known_resources_json, constraints_json, unknowns_json,
+            provenance_json, confirmation_status, created_at
+        ) VALUES (?, ?, 1, ?, ?, ?, ?, '[]', '[]', '[]', ?, 'confirmed', ?)
+        """,
+        (
+            "brief_competitor_chain", project_id, "帮助用户做产品决策", "初学者",
+            "不知道先做什么", "得到可执行方案",
+            json.dumps({"original_idea": "user_input"}, ensure_ascii=False), now,
+        ),
+    )
+    db.execute("UPDATE projects SET current_competitor_snapshot_id=? WHERE id=?", (first_snapshot, project_id))
+    runtime = CaptureRuntime()
+    generated = SolutionDesignService(db, runtime).generate(
+        project_id, actor="synthetic-owner", competitor_snapshot_id=first_snapshot
+    )
+    assert runtime.captured.competitor_context["adopt"][0]["rationale"] == "S1: 借鉴分步引导"
+
+    db.execute("UPDATE projects SET current_competitor_snapshot_id=? WHERE id=?", (second_snapshot, project_id))
+    document = DocumentLoop(db).run(
+        project_id, "prd", idempotency_key="competitor-chain-doc-v1", competitor_snapshot_id=first_snapshot
+    )
+    # The document loop has its own generation-run identity.  The contract
+    # under test is the immutable competitor snapshot binding, not identity
+    # reuse between the two generation pipelines.
+    assert generated["run"]["id"]
+    version = db.fetch_one("SELECT competitor_snapshot_id FROM document_versions WHERE id=?", (document["version_id"],))
+    assert version["competitor_snapshot_id"] == first_snapshot
+
+
 def test_document_versions_have_competitor_snapshot_reference_column(db):
     columns = {row["name"] for row in db.fetch_all("PRAGMA table_info(document_versions)")}
     assert "competitor_snapshot_id" in columns

@@ -222,6 +222,11 @@ class ExampleProjectSeeder:
                 doc_type,
                 idempotency_key=f"canonical-example:{project_id}:{doc_type}:v1",
                 require_snapshot=True,
+                # These deterministic demo documents predate the competitor
+                # decision feature.  Preserve their historical no-competitor
+                # context instead of requiring or inventing a current
+                # competitor snapshot during application startup.
+                use_competitor_snapshot=False,
             )
             if version["validation_status"] != "passed":
                 raise RuntimeError(

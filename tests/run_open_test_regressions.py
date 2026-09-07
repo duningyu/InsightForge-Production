@@ -33,6 +33,7 @@ def main():
     files = [
         "test_unified_drafts.py",
         "test_competitor_candidates.py",
+        "test_legacy_competitor_context_compat.py",
         "test_open_accounts.py",
         "test_account_resource_matrix.py",
         "test_account_workspace_lifecycle.py",

@@ -4,10 +4,12 @@ from app.db import Database
 from app.schemas import AIReferenceDraft
 from app.services.ai_reference import AIReferenceService
 from app.services.document_versions import DocumentVersionService
+from app.services.claims import ClaimService
 from app.services.handoff import HandoffService
 from app.services.generation import LocalDocumentGenerator
 from app.services.loop import DocumentLoop
 from app.services.projects import ProjectService
+from app.services.sources import SourceService
 from app.services.validation import DocumentValidator
 
 
@@ -161,3 +163,91 @@ def test_zero_source_project_can_be_confirmed_and_handed_off_with_boundaries(tmp
     with zipfile.ZipFile(BytesIO(payload)) as archive:
         assert "UNRESOLVED_RISKS.md" in archive.namelist()
         assert "待确认" in archive.read("UNRESOLVED_RISKS.md").decode("utf-8")
+
+
+def test_later_source_creates_v2_without_rewriting_zero_source_v1(tmp_path):
+    db = Database(tmp_path / "later-source.sqlite3")
+    db.init_schema()
+    actor = "synthetic-user"
+    project_id = ProjectService(db).create_project(
+        title="先无资料再补证项目", summary="先确认边界，再补一条实现资料。", actor=actor
+    )["id"]
+    ProjectService(db).update_canvas(
+        project_id,
+        problem="初学者需要把模糊想法整理成下一步",
+        target_users="需要开始探索想法的初学者",
+        goals=["形成可讨论的最小方案"],
+        non_goals=["不声称市场事实已经验证"],
+        success_metrics=["能够列出下一步验证问题"],
+        constraints=[],
+        actor=actor,
+    )
+
+    loop = DocumentLoop(db, generator=LocalDocumentGenerator())
+    v1 = {
+        doc_type: loop.run(project_id, doc_type, idempotency_key=f"later-source-v1-{doc_type}")
+        for doc_type in ("prd", "techdoc")
+    }
+    versions = DocumentVersionService(db)
+    for item in v1.values():
+        versions.confirm(item["version_id"], actor=actor, human_confirmed=True, note="确认当前无资料版本")
+
+    handoff = HandoffService(db)
+    acknowledgement = handoff.acknowledge_unresolved(
+        project_id, actor=actor, confirmed=True, note="我已了解当前版本仍有待确认事项"
+    )
+    assert acknowledgement["status"] == "acknowledged"
+    v1_readiness = handoff.readiness(project_id)
+    assert v1_readiness["ready"] is True
+    v1_rows = {
+        doc_type: db.fetch_one(
+            "SELECT * FROM document_versions WHERE id=?", (item["version_id"],)
+        )
+        for doc_type, item in v1.items()
+    }
+    v1_content = {doc_type: row["content"] for doc_type, row in v1_rows.items()}
+    claim_service = ClaimService(db)
+    v1_unresolved = {
+        doc_type: {
+            claim["claim_text"]
+            for claim in claim_service.list_for_version(item["version_id"])["items"]
+            if claim["claim_type"] == "unresolved"
+        }
+        for doc_type, item in v1.items()
+    }
+
+    source_row = SourceService(db).add_source(
+        project_id=project_id,
+        title="合成实现记录",
+        source_type="implementation_evidence",
+        authority=0.8,
+        content="实现记录：最小流程已经能够保存项目草稿并返回下一步提醒。",
+        filename="synthetic-implementation.txt",
+    )
+    assert source_row["project_id"] == project_id
+
+    v2 = {
+        doc_type: loop.run(project_id, doc_type, idempotency_key=f"later-source-v2-{doc_type}")
+        for doc_type in ("prd", "techdoc")
+    }
+    assert all(item["version_id"] != v1[item["doc_type"]]["version_id"] for item in v2.values())
+
+    for doc_type, item in v1.items():
+        old = db.fetch_one("SELECT * FROM document_versions WHERE id=?", (item["version_id"],))
+        assert old["content"] == v1_content[doc_type]
+        assert old["status"] == "approved"
+        current_unresolved = {
+            claim["claim_text"]
+            for claim in claim_service.list_for_version(item["version_id"])["items"]
+            if claim["claim_type"] == "unresolved"
+        }
+        assert current_unresolved == v1_unresolved[doc_type]
+
+    for doc_type, item in v2.items():
+        claims = claim_service.list_for_version(item["version_id"])["items"]
+        by_type = {claim["claim_type"]: claim for claim in claims}
+        assert by_type["source_backed"]["support_status"] == "supported_by_source_excerpt"
+        assert any(
+            claim["claim_type"] == "unresolved"
+            for claim in claims
+        ), "adding one source must not erase unrelated unresolved claims"

@@ -1,5 +1,19 @@
 # 开放测试改版：源码增量与未完成边界
 
+## 当前状态摘要（AI参考、无资料交接与最终 UI 收尾）
+
+当前开发依据：`4de0dbaf53b52dfb8b0ddf04459612414f765136` 的后继工作区。
+
+- AI参考真实 Chromium 流程：PASS；包含 AI参考展示、部分采用、刷新/模块恢复不重复请求，`ai_reference` 逻辑请求 1 次、fake transport 1 次。
+- 无资料人工确认与交接真实 Chromium 流程：PASS；source 数量保持 0，确认审计与未决事项随交接保留。
+- V1→补充合成资料→V2 版本语义：PASS；旧版本/旧交接保持不变，新增资料只更新其实际支持的判断。
+- 本轮定向后端：`py -3.12 -m pytest tests/test_ai_reference_no_source.py tests/test_v2_handoff.py tests/test_v3_handoff_and_tools.py tests/test_competitor_decision_slice.py -q --tb=short`，`23 passed`。
+- 本轮 AI参考/无资料 Chromium：`py -3.12 -u tests/run_ai_reference_no_source_browser.py`，PASS；外部连接 0，AI参考 fake 调用 1，方案生成 fake 调用 1。
+- 最终 UI Chromium 检查：`node tests/final_ui_browser.cjs`，5 组视口/设备缩放等效组合 PASS；中文结果态、结果布局、顶部账号区和横向溢出检查通过。
+- 既有 open-test、草稿恢复、加载反馈及组件 Chromium 回归均保持通过；本摘要不把这些定向结果等同于全库通过。
+- 真实 Provider/Search 请求：0；生产运行时与生产数据未修改。
+- 整体状态仍为 `INSIGHTFORGE_USER_FIRST_OPEN_TEST_IMPLEMENTATION_PARTIAL`：完整认证登录→交接最终 E2E、全站逐页中文审查及最终缩放流程仍需独立真实浏览器证据。
+
 ## 当前状态摘要（AI补充思路与无资料人工确认交接）
 
 开发检查点：`d3a8d474159083921529a088fbd86a6b79d0e737` 的后继工作区；账号基线、竞品决策切片和统一草稿恢复保持已通过，本轮未部署、未调用真实 Provider/Search。

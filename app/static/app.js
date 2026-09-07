@@ -1538,13 +1538,13 @@ function renderHandoff() {
     </div>` : (acknowledgement ? "<p class=\"status-note\">已记录你对待确认事项的了解；这不表示这些事项已经被事实验证。</p>" : "");
   qs("#handoff-content").innerHTML = `
     <div class="handoff-status ${h?.ready ? "handoff-ready" : "handoff-blocked"}"><strong>${escapeHtml(h?.ready ? "开发交接已具备正式上下文" : "当前还不能安全交接")}</strong><span>${escapeHtml(h?.ready ? "当前 Snapshot、PRD 和 TechDoc 均满足交接 Gate。" : (missing[0]?.message || "需要先完成当前 Snapshot 和正式文档。"))}</span></div>
-    <section class="handoff-section"><h3>MVP 范围</h3>${detailList("In scope", mvp.features || [])}</section>
-    <section class="handoff-section"><h3>明确不做</h3>${detailList("Explicit non-scope", nonGoals.length ? nonGoals : ["当前 Snapshot 暂未声明额外非目标；交接前不要擅自扩展范围。"])}</section>
-    <section class="handoff-section"><h3>Implementation Tasks</h3>${detailList("实施顺序", implementationTasks)}</section>
-    <section class="handoff-section"><h3>Acceptance Cases</h3>${detailList("验收案例", acceptanceCases)}</section>
+    <section class="handoff-section"><h3>MVP 范围</h3>${detailList("本版包含", mvp.features || [])}</section>
+    <section class="handoff-section"><h3>明确不做</h3>${detailList("本版暂不包含", nonGoals.length ? nonGoals : ["当前 Snapshot 暂未声明额外非目标；交接前不要擅自扩展范围。"])}</section>
+    <section class="handoff-section"><h3>实施任务</h3>${detailList("实施顺序", implementationTasks)}</section>
+    <section class="handoff-section"><h3>验收案例</h3>${detailList("验收案例", acceptanceCases)}</section>
     <section class="handoff-section"><h3>已确认文档</h3><div class="handoff-docs"><span>PRD：${escapeHtml(docSummary.prd?.id || "未确认")}</span><span>TechDoc：${escapeHtml(docSummary.techdoc?.id || "未确认")}</span></div></section>
     <section class="handoff-section"><h3>仍需确认的事项</h3>${unresolved.length ? detailList("事项", unresolved.map((item) => `${item.item}；${item.why}；建议：${item.how_to_verify}`)) : "<p>当前没有从文档中提取到待确认事项；资料是否充分仍需按实际来源判断。</p>"}${acknowledgementBlock}</section>
-    <section class="handoff-section"><h3>未解决风险</h3>${detailList("Unknowns / Risks", risks.length ? risks : ["当前 Snapshot 未记录关键未知项。"])}${missing.length ? detailList("阻塞项", missing.map((item) => item.message)) : ""}</section>
+    <section class="handoff-section"><h3>未解决风险</h3>${detailList("仍需确认", risks.length ? risks : ["当前 Snapshot 未记录关键未知项。"])}${missing.length ? detailList("阻塞项", missing.map((item) => item.message)) : ""}</section>
     <section class="handoff-section"><h3>复制/导出</h3><div class="handoff-actions"><button id="copy-handoff-button" class="button button-secondary" type="button">复制当前开发上下文</button><button id="export-handoff-button" class="button button-primary" type="button" ${h?.ready ? "" : "disabled"}>导出 Codex 交接包</button><button id="load-handoff-button" class="button button-quiet" type="button">重新检查准备度</button></div></section>
     <details class="handoff-section advanced-panel"><summary>高级：MCP</summary><p>MCP 只作为已有确认上下文的高级读取/交接接口；当前 P0 不把远程 MCP 或企业权限作为主卖点。</p></details>`;
   qs("#load-handoff-button")?.addEventListener("click", loadHandoff);
@@ -2336,6 +2336,9 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     openIdeaBriefReview,
     renderIdeaBrief,
     renderSolutions,
+    renderDocuments,
+    renderHandoff,
+    activateView,
     renderGuidanceCard,
     openSolutionDetails,
     generateSolutions,

@@ -1,5 +1,19 @@
 # 开放测试改版：源码增量与未完成边界
 
+## 当前状态摘要（最终中文与认证交接收口）
+
+当前开发依据：`52fd693c9574e465cab8b51171d2eb18615029bd` 的后继工作区；本轮最终收口修复与验证已完成，未部署。
+
+- 全站中文/用户可读性：PASS。静态扫描与真实 Chromium 页面检查未发现原始机器码出现在主用户文案；仅保留品牌、必要专业术语及技术详情/请求字段。
+- 结果布局、顶部账号区、1366×768 正常桌面以及 125%/150% 复验：PASS。
+- 最终认证 Chromium：PASS。全新合成账号完成领取→登录→Idea→AI参考→竞品决策→方案→PRD/TechDoc→Validate→人工确认→开发交接；`ui_bypass_steps=0`、页面错误 0、外部连接 0；第二账号资源访问控制 PASS。
+- 最终流程调用证据：AI参考逻辑操作/POST `1/1`；竞品比较 POST `1`；方案生成 POST `1`；PRD/TechDoc 生成各 `1`；fake Provider `brief=1, ai=1, comparison=1, generation=1`；意外重复 AI 请求 `0`。
+- 草稿真实 Chromium FLOW A–F：PASS；generation POST `1`、logical task `1`、fake generation/comparison 各 `1`、comparison POST `1`、外部连接 `0`。
+- Fresh 回归：focused backend `23 passed`；open-test `146 passed`；AI/no-source browser、final UI/layout/zoom、loading/component browser 均 PASS；compile/syntax/diff/secret checks PASS。
+- 真实 Provider/Search 请求：`0/0`；生产 runtime 与生产数据未修改；工作区已提交并保持 CLEAN。
+- 整体状态：`INSIGHTFORGE_USER_FIRST_OPEN_TEST_IMPLEMENTATION_PASS`。
+- 下一合法动作：`PREPARE_BETA003_OPEN_TEST_CANDIDATE_DEPLOYMENT`；本任务不执行部署。
+
 ## 当前状态摘要（AI参考、无资料交接与最终 UI 收尾）
 
 当前开发依据：`4de0dbaf53b52dfb8b0ddf04459612414f765136` 的后继工作区。

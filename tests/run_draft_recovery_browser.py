@@ -124,4 +124,10 @@ with tempfile.TemporaryDirectory(prefix="insightforge-draft-browser-") as tempor
         assert counts == {"generation": 1, "comparison": 1}, counts
         print(f"Application lifespan executed; fake adapter calls={counts}; real external connections=0; blocked attempts=0")
     finally:
-        server.should_exit = True; thread.join(timeout=15); listener.close()
+        # Let the ASGI lifespan close every account workspace before the
+        # temporary directory is removed.  On Windows the child SQLite files
+        # remain locked until that async shutdown completes.
+        server.should_exit = True
+        thread.join(timeout=60)
+        listener.close()
+        assert not thread.is_alive(), "isolated browser server did not shut down cleanly"

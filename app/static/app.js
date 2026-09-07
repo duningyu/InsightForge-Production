@@ -265,6 +265,13 @@ function isRecoveryPayload(value) {
 
 function showRecoveryPayload(payload) {
   const message = String(payload?.message || "生成未完成；你的输入已保留。");
+  const code = String(payload?.error_code || "");
+  const friendly = ({
+    APPLICATION_POSTPROCESS_FAILURE: "生成结果需要重新整理",
+    PROVIDER_FAILURE: "AI 服务暂时无法完成请求",
+    MODEL_TIMEOUT: "AI 服务响应超时",
+    OVERENGINEERED_SOLUTION_SET: "方案范围需要进一步收敛",
+  })[code] || "这次操作没有完成";
   const actions = Array.isArray(payload?.recovery_actions)
     ? payload.recovery_actions.map((action) => String(action)).filter(Boolean)
     : [];
@@ -272,7 +279,7 @@ function showRecoveryPayload(payload) {
   if (node) {
     node.classList.remove("hidden");
     node.classList.add("runtime-failure");
-    node.innerHTML = `<div><strong>生成未完成 · ${escapeHtml(payload.error_code)}</strong><span>${escapeHtml(message)}</span>${actions.length ? `<ul>${actions.map((action) => `<li>${escapeHtml(action)}</li>`).join("")}</ul>` : ""}</div>`;
+    node.innerHTML = `<div><strong>${escapeHtml(friendly)}</strong><span>${escapeHtml(message)}</span>${actions.length ? `<ul>${actions.map((action) => `<li>${escapeHtml(action)}</li>`).join("")}</ul>` : ""}<details class="technical-details"><summary>技术详情</summary><code>${escapeHtml(code)}</code></details></div>`;
   }
   toast(actions.length ? `${message} 可执行：${actions.join("；")}` : message);
 }
@@ -723,11 +730,11 @@ const WALKTHROUGH_STEPS = ["idea", "solutions", "mvp", "claims", "evidence", "do
 const WALKTHROUGH_COPY = {
   idea: ["1. Idea 理解", "先看系统如何把一句模糊 Idea 结构化为目标用户、核心问题、期望结果和未知项。这里的 AI 推断仍然是待验证假设。"],
   solutions: ["2. 方案比较", "比较三个不同解决机制。重点看它们的数据依赖、自动化程度、人工角色、实施成本和最大风险，而不是比较三个不同名字。"],
-  mvp: ["3. MVP 与 Project Snapshot", "查看当前正式方案、MVP 页面、输入输出、实施计划、关键未知项和下一步验证任务。"],
-  claims: ["4. 关键判断", "把目标用户、问题、行为、价值和可行性拆成可验证 Claim。用户确认系统理解，不等于这些 Claim 已经被市场验证。"],
-  evidence: ["5. 证据影响", "资料上传后查看它支持、削弱还是与哪个 Claim 冲突，以及这是否会影响当前 Decision 和 Snapshot。"],
-  documents: ["6. PRD / TechDoc", "在当前 Snapshot 和有效证据基础上生成正式文档。你可以在线编辑、自动保存草稿、比较版本，并把旧版本恢复为一个新的不可变版本。"],
-  handoff: ["7. 开发交接", "只有当前 Snapshot 与确认且健康的 PRD / TechDoc 才进入交接。这里可以生成 Codex 等开发工具需要的正式上下文。"],
+  mvp: ["3. MVP 与项目成果", "查看当前正式方案、MVP 页面、输入输出、实施计划、关键未知项和下一步验证任务。"],
+  claims: ["4. 关键判断", "把目标用户、问题、行为、价值和可行性拆成可验证的判断。用户确认系统理解，不等于这些判断已经被市场验证。"],
+  evidence: ["5. 资料影响", "添加资料后查看它支持、削弱还是与哪个判断冲突，以及这是否会影响当前决策和项目成果。"],
+  documents: ["6. PRD / TechDoc", "在当前项目成果和有效资料基础上生成正式文档。你可以在线编辑、自动保存草稿、比较版本，并把旧版本恢复为一个新的不可变版本。"],
+  handoff: ["7. 开发交接", "只有当前项目成果与确认且健康的 PRD / TechDoc 才进入交接。这里可以生成 Codex 等开发工具需要的正式上下文。"],
 };
 
 function walkthroughStepIndex(currentStep) {
@@ -1074,7 +1081,7 @@ function renderSnapshot() {
   const action = qs("#snapshot-primary-action");
   const reconfirm = qs("#snapshot-health-reconfirm");
   if (!state.snapshot) {
-    target.innerHTML = `<div class="empty-state"><h2>还没有项目成果</h2><p>确认一个方案后，这里会生成第一份 Project Snapshot。</p></div>`;
+    target.innerHTML = `<div class="empty-state"><h2>还没有项目成果</h2><p>确认一个方案后，这里会生成第一份项目成果。</p></div>`;
     action.classList.add("hidden");
     reconfirm.classList.add("hidden");
     return;
@@ -1083,7 +1090,7 @@ function renderSnapshot() {
   const unknown = (snap.unknowns || [])[0] || "暂无关键未知项";
   const solutionTitle = snap.solution?.title || snap.title;
   target.innerHTML = `
-    <div class="snapshot-hero"><p class="eyebrow">PROJECT SNAPSHOT · V${escapeHtml(snap.version)}</p><h1>${escapeHtml(snap.title)}</h1><p>${escapeHtml(snap.one_liner)}</p></div>
+    <div class="snapshot-hero"><p class="eyebrow">项目成果 · 第 V${escapeHtml(snap.version)} 版</p><h1>${escapeHtml(snap.title)}</h1><p>${escapeHtml(snap.one_liner)}</p></div>
     <div class="snapshot-grid">
       <article class="result-card"><span>目标用户</span><strong>${escapeHtml(snap.target_user?.primary || "待确认")}</strong><small>${escapeHtml(snap.target_user?.verification_status || "待验证")}</small></article>
       <article class="result-card emphasis"><span>当前方案</span><strong>${escapeHtml(solutionTitle)}</strong><small>${escapeHtml(snap.solution?.rationale || "当前信息下的首选验证路径")}</small></article>
@@ -1134,10 +1141,10 @@ function renderImpactHistory() {
     const open = proposal.status === "open";
     const proposalActionsId = `proposal-actions:${proposal.id}`;
     return `<article class="proposal-card">
-      <div class="proposal-head"><span>CHANGE PROPOSAL</span><strong>${escapeHtml(proposal.status)}</strong></div>
+      <div class="proposal-head"><span>变更建议</span><strong>${escapeHtml(proposal.status)}</strong></div>
       <h3>${escapeHtml(proposal.summary)}</h3>
       <p>${escapeHtml(proposal.reason)}</p>
-      <div class="proposal-meta"><span>受影响 Claim：${escapeHtml((proposal.affected_claims || []).length)}</span><span>受影响 Decision：${escapeHtml((proposal.affected_decisions || []).length)}</span></div>
+      <div class="proposal-meta"><span>受影响判断：${escapeHtml((proposal.affected_claims || []).length)}</span><span>受影响决策：${escapeHtml((proposal.affected_decisions || []).length)}</span></div>
       ${open ? `<div id="${escapeHtml(proposalActionsId)}" class="proposal-actions" data-proposal-actions-for="${escapeHtml(proposal.id)}" tabindex="-1"><button class="button button-primary" data-proposal-action="accept" data-proposal-id="${escapeHtml(proposal.id)}" type="button">接受修改</button><button class="button button-secondary" data-proposal-action="defer" data-proposal-id="${escapeHtml(proposal.id)}" type="button">暂不修改</button><button class="button button-quiet" data-proposal-action="reject" data-proposal-id="${escapeHtml(proposal.id)}" type="button">标记为冲突继续验证</button></div>` : `<small>该建议已由用户处理，正式版本不会被自动回写。</small>`}
     </article>`;
   }).join("");
@@ -1153,7 +1160,7 @@ function renderSourceLibrary() {
     const status = source.status || "unknown";
     const readableStatus = statusPresentation(status);
     return `<article class="source-row"><div><strong>${escapeHtml(source.title)}</strong><small>${escapeHtml(sourceTypeLabel(source.source_type))} · ${escapeHtml(guidance)}</small>${limits ? `<small>边界：${escapeHtml(limits)}</small>` : ""}</div><span>${escapeHtml(readableStatus.label)}</span><details class="technical-details"><summary>技术详情</summary><code>${escapeHtml(status)}</code><span>${escapeHtml(readableStatus.next)}</span></details></article>`;
-  }).join("") || "<p class=\"muted\">暂无资料。添加资料后，还需要运行影响分析才能形成 Evidence → Claim 关系。</p>";
+  }).join("") || "<p class=\"muted\">暂无资料。添加资料后，系统会核对它支持哪些判断，以及引用内容是否确实来自原文。</p>";
 }
 
 function renderEvidenceEntryGuidance() {
@@ -1192,7 +1199,7 @@ async function addGuidedEvidence(event) {
     const result = await api(`/api/projects/${state.currentProjectId}/sources/guided`, {method: "POST", body: JSON.stringify(payload)});
     state.evidenceEntry = {mode: null, submitting: false, pending: false};
     await Promise.all([loadEvidenceData(), loadProjectNextAction()]);
-    toast(result?.guidance?.needs_confirmation ? "资料已记录为待确认来源；它不会自动证明访谈或需求已经验证。" : "资料已记录；请继续完成 Claim 关系和范围校验。");
+    toast(result?.guidance?.needs_confirmation ? "资料已记录为待确认来源；它不会自动证明访谈或需求已经验证。" : "资料已记录；请继续完成资料与判断的关系及范围校验。");
   } catch (error) { state.evidenceEntry.submitting = false; reportError(error); }
 }
 
@@ -1231,7 +1238,7 @@ function renderDocumentCard(docType, title, description) {
   else if (confirmed && health === "current") statusCopy = "已确认 · 当前有效";
   else if (doc.validation_status === "passed" && health === "current") statusCopy = "系统检查通过 · 等待用户确认";
   else if (stale) statusCopy = "当前版本需要重新检查";
-  const warning = stale ? `<div class="document-warning"><strong>受影响：</strong>${escapeHtml(doc.artifact_health?.reason || "当前 Snapshot / Claim / Source 依赖发生变化")}${dependencyLabels.length ? `<small>受影响依赖：${escapeHtml(dependencyLabels.join("、"))}</small>` : ""}<small>历史内容保持不变；请基于当前证据重新生成或检查，而不是覆盖旧版本。</small></div>` : "";
+  const warning = stale ? `<div class="document-warning"><strong>受影响：</strong>${escapeHtml(doc.artifact_health?.reason || "当前项目成果、判断或资料依赖发生变化")}${dependencyLabels.length ? `<small>受影响依赖：${escapeHtml(dependencyLabels.join("、"))}</small>` : ""}<small>历史内容保持不变；请基于当前资料重新生成或检查，而不是覆盖旧版本。</small></div>` : "";
   const canConfirm = !confirmed && doc.validation_status === "passed" && health === "current";
   return `<article class="document-card ${stale ? "document-stale" : ""}">
     <div class="document-card-head"><h3>${title}</h3><span>v${escapeHtml(doc.version)}</span></div>
@@ -1246,7 +1253,7 @@ function renderDocumentCard(docType, title, description) {
 }
 
 function renderDocuments() {
-  qs("#documents-content").innerHTML = `<div class="document-grid">${renderDocumentCard("prd", "PRD", "从当前 Project Snapshot、项目级 Claim 和有效证据生成。")}${renderDocumentCard("techdoc", "TechDoc", "把当前 MVP 范围、技术约束与验收边界转成开发上下文。")}</div>`;
+  qs("#documents-content").innerHTML = `<div class="document-grid">${renderDocumentCard("prd", "PRD", "从当前项目成果、项目级判断和有效资料生成。")}${renderDocumentCard("techdoc", "TechDoc", "把当前 MVP 范围、技术约束与验收边界转成开发上下文。")}</div>`;
   qsa("[data-generate-doc]").forEach((button) => button.addEventListener("click", () => generateDocument(button.dataset.generateDoc)));
   qsa("[data-confirm-doc]").forEach((button) => button.addEventListener("click", () => confirmDocument(button.dataset.confirmDoc)));
   renderDocumentWorkspace();
@@ -1537,7 +1544,7 @@ function renderHandoff() {
       <button id="handoff-acknowledge-button" class="button button-secondary" type="button" disabled>确认当前版本仍有待确认事项</button>
     </div>` : (acknowledgement ? "<p class=\"status-note\">已记录你对待确认事项的了解；这不表示这些事项已经被事实验证。</p>" : "");
   qs("#handoff-content").innerHTML = `
-    <div class="handoff-status ${h?.ready ? "handoff-ready" : "handoff-blocked"}"><strong>${escapeHtml(h?.ready ? "开发交接已具备正式上下文" : "当前还不能安全交接")}</strong><span>${escapeHtml(h?.ready ? "当前 Snapshot、PRD 和 TechDoc 均满足交接 Gate。" : (missing[0]?.message || "需要先完成当前 Snapshot 和正式文档。"))}</span></div>
+    <div class="handoff-status ${h?.ready ? "handoff-ready" : "handoff-blocked"}"><strong>${escapeHtml(h?.ready ? "开发交接已具备正式上下文" : "当前还不能安全交接")}</strong><span>${escapeHtml(h?.ready ? "当前项目成果、PRD 和 TechDoc 均满足交接条件。" : (missing[0]?.message || "需要先完成当前项目成果和正式文档。"))}</span></div>
     <section class="handoff-section"><h3>MVP 范围</h3>${detailList("本版包含", mvp.features || [])}</section>
     <section class="handoff-section"><h3>明确不做</h3>${detailList("本版暂不包含", nonGoals.length ? nonGoals : ["当前 Snapshot 暂未声明额外非目标；交接前不要擅自扩展范围。"])}</section>
     <section class="handoff-section"><h3>实施任务</h3>${detailList("实施顺序", implementationTasks)}</section>
@@ -1593,6 +1600,10 @@ async function quickStart(event) {
     state.runtimeMode = result.runtime_mode || result.ai_trace?.runtime_mode || state.runtimeMode;
     renderRuntimeDisclosure();
     await Promise.all([loadProjects(), loadHistory(), loadHomeNextAction()]);
+    // Quick-start creates the project without going through loadProject().
+    // Initialise the project-scoped AI reference state here as well, so the
+    // first visit to the solutions view can generate or recover its reference.
+    await loadAIReference();
     openIdeaBriefReview();
   } catch (error) { reportError(error); }
 }
@@ -1897,7 +1908,7 @@ async function decideChangeProposal(proposalId, action) {
     try { state.snapshot = await api(`/api/projects/${state.currentProjectId}/snapshot`); } catch (_) {}
     renderSnapshot();
     await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadProjectNextAction(), loadHomeNextAction()]);
-    toast(action === "accept" ? "已创建新的 Project Snapshot；历史版本保持不变。" : "已记录你的决定；系统没有自动改写正式版本。");
+    toast(action === "accept" ? "已创建新的项目成果；历史版本保持不变。" : "已记录你的决定；系统没有自动改写正式版本。");
   } catch (error) { reportError(error); }
 }
 

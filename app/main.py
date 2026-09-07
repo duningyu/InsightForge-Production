@@ -1309,6 +1309,10 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
 
     @application.get("/api/projects/{project_id}/ai-reference")
     def get_ai_reference(project_id: str, request: Request) -> dict[str, Any]:
+        # Authorize the project before checking whether it has a reference.
+        # Otherwise a foreign account could distinguish an existing project
+        # with no AI result from an unknown project via the not_started reply.
+        application.state.projects.get_project(project_id)
         actor = competitor_actor(request)
         row = application.state.db.fetch_one(
             "SELECT id FROM ai_reference_results WHERE project_id=? ORDER BY created_at DESC LIMIT 1",

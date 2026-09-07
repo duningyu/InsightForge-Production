@@ -14,29 +14,44 @@ async function login(page, input, account) {
 }
 
 async function openProject(page, input, projectId) {
-  await page.goto(input.url + '/');
-  await page.locator('#account-controls').waitFor({state:'visible'});
-  await page.waitForFunction(id => Boolean(document.querySelector(`[data-open-project="${id}"]`)), projectId);
-  const projectCard = page.locator(`[data-open-project="${projectId}"]:visible`).first();
-  await projectCard.waitFor({state:'visible', timeout:30000});
-  // The card is a real button with an async handler.  Dispatch the browser
-  // click after it is visible so the handler is not lost to a stale home
-  // render during a fresh navigation.
-  await projectCard.evaluate((node) => node.click());
-  await page.locator('#project-shell').waitFor({state:'visible', timeout:30000}).catch(async () => {
-    const projects = await page.locator('[data-open-project]').evaluateAll(nodes => nodes.map(n => ({id:n.getAttribute('data-open-project'), text:n.textContent}))).catch(() => []);
-    const body = (await page.locator('body').innerText().catch(() => '')).slice(0, 3000);
-    throw new Error(`project did not open id=${projectId} url=${page.url()} projects=${JSON.stringify(projects)} body=${JSON.stringify(body)}`);
-  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await page.goto(input.url + '/');
+    await page.locator('#account-controls').waitFor({state:'visible'});
+    await page.waitForFunction(id => Boolean(document.querySelector(`[data-open-project="${id}"]`)), projectId);
+    const projectCard = page.locator(`[data-open-project="${projectId}"]:visible`).first();
+    await projectCard.waitFor({state:'visible', timeout:30000});
+    // Use a real Playwright click so the test waits for the current home render
+    // and exercises the same browser event path as a user click.
+    await projectCard.click();
+    try {
+      await page.locator('#project-shell').waitFor({state:'visible', timeout:5000});
+      break;
+    } catch (error) {
+      if (attempt === 1) {
+        const projects = await page.locator('[data-open-project]').evaluateAll(nodes => nodes.map(n => ({id:n.getAttribute('data-open-project'), text:n.textContent}))).catch(() => []);
+        const body = (await page.locator('body').innerText().catch(() => '')).slice(0, 3000);
+        throw new Error(`project did not open id=${projectId} url=${page.url()} projects=${JSON.stringify(projects)} body=${JSON.stringify(body)}`);
+      }
+    }
+  }
   await page.waitForFunction(() => {
     const node = document.querySelector('#solutions-content');
     return Boolean(node && node.innerHTML.trim());
   });
+  // loadProject() restores the saved view after its parallel project loads.
+  // Let that lifecycle settle before the next user navigation action.
+  await page.waitForTimeout(500);
 }
 
 async function openCompetitors(page) {
-  const solutionsNav = page.locator('[data-view=solutions]').first();
-  await solutionsNav.waitFor({state:'attached', timeout:30000});
+  const solutionsNav = page.locator('[data-view=solutions]:visible').first();
+  await page.locator('#project-shell').waitFor({state:'visible', timeout:30000}).catch(async () => {
+    throw new Error(`project shell not visible before competitors url=${page.url()} shell=${await page.locator('#project-shell').getAttribute('class')} login=${await page.locator('#account-controls').getAttribute('class')} body=${JSON.stringify((await page.locator('body').innerText()).slice(0, 1800))}`);
+  });
+  await page.locator('#primary-nav').waitFor({state:'visible', timeout:30000});
+  await solutionsNav.waitFor({state:'visible', timeout:30000}).catch(async () => {
+    throw new Error(`solutions nav not visible url=${page.url()} shell=${await page.locator('#project-shell').getAttribute('class')} nav=${await page.locator('#primary-nav').getAttribute('class')} body=${JSON.stringify((await page.locator('body').innerText()).slice(0, 2000))}`);
+  });
   await solutionsNav.evaluate((node) => node.click());
   const competitorOpen = page.locator('#solutions-view #competitor-open').first();
   await competitorOpen.waitFor({state:'attached', timeout:30000});
@@ -45,9 +60,15 @@ async function openCompetitors(page) {
 }
 
 async function clickView(page, view) {
-  const nav = page.locator(`[data-view=${view}]`).first();
-  await nav.waitFor({ state: 'attached', timeout: 30000 });
-  await nav.evaluate((node) => node.click());
+  const nav = page.locator(`[data-view=${view}]:visible`).first();
+  await nav.waitFor({ state: 'visible', timeout: 30000 }).catch(async () => {
+    throw new Error(`view nav not visible view=${view} url=${page.url()} shell=${await page.locator('#project-shell').getAttribute('class')} nav=${await page.locator('#primary-nav').getAttribute('class')} navCount=${await page.locator('[data-view]').count()} body=${JSON.stringify((await page.locator('body').innerText()).slice(0, 1800))}`);
+  });
+  await nav.click();
+  // Navigation is handled asynchronously by the app.  Wait for the target
+  // workspace to become visible before asserting restored content; otherwise
+  // a hidden card from the previous render can be mistaken for a lost draft.
+  await page.locator(`#${view}-view`).waitFor({ state: 'visible', timeout: 30000 });
 }
 
 async function ensureIdeaBriefConfirmed(page) {

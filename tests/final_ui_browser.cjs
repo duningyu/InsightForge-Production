@@ -121,6 +121,9 @@ function visibleRect(page, selector) {
       for (const forbidden of ['Implementation Tasks', 'Acceptance Cases', 'Unknowns / Risks', 'Explicit non-scope', 'In scope']) {
         if (text.includes(forbidden)) failures.push(`${viewport.name}: raw English heading ${forbidden}`);
       }
+      for (const forbidden of ['PROJECT SNAPSHOT', 'Evidence → Claim', 'Claim 关系', 'exact-span', 'HANDOFF', 'CLOSED BETA', 'QUICK VALUE', 'GUIDED EXAMPLE', 'PROJECT HISTORY', 'PROJECT CENTER', 'SETTINGS', 'CLOSED BETA FEEDBACK']) {
+        if (text.includes(forbidden)) failures.push(`${viewport.name}: technical label leaked into primary UI ${forbidden}`);
+      }
 
       const metrics = await page.evaluate(() => {
         const rect = (selector) => Array.from(document.querySelectorAll(selector)).map((node) => {

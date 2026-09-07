@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="InsightForge 3.0：从模糊 Idea 到可执行 MVP，并用证据持续校正产品判断。">
-  <title>InsightForge 3.0 · Quick Value → Evidence Depth</title>
+  <title>InsightForge 3.0 · 从想法到可执行产品</title>
   <link rel="stylesheet" href="/static/styles.css?v=3.0.0&amp;build=user-feedback-complete.1">
 </head>
 <body>
@@ -15,8 +15,8 @@
   <p id="draft-recovery-status" class="form-hint" role="status" aria-live="polite"></p>
   <dialog id="beta-consent-dialog" class="beta-consent-dialog" aria-labelledby="beta-consent-title">
     <div class="beta-consent-card">
-      <p class="eyebrow">CLOSED BETA</p>
-      <h1 id="beta-consent-title">InsightForge Closed Beta</h1>
+      <p class="eyebrow">内测版本</p>
+      <h1 id="beta-consent-title">InsightForge 内测版</h1>
       <p>本版本用于产品体验研究。</p>
       <p>可能记录：</p>
       <ul><li>匿名 participant ID</li><li>功能使用事件与操作时间</li><li>项目阶段</li><li>是否完成测试任务</li></ul>
@@ -29,7 +29,7 @@
     <header class="global-header">
       <a id="home-button" class="brand" href="#" aria-label="InsightForge 首页">
         <span class="brand-symbol" aria-hidden="true">IF</span>
-        <span><strong>InsightForge</strong><small>Idea → MVP → Evidence</small></span>
+        <span><strong>InsightForge</strong><small>想法 → MVP → 资料验证</small></span>
       </a>
       <div id="project-context" class="project-context hidden">
         <label>
@@ -42,7 +42,7 @@
             <option value="">继承全局模型</option>
           </select>
         </label>
-        <button id="new-idea-button" class="button button-quiet" type="button">＋ 新 Idea</button>
+        <button id="new-idea-button" class="button button-quiet" type="button">＋ 新建想法</button>
       </div>
       <button id="settings-button" class="button button-secondary header-settings-button" type="button" aria-controls="model-settings-view">设置</button>
       <span id="account-controls" hidden><span id="account-name"></span>
@@ -62,7 +62,7 @@
       </div>
       <section id="quick-start-view" class="quick-start-view">
         <div class="quick-start-copy">
-          <p class="eyebrow">QUICK VALUE</p>
+          <p class="eyebrow">快速开始</p>
           <h1>把一个 Idea 变成能做的产品。</h1>
           <p>先得到真正针对当前问题的 2–3 个方案和可执行 MVP；只有需要继续验证时，再进入证据和正式文档。</p>
         </div>
@@ -90,7 +90,7 @@
         <section class="example-gallery" aria-labelledby="example-gallery-title">
           <div class="recent-projects-heading">
             <div>
-              <p class="eyebrow">GUIDED EXAMPLE</p>
+              <p class="eyebrow">引导示例</p>
               <h2 id="example-gallery-title">完整示例 · 七步讲解</h2>
               <p>复制示例到独立项目后，从 Idea、方案、MVP、关键判断、证据、文档到开发交接逐步了解完整流程。</p>
             </div>
@@ -100,7 +100,7 @@
         <section id="recent-projects" class="recent-projects" aria-labelledby="recent-projects-title">
           <div class="recent-projects-heading">
             <div>
-              <p class="eyebrow">PROJECT HISTORY</p>
+              <p class="eyebrow">项目历史</p>
               <h2 id="recent-projects-title">历史项目</h2>
               <p>继续之前的产品设计，项目内容和版本记录都会保留。</p>
             </div>
@@ -111,7 +111,7 @@
         <section id="history-center" class="history-center" aria-labelledby="history-center-title">
           <div class="recent-projects-heading">
             <div>
-              <p class="eyebrow">PROJECT CENTER</p>
+            <p class="eyebrow">项目中心</p>
               <h2 id="history-center-title">历史项目中心</h2>
               <p>搜索、筛选、排序和分页管理全部项目；复制不会共享可变项目状态。</p>
             </div>
@@ -137,7 +137,7 @@
       <section id="model-settings-view" class="model-settings-view hidden" aria-labelledby="model-settings-title">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">SETTINGS</p>
+            <p class="eyebrow">设置</p>
             <h1 id="model-settings-title">模型配置</h1>
             <p>配置会安全保存在本机凭据存储中；此页面不会显示、复制或保留已有密钥。</p>
           </div>
@@ -185,7 +185,7 @@
       <section id="project-shell" class="project-shell hidden">
         <aside id="primary-nav" class="primary-nav" aria-label="项目主导航">
           <div class="nav-project">
-            <span class="nav-kicker">CURRENT PROJECT</span>
+            <span class="nav-kicker">当前项目</span>
             <strong id="nav-project-title">项目</strong>
           </div>
           <button class="nav-item active" data-view="snapshot" type="button"><span>01</span><strong>项目成果</strong></button>
@@ -200,7 +200,7 @@
           <section id="snapshot-view" class="workspace-view" data-workspace-view="snapshot">
             <div id="snapshot-content" class="view-content"></div>
             <button id="snapshot-primary-action" class="button button-primary hidden" type="button"></button>
-            <button id="snapshot-health-reconfirm" class="button button-secondary hidden" type="button">确认当前 Snapshot 仍可执行</button>
+          <button id="snapshot-health-reconfirm" class="button button-secondary hidden" type="button">确认当前项目成果仍可执行</button>
           </section>
           <section id="solutions-view" class="workspace-view hidden" data-workspace-view="solutions">
             <div id="idea-brief-content"></div>
@@ -219,7 +219,7 @@
             <div id="solutions-content"></div>
           </section>
           <section id="evidence-view" class="workspace-view hidden" data-workspace-view="evidence">
-            <div class="section-heading"><div><p class="eyebrow">EVIDENCE</p><h2>当前最需要验证什么？</h2><p>优先验证会改变方案的关键判断，而不是先堆资料。</p></div></div>
+            <div class="section-heading"><div><p class="eyebrow">资料与判断</p><h2>当前最需要验证什么？</h2><p>优先验证会改变方案的关键判断，而不是先堆资料。</p></div></div>
             <div class="evidence-tabs" role="tablist" aria-label="证据视图">
               <button class="evidence-tab active" data-evidence-tab="claims" type="button" role="tab" aria-selected="true">关键判断</button>
               <button class="evidence-tab" data-evidence-tab="impact" type="button" role="tab" aria-selected="false">影响记录</button>
@@ -229,7 +229,7 @@
             <div id="evidence-impact-panel" class="evidence-panel hidden"><div id="impact-content"></div></div>
               <div id="evidence-sources-panel" class="evidence-panel hidden">
                 <div class="secondary-panel">
-                  <div class="secondary-panel-heading"><div><strong>项目资料库</strong><p>资料进入后仍要经过 Claim 关系与 exact-span 校验；上传本身不等于支持某个判断。</p></div><button id="analyze-evidence-button" class="button button-secondary" type="button">分析资料影响</button></div>
+                  <div class="secondary-panel-heading"><div><strong>项目资料库</strong><p>添加资料后，系统会核对它支持哪些判断，以及引用内容是否确实来自原文。</p></div><button id="analyze-evidence-button" class="button button-secondary" type="button">分析资料影响</button></div>
                   <div id="evidence-entry-guidance" class="evidence-entry-guidance"></div>
                   <details class="technical-details"><summary>兼容模式：按内部类型添加资料</summary>
                   <form id="add-evidence-form" class="evidence-form">
@@ -252,7 +252,7 @@
             </div>
           </section>
           <section id="documents-view" class="workspace-view hidden" data-workspace-view="documents">
-            <div class="section-heading"><div><p class="eyebrow">DOCUMENTS</p><h2>正式文档</h2><p>PRD / TechDoc 来自当前确认的项目成果；编辑会先自动保存为草稿，正式保存始终创建新版本。</p></div></div>
+            <div class="section-heading"><div><p class="eyebrow">文档</p><h2>正式文档</h2><p>PRD / TechDoc 来自当前确认的项目成果；编辑会先自动保存为草稿，正式保存始终创建新版本。</p></div></div>
               <div id="documents-content"></div>
               <section class="document-editor-shell" aria-labelledby="document-editor-title">
                 <div id="document-workspace-error" class="document-warning hidden" role="alert"></div>
@@ -282,7 +282,7 @@
             </section>
           </section>
           <section id="handoff-view" class="workspace-view hidden" data-workspace-view="handoff">
-            <div class="section-heading"><div><p class="eyebrow">HANDOFF</p><h2>开发准备</h2><p>只把当前确认的 MVP 范围、验收案例和正式文档交给开发工具。</p></div></div>
+            <div class="section-heading"><div><p class="eyebrow">开发交接</p><h2>开发准备</h2><p>只把当前确认的 MVP 范围、验收案例和正式文档交给开发工具。</p></div></div>
             <div id="handoff-content"></div>
           </section>
         </div>
@@ -291,7 +291,7 @@
   </div>
 
   <aside id="walkthrough-panel" class="walkthrough-panel hidden" aria-live="polite">
-    <div class="walkthrough-head"><div><p class="eyebrow">7-STEP WALKTHROUGH</p><strong id="walkthrough-title">完整示例讲解</strong></div><button id="walkthrough-close" class="button button-quiet" type="button" aria-label="关闭讲解">×</button></div>
+    <div class="walkthrough-head"><div><p class="eyebrow">七步讲解</p><strong id="walkthrough-title">完整示例讲解</strong></div><button id="walkthrough-close" class="button button-quiet" type="button" aria-label="关闭讲解">×</button></div>
     <div class="walkthrough-progress"><span id="walkthrough-progress-text">步骤 1 / 7</span><progress id="walkthrough-progress" max="7" value="1"></progress></div>
     <h3 id="walkthrough-step-title"></h3>
     <p id="walkthrough-step-copy" class="muted"></p>
@@ -304,7 +304,7 @@
 
   <dialog id="idea-brief-dialog" class="dialog-card">
     <form method="dialog" id="idea-brief-form">
-      <p class="eyebrow">IDEA BRIEF</p>
+      <p class="eyebrow">项目定义</p>
       <h2>确认项目理解</h2>
       <div id="idea-brief-dialog-content"></div>
       <div class="dialog-actions">
@@ -317,7 +317,7 @@
   <button id="beta-feedback-button" class="beta-feedback-entry" type="button" hidden>提交反馈</button>
   <dialog id="beta-feedback-dialog" class="dialog-card beta-feedback-dialog" aria-labelledby="beta-feedback-title">
     <form id="beta-feedback-form">
-      <p class="eyebrow">CLOSED BETA FEEDBACK</p>
+      <p class="eyebrow">内测反馈</p>
       <h2 id="beta-feedback-title">提交反馈</h2>
       <p class="muted">反馈不会阻断你的工作。请勿填写 API Key 或其他秘密信息。</p>
       <label>评分

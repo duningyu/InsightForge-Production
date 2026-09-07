@@ -437,7 +437,8 @@ class ToolRegistry:
             doc_type=version["doc_type"],
             claims=claim_payload["items"],
         )
-        validation_status = "passed" if not issues else "needs_human_review"
+        blocking_issues = [issue for issue in issues if issue.get("severity") != "warning"]
+        validation_status = "passed" if not blocking_issues else "needs_human_review"
         with self.db.connect() as connection:
             connection.execute(
                 "UPDATE document_versions SET validation_status = ? WHERE id = ?",

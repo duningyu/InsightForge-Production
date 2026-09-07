@@ -209,6 +209,13 @@
               <p>了解别人怎样解决类似问题，帮助你判断哪些值得借鉴、哪些没有必要重复做。现在不比较也可以继续。</p>
               <button id="competitor-open" type="button" class="button button-secondary">添加一个产品 / 查看已有候选</button>
             </section>
+            <section class="secondary-panel" aria-labelledby="ai-reference-title">
+              <h2 id="ai-reference-title">AI帮我补充思路</h2>
+              <p>如果你现在只有一个想法，可以先让 AI 帮你整理可能的用户、场景、问题和需要确认的地方。以下内容仅供参考，不会自动当作已经验证的事实。</p>
+              <button id="ai-reference-generate" type="button" class="button button-secondary">AI帮我补充思路</button>
+              <p id="ai-reference-message" role="status" aria-live="polite"></p>
+              <div id="ai-reference-content"></div>
+            </section>
             <div id="solutions-content"></div>
           </section>
           <section id="evidence-view" class="workspace-view hidden" data-workspace-view="evidence">

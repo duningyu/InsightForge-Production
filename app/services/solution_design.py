@@ -120,9 +120,10 @@ from app.services.ai_runtime import StructuredAIRuntime, build_ai_trace_payload,
 class SolutionDesignService:
     GENERATOR_VERSION = "solution-designer-v1"
 
-    def __init__(self, db: Database, runtime: StructuredAIRuntime):
+    def __init__(self, db: Database, runtime: StructuredAIRuntime, ai_reference: Any | None = None):
         self.db = db
         self.runtime = runtime
+        self.ai_reference = ai_reference
 
     def _audit_failure(
         self,
@@ -221,6 +222,13 @@ class SolutionDesignService:
             project_id, competitor_snapshot_id,
             use_competitor_snapshot=use_competitor_snapshot,
         )
+        ai_context = (
+            self.ai_reference.get_context(project_id, actor="solution_generation")
+            if self.ai_reference is not None else None
+        )
+        if ai_context and (ai_context.get("adopted") or ai_context.get("ignored")):
+            competitor_context = dict(competitor_context or {})
+            competitor_context["ai_reference"] = ai_context
         if competitor_context is None:
             return self._brief_from_row(brief_row)
         return self._brief_from_row(brief_row, competitor_context=competitor_context)

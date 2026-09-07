@@ -40,8 +40,17 @@ class DocumentValidator:
     ) -> list[dict[str, Any]]:
         issues: list[dict[str, Any]] = []
         citations = CITATION_RE.findall(content)
+        no_source_disclosure = not citations and any(
+            marker in content for marker in ("没有外部资料", "暂无来源", "仍待验证", "待验证")
+        )
         if not citations:
-            issues.append(_issue("missing_citations", "document contains no source citations"))
+            issues.append(
+                _issue(
+                    "missing_citations",
+                    "document contains no source citations",
+                    severity="warning" if no_source_disclosure else "error",
+                )
+            )
         invalid = sorted(set(citations) - valid_citations.keys())
         if invalid:
             issues.append(_issue("citation_out_of_scope", f"invalid citations: {invalid[:5]}"))
@@ -154,6 +163,7 @@ class DocumentValidator:
                     _issue(
                         "unresolved_claim_requires_review",
                         f"unresolved claim: {str(claim.get('claim_text', ''))[:120]}",
+                        severity="warning" if no_source_disclosure else "error",
                         section=section,
                     )
                 )

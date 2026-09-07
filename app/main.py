@@ -24,6 +24,8 @@ from app.schemas import (
     CompetitorComparisonRequest,
     CompetitorSnapshotCreateRequest,
     CompetitorSelectionRequest,
+    AIReferenceGenerateRequest,
+    AIReferenceApplyRequest,
     CanonicalExampleResponse,
     EvidenceAnalyzeRequest,
     ExampleCopyResponse,
@@ -59,6 +61,7 @@ from app.schemas import (
 from app.services.projects import ProjectService
 from app.services.competitors import CompetitorService
 from app.services.competitor_decisions import CompetitorDecisionService
+from app.services.ai_reference import AIReferenceService
 from app.errors import (
     BetaDailyLimitReached,
     ConflictError,
@@ -236,6 +239,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         application.state.competitor_decisions = CompetitorDecisionService(
             db, application.state.projects
         )
+        application.state.ai_reference = AIReferenceService(db)
         application.state.example_copies = ExampleCopyService(db)
         application.state.model_profiles = ModelProfileService(db)
         application.state.managed_model_registry = ManagedModelRegistry(
@@ -287,7 +291,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             db, application.state.projects, application.state.structured_runtime
         )
         application.state.solution_design = SolutionDesignService(
-            db, application.state.structured_runtime
+            db, application.state.structured_runtime, application.state.ai_reference
         )
         application.state.async_generation_repository = AsyncGenerationRepository(db)
 
@@ -1303,6 +1307,41 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
     def get_competitor_snapshot(project_id: str, snapshot_id: str) -> dict[str, Any]:
         return application.state.competitor_decisions.get_snapshot(project_id, snapshot_id)
 
+    @application.get("/api/projects/{project_id}/ai-reference")
+    def get_ai_reference(project_id: str, request: Request) -> dict[str, Any]:
+        actor = competitor_actor(request)
+        row = application.state.db.fetch_one(
+            "SELECT id FROM ai_reference_results WHERE project_id=? ORDER BY created_at DESC LIMIT 1",
+            (project_id,),
+        )
+        if row is None:
+            return {"status": "not_started", "project_id": project_id}
+        result = application.state.ai_reference.get(project_id, row["id"], actor=actor)
+        result["context"] = application.state.ai_reference.get_context(project_id, actor=actor)
+        return result
+
+    @application.post("/api/projects/{project_id}/ai-reference", status_code=201)
+    def create_ai_reference(
+        project_id: str, payload: AIReferenceGenerateRequest, request: Request
+    ) -> dict[str, Any]:
+        return application.state.ai_reference.generate(
+            project_id,
+            actor=competitor_actor(request),
+            runtime=application.state.structured_runtime.for_project(project_id),
+            idempotency_key=payload.idempotency_key,
+        )
+
+    @application.post("/api/projects/{project_id}/ai-reference/apply")
+    def apply_ai_reference(
+        project_id: str, payload: AIReferenceApplyRequest, request: Request
+    ) -> dict[str, Any]:
+        return application.state.ai_reference.apply(
+            project_id,
+            reference_id=payload.reference_id,
+            actor=competitor_actor(request),
+            decisions=[item.model_dump() for item in payload.decisions],
+        )
+
     @application.get("/api/source-guidance")
     def source_guidance() -> list[dict[str, Any]]:
         return application.state.sources.guidance.describe_categories()
@@ -1587,6 +1626,15 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         result = application.state.handoff.readiness(project_id)
         record_product_event(request, "handoff_opened", {"handoff_type": "codex"}, project_id=project_id)
         return result
+
+    @application.post("/api/projects/{project_id}/handoff/acknowledge-unresolved")
+    def acknowledge_handoff_unresolved(
+        project_id: str, payload: HumanConfirmRequest, request: Request
+    ) -> dict[str, Any]:
+        actor = competitor_actor(request)
+        return application.state.handoff.acknowledge_unresolved(
+            project_id, actor=actor, confirmed=payload.human_confirmed, note=payload.note
+        )
 
     @application.post("/api/projects/{project_id}/handoff/export")
     def export_handoff(

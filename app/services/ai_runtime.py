@@ -10,6 +10,7 @@ from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 from app.errors import StructuredRuntimeRecoveryError, StructuredRuntimeUnavailableError
 from app.schemas import (
+    AIReferenceDraft,
     CompetitorComparisonDraft,
     CompetitorComparisonItem,
     CompetitorProjectLevel,
@@ -46,6 +47,8 @@ class StructuredAIRuntime(Protocol):
     def analyze_evidence(
         self, *, claim: dict[str, Any], chunks: list[dict[str, Any]]
     ) -> list[dict[str, Any]]: ...
+
+    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft: ...
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -211,6 +214,18 @@ class DeterministicDemoRuntime:
             "DETERMINISTIC_DEMO_UNSUPPORTED: no frozen evidence case matches this claim and source"
         )
 
+    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
+        idea = str(context.get("idea") or "你的项目想法")
+        return AIReferenceDraft(
+            possible_target_users=[f"可能关注“{idea[:40]}”的人群"],
+            possible_scenarios=["用户在真实场景中尝试解决当前问题"],
+            possible_user_problems=["当前问题可能需要更清晰的流程和反馈"],
+            missing_information=["尚未有真实用户反馈或外部资料支持"],
+            mvp_thoughts=["先用最小流程验证用户是否愿意完成核心任务"],
+            questions_to_validate=["目标用户是否真的频繁遇到这个问题"],
+            research_directions=["访谈目标用户并观察他们当前的替代做法"],
+        )
+
 
 class OpenAIStructuredRuntime:
     mode: RuntimeMode = "llm_structured"
@@ -345,6 +360,28 @@ class OpenAIStructuredRuntime:
             raise StructuredRuntimeUnavailableError("STRUCTURED_LLM_EMPTY_OUTPUT")
         return [item.model_dump(mode="json") for item in parsed.relations]
 
+    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
+        self.model_rounds_used = 1
+        system = (
+            "Provide conservative brainstorming for a product idea. Return structured reference suggestions only. "
+            "Do not claim user research, official data, market facts, or sources. Mark all suggestions as unverified."
+        )
+        try:
+            response = self.client.responses.parse(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+                ],
+                text_format=AIReferenceDraft,
+            )
+            parsed = response.output_parsed
+        except Exception as exc:  # pragma: no cover - live adapter
+            raise StructuredRuntimeUnavailableError(f"STRUCTURED_LLM_CALL_FAILED: {exc}") from exc
+        if parsed is None:
+            raise StructuredRuntimeUnavailableError("STRUCTURED_LLM_EMPTY_OUTPUT")
+        return parsed
+
 
 class ManagedQwenStructuredRuntime:
     """Use only the deployment-managed Bailian credential, never a demo fallback."""
@@ -433,6 +470,7 @@ class ManagedQwenStructuredRuntime:
             "design_solutions": "solution_generation",
             "analyze_evidence": "evidence_analysis",
             "compare_competitors": "solution_generation",
+            "generate_ai_reference": "solution_generation",
         }.get(method)
         reservation = None
         if operation is not None and self._before_provider_call is not None:
@@ -490,7 +528,7 @@ class ManagedQwenStructuredRuntime:
     async def _call_async(self, method: str, *args: Any, **kwargs: Any) -> Any:
         self.model_rounds_used = 1
         dispatch_control = kwargs.pop("dispatch_control", None)
-        operation = {"design_solutions": "solution_generation", "analyze_evidence": "evidence_analysis"}.get(method)
+        operation = {"design_solutions": "solution_generation", "analyze_evidence": "evidence_analysis", "generate_ai_reference": "solution_generation"}.get(method)
         reservation = None
         if operation is not None and self._before_provider_call is not None:
             reservation = self._before_provider_call(operation)
@@ -560,6 +598,9 @@ class ManagedQwenStructuredRuntime:
         self, *, claim: dict[str, Any], chunks: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         return self._call("analyze_evidence", claim=claim, chunks=chunks)
+
+    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
+        return self._call("generate_ai_reference", context)
 
     async def async_design_solutions(self, brief: IdeaBriefDraft, *, generation_intent_id: str | None = None, generation_run_id: str | None = None, dispatch_control: DispatchControlContext | None = None) -> SolutionSetDraft:
         return await self._call_async("design_solutions", brief, dispatch_control=dispatch_control, _generation_intent_id=generation_intent_id, _generation_run_id=generation_run_id)

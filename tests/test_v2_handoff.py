@@ -128,8 +128,20 @@ def test_handoff_zip_contains_real_artifacts_hash_manifest_and_unresolved_bounda
 
     service = HandoffService(db)
     readiness = service.readiness("project_insightforge_demo")
-    assert readiness["ready"] is True
+    assert readiness["ready"] is False
     assert readiness["unresolved_claim_count"] == 1
+    assert "unresolved_items_acknowledgement_required" in {
+        item["code"] for item in readiness["missing"]
+    }
+    acknowledgement = service.acknowledge_unresolved(
+        "project_insightforge_demo",
+        actor="pm",
+        confirmed=True,
+        note="已了解仍需确认的事项",
+    )
+    assert acknowledgement["status"] == "acknowledged"
+    readiness = service.readiness("project_insightforge_demo")
+    assert readiness["ready"] is True
 
     data, manifest = service.build_zip(
         "project_insightforge_demo", target_client="codex", actor="pm"

@@ -31,6 +31,7 @@ _EXPECTED_FILES = [
     "ACCEPTANCE_TESTS.md",
     "IMPLEMENTATION_TASKS.json",
     "AGENTS.md",
+    "UNRESOLVED_RISKS.md",
     "HANDOFF_MANIFEST.json",
 ]
 
@@ -70,15 +71,24 @@ class HandoffService:
             missing.append({"code": "approved_techdoc_missing", "message": "需要一份 validation_status=passed 的人工批准 TechDoc。"})
         selected_ids = [item["id"] for item in (prd, techdoc) if item is not None]
         unresolved_count = self._unresolved_count(selected_ids)
+        unresolved_items = self._unresolved_items(selected_ids)
         draft_unresolved_count = self._latest_draft_unresolved_count(project_id)
+        acknowledgement = self._unresolved_acknowledgement(project_id, unresolved_items)
         warnings: list[dict[str, str]] = []
         if unresolved_count:
             warnings.append({"code": "unresolved_claims_preserved", "message": f"存在 {unresolved_count} 条未解决主张；交接包会保留并禁止当作已确认需求。"})
+        source_count = int((self.db.fetch_one("SELECT COUNT(*) AS n FROM sources WHERE project_id=?", (project_id,)) or {"n": 0})["n"])
+        acknowledgement_required = bool(unresolved_items or source_count == 0)
+        if acknowledgement_required and acknowledgement is None:
+            missing.append({"code": "unresolved_items_acknowledgement_required", "message": "请先确认仍需确认的事项，再创建开发交接。"})
         return {
             "project_id": project_id, "ready": not missing, "missing": missing, "warnings": warnings,
             "canvas_version": canvas["version"] if canvas else None, "snapshot": None,
             "documents": {"prd": self._document_metadata(prd), "techdoc": self._document_metadata(techdoc)},
-            "unresolved_claim_count": unresolved_count, "draft_unresolved_claim_count": draft_unresolved_count,
+            "unresolved_claim_count": unresolved_count, "unresolved_items": unresolved_items,
+            "unresolved_acknowledgement": acknowledgement,
+            "acknowledgement_required": acknowledgement_required,
+            "draft_unresolved_claim_count": draft_unresolved_count,
             "expected_files": list(_EXPECTED_FILES), "claim_boundary": self._claim_boundary(),
         }
 
@@ -106,9 +116,15 @@ class HandoffService:
             missing.append({"code": "confirmed_techdoc_unhealthy", "message": "当前确认 TechDoc 的证据或依赖已经失效。"})
         selected_ids = [item["id"] for item in (prd, techdoc) if item is not None]
         unresolved_count = self._unresolved_count(selected_ids)
+        unresolved_items = self._unresolved_items(selected_ids)
+        acknowledgement = self._unresolved_acknowledgement(project_id, unresolved_items)
+        source_count = int((self.db.fetch_one("SELECT COUNT(*) AS n FROM sources WHERE project_id=?", (project_id,)) or {"n": 0})["n"])
+        acknowledgement_required = bool(unresolved_items or source_count == 0)
         warnings: list[dict[str, str]] = []
         if unresolved_count:
             warnings.append({"code": "unresolved_claims_preserved", "message": f"存在 {unresolved_count} 条未解决主张；交接包会保留并禁止当作已确认需求。"})
+        if acknowledgement_required and acknowledgement is None:
+            missing.append({"code": "unresolved_items_acknowledgement_required", "message": "请先确认仍需确认的事项，再创建开发交接。"})
         return {
             "project_id": project_id, "ready": not missing, "missing": missing, "warnings": warnings,
             "canvas_version": (self.db.get_canvas(project_id) or {}).get("version"),
@@ -116,9 +132,40 @@ class HandoffService:
                          "health_status": snapshot_health["health_status"] if snapshot_health else None},
             "documents": {"prd": self._v3_document_metadata(prd, prd_health), "techdoc": self._v3_document_metadata(techdoc, techdoc_health)},
             "unresolved_claim_count": unresolved_count,
+            "unresolved_items": unresolved_items,
+            "unresolved_acknowledgement": acknowledgement,
+            "acknowledgement_required": acknowledgement_required,
             "draft_unresolved_claim_count": self._latest_draft_unresolved_count(project_id),
             "expected_files": self._v3_expected_files(), "claim_boundary": self._claim_boundary(),
         }
+
+    def acknowledge_unresolved(self, project_id: str, *, actor: str, confirmed: bool, note: str = "") -> dict[str, Any]:
+        if not actor.strip():
+            raise PermissionError("authenticated actor required")
+        if not confirmed:
+            raise ValueError("请明确确认当前版本仍有待确认事项")
+        readiness = self.readiness(project_id)
+        items = readiness.get("unresolved_items", [])
+        source_count = int((self.db.fetch_one("SELECT COUNT(*) AS n FROM sources WHERE project_id=?", (project_id,)) or {"n": 0})["n"])
+        payload = {"items": items, "source_count": source_count}
+        content_sha256 = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        existing = self.db.fetch_one(
+            "SELECT * FROM handoff_unresolved_acknowledgements WHERE project_id=? AND content_sha256=?",
+            (project_id, content_sha256),
+        )
+        if existing:
+            return {"status": "acknowledged", "id": existing["id"], "content_sha256": content_sha256, "items": items}
+        acknowledgement_id = f"handoff_ack_{uuid.uuid4().hex}"
+        created_at = utc_now()
+        self.db.execute(
+            "INSERT INTO handoff_unresolved_acknowledgements(id,project_id,actor,content_sha256,unresolved_json,note,created_at) VALUES (?,?,?,?,?,?,?)",
+            (acknowledgement_id, project_id, actor, content_sha256, json.dumps(payload, ensure_ascii=False), note, created_at),
+        )
+        self.db.insert_audit(
+            actor=actor, action="USER_ACKNOWLEDGED_UNRESOLVED_ITEMS", entity_type="handoff_acknowledgement",
+            entity_id=acknowledgement_id, payload={"project_id": project_id, "item_count": len(items)},
+        )
+        return {"status": "acknowledged", "id": acknowledgement_id, "content_sha256": content_sha256, "items": items}
 
     def preview_manifest(
         self,
@@ -187,6 +234,8 @@ class HandoffService:
                     "project_id": project_id,
                     "documents": claim_documents,
                     "unresolved_claim_count": readiness["unresolved_claim_count"],
+                    "unresolved_items": readiness.get("unresolved_items", []),
+                    "human_acknowledgement": readiness.get("unresolved_acknowledgement"),
                 }
             ),
             "SOURCE_MANIFEST.json": self._json_bytes(
@@ -200,6 +249,7 @@ class HandoffService:
                 self._implementation_tasks(project_id, canvas)
             ),
             "AGENTS.md": self._agents_md(target_client).encode("utf-8"),
+            "UNRESOLVED_RISKS.md": self._legacy_unresolved_risks(readiness).encode("utf-8"),
         }
 
         file_manifest = {
@@ -223,6 +273,8 @@ class HandoffService:
                 "techdoc": self._document_metadata(techdoc),
             },
             "unresolved_claim_count": readiness["unresolved_claim_count"],
+            "unresolved_items": readiness.get("unresolved_items", []),
+            "human_acknowledgement": readiness.get("unresolved_acknowledgement"),
             "warnings": readiness["warnings"],
             "claim_boundary": self._claim_boundary(),
             "files": file_manifest,
@@ -336,6 +388,25 @@ class HandoffService:
             lines.append("- 当前 Snapshot 未记录关键未知项。")
         return "\n".join(lines) + "\n"
 
+    @staticmethod
+    def _legacy_unresolved_risks(readiness: dict[str, Any]) -> str:
+        lines = ["# 仍需确认的事项", ""]
+        items = readiness.get("unresolved_items") or []
+        if not items:
+            lines.append("- 当前没有可由文档主张生成的待确认事项；仍需按项目实际情况核对。")
+        else:
+            for item in items:
+                if isinstance(item, dict):
+                    text = item.get("claim_text") or item.get("message") or str(item)
+                else:
+                    text = str(item)
+                lines.append(f"- {text}")
+        lines.extend([
+            "",
+            "以上事项保留为待确认边界，不表示相关市场判断或用户研究已经验证。",
+        ])
+        return "\n".join(lines) + "\n"
+
     def _build_v3_zip(
         self, project: dict[str, Any], *, readiness: dict[str, Any], target_client: str, actor: str
     ) -> tuple[bytes, dict[str, Any]]:
@@ -359,7 +430,7 @@ class HandoffService:
             "CONFIRMED_CONTEXT.md": confirmed_context.encode("utf-8"),
             "PRD_APPROVED.md": (str(prd["content"]).strip()+"\n").encode("utf-8"),
             "TECHDOC_APPROVED.md": (str(techdoc["content"]).strip()+"\n").encode("utf-8"),
-            "CLAIM_LEDGER.json": self._json_bytes({"project_id":project_id,"documents":claim_documents,"unresolved_claim_count":readiness["unresolved_claim_count"]}),
+            "CLAIM_LEDGER.json": self._json_bytes({"project_id":project_id,"documents":claim_documents,"unresolved_claim_count":readiness["unresolved_claim_count"],"unresolved_items":readiness.get("unresolved_items", []),"human_acknowledgement":readiness.get("unresolved_acknowledgement")}),
             "SOURCE_MANIFEST.json": self._json_bytes({"project_id":project_id,"sources":sources}),
             "RETRIEVAL_TRACE.json": self._json_bytes({"project_id":project_id,"runs":retrieval_trace}),
             "ACCEPTANCE_TESTS.md": self._acceptance_tests(canvas).encode("utf-8"),
@@ -373,7 +444,7 @@ class HandoffService:
             "created_at":created_at,"canvas_version":canvas["version"],
             "snapshot":{"id":snapshot["id"],"version":snapshot["version"],"content_sha256":snapshot["content_sha256"]},
             "confirmed_documents":{"prd":self._document_metadata(prd),"techdoc":self._document_metadata(techdoc)},
-            "unresolved_claim_count":readiness["unresolved_claim_count"],"warnings":readiness["warnings"],
+            "unresolved_claim_count":readiness["unresolved_claim_count"],"unresolved_items":readiness.get("unresolved_items", []),"human_acknowledgement":readiness.get("unresolved_acknowledgement"),"warnings":readiness["warnings"],
             "claim_boundary":self._claim_boundary(),"files":file_manifest,
         }
         files["HANDOFF_MANIFEST.json"]=self._json_bytes(manifest)
@@ -411,6 +482,30 @@ class HandoffService:
             tuple(version_ids),
         )
         return int(row["count"]) if row else 0
+
+    def _unresolved_items(self, version_ids: list[str]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for version_id in version_ids:
+            for item in self.claims.list_for_version(version_id)["items"]:
+                if item.get("claim_type") == "unresolved":
+                    items.append({
+                        "version_id": version_id,
+                        "section": item.get("section"),
+                        "item": item.get("claim_text"),
+                        "why": item.get("explanation") or "当前没有足够资料支持该判断。",
+                        "how_to_verify": "通过真实用户反馈、可核验资料或开发测试进一步确认。",
+                    })
+        return items
+
+    def _unresolved_acknowledgement(self, project_id: str, items: list[dict[str, Any]]) -> dict[str, Any] | None:
+        source_count = int((self.db.fetch_one("SELECT COUNT(*) AS n FROM sources WHERE project_id=?", (project_id,)) or {"n": 0})["n"])
+        payload = {"items": items, "source_count": source_count}
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        row = self.db.fetch_one(
+            "SELECT id, actor, created_at, note, content_sha256 FROM handoff_unresolved_acknowledgements WHERE project_id=? AND content_sha256=?",
+            (project_id, digest),
+        )
+        return row
 
     def _latest_draft_unresolved_count(self, project_id: str) -> int:
         row = self.db.fetch_one(

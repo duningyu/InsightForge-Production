@@ -15,6 +15,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.schemas import (
+    AIReferenceDraft,
     CompetitorComparisonDraft,
     EvidenceRelationSetDraft,
     IdeaBriefDraft,
@@ -664,6 +665,18 @@ class ModelAdapter:
             user=json.dumps({"candidates": candidates, "project_context": project_context}, ensure_ascii=False),
         )
 
+    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
+        return self._generate(
+            output_model=AIReferenceDraft,
+            system=(
+                "Provide conservative brainstorming suggestions for a product idea. "
+                "Return only structured JSON. Do not invent research, official facts, "
+                "statistics, sources, URLs, or user interviews; keep every suggestion "
+                "as an unverified hypothesis."
+            ),
+            user=json.dumps(context, ensure_ascii=False),
+        )
+
     def _content_from_response(self, body: dict[str, Any]) -> str:
         malformed = False
         content: Any = None
@@ -796,6 +809,18 @@ class AsyncModelAdapter(ModelAdapter):
                 "separate; do not invent URLs, prices, usage figures, market claims, or research findings."
             ),
             user=json.dumps({"candidates": candidates}, ensure_ascii=False),
+        )
+
+    async def generate_ai_reference_async(self, context: dict[str, Any]) -> AIReferenceDraft:
+        return await self._generate_async(
+            output_model=AIReferenceDraft,
+            system=(
+                "Provide conservative brainstorming suggestions for a product idea. "
+                "Return only structured JSON. Do not invent research, official facts, "
+                "statistics, sources, URLs, or user interviews; keep every suggestion "
+                "as an unverified hypothesis."
+            ),
+            user=json.dumps(context, ensure_ascii=False),
         )
 
     async def _generate_async(self, *, output_model: type[_Model], system: str, user: str) -> _Model:

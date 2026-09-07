@@ -1,5 +1,17 @@
 # 开放测试改版：源码增量与未完成边界
 
+## 当前状态摘要（AI补充思路与无资料人工确认交接）
+
+开发检查点：`d3a8d474159083921529a088fbd86a6b79d0e737` 的后继工作区；账号基线、竞品决策切片和统一草稿恢复保持已通过，本轮未部署、未调用真实 Provider/Search。
+
+- 已接入“AI帮我补充思路”：复用现有结构化模型 runtime、Provider/model 解析与 Adapter，一次有界批处理返回目标用户、场景、问题、MVP 思路、待确认问题和研究方向；结果明确标记为 AI 参考，不创建 source，也不升级为证据。
+- AI 参考支持按项目保存、幂等恢复、部分采用/修改/忽略及原因，采用内容保留 `AI_REFERENCE` / `UNRESOLVED` 语义，并进入后续方案 context；前端入口和中文展示已接入统一页面。
+- 无资料文档校验已区分 warning 与 blocking：诚实披露无来源时，缺引用和未解决主张为 warning；结构缺失仍为 blocking。PRD/TechDoc 可在人工确认后进入交接，交接包保留“仍需确认的事项”和人工确认记录。
+- Fresh 后端：`py -3.12 -m pytest tests/test_ai_reference_no_source.py tests/test_v2_handoff.py tests/test_v3_handoff_and_tools.py tests/test_competitor_decision_slice.py -q --tb=short`：22 passed；`py -3.12 tests/run_open_test_regressions.py`：146 passed，外部连接尝试 0。
+- Fresh 真实 Chromium 草稿恢复：`py -3.12 tests/run_draft_recovery_browser.py`：FLOW A–F PASS，generation POST 1、logical task 1、comparison POST 1、外部连接 0；该 runner 覆盖既有草稿/任务恢复，不等同于本轮 AI 参考与无资料完整浏览器链。
+- `node --check app/static/app.js`、`py -3.12 -m compileall -q app tests`、`git diff --check` 已通过。Chromium 可用的是现有 bundled Playwright runner；本轮未新增第二套浏览器依赖。AI 参考、无资料确认交接的专门真实 Chromium 流程仍未运行。
+- 当前整体仍为 `INSIGHTFORGE_USER_FIRST_OPEN_TEST_IMPLEMENTATION_PARTIAL`。后续保留：AI 参考/无资料流程的专门 Chromium 证据、来源补入后的旧版本不变性专测，以及完整中文、有结果布局、125%/150% 缩放和最终登录到交接 E2E。
+
 ## 当前状态摘要（竞品决策贯通链 fresh 验证）
 
 开发检查点：`646598975e5b3b6e1e56b9fc6d117a5c67e5fa8b` 的后继工作区；账号批次保持 PASS，竞品决策切片本轮完成，整体开放测试仍为 PARTIAL；未部署。

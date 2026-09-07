@@ -111,6 +111,33 @@ class CompetitorComparisonDraft(StrictModel):
     uncertainty_notice: str = "AI分析参考，建议结合实际产品页面核对。"
 
 
+class AIReferenceDraft(StrictModel):
+    possible_target_users: list[str] = Field(default_factory=list, max_length=20)
+    possible_scenarios: list[str] = Field(default_factory=list, max_length=20)
+    possible_user_problems: list[str] = Field(default_factory=list, max_length=20)
+    missing_information: list[str] = Field(default_factory=list, max_length=20)
+    mvp_thoughts: list[str] = Field(default_factory=list, max_length=20)
+    questions_to_validate: list[str] = Field(default_factory=list, max_length=20)
+    research_directions: list[str] = Field(default_factory=list, max_length=20)
+    uncertainty_notice: str = "AI生成参考，尚未经外部资料核实。"
+
+
+class AIReferenceGenerateRequest(StrictModel):
+    idempotency_key: str | None = Field(default=None, max_length=200)
+
+
+class AIReferenceDecisionRequest(StrictModel):
+    category: str = Field(min_length=1, max_length=80)
+    item: str = Field(min_length=1, max_length=1000)
+    decision: Literal["adopt", "modify", "ignore"]
+    rationale: str = Field(default="", max_length=2000)
+
+
+class AIReferenceApplyRequest(StrictModel):
+    reference_id: str = Field(min_length=1, max_length=200)
+    decisions: list[AIReferenceDecisionRequest] = Field(default_factory=list, max_length=100)
+
+
 class ProjectCreateRequest(StrictModel):
     title: str = Field(min_length=1, max_length=160)
     summary: str = Field(min_length=1, max_length=3000)

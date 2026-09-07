@@ -160,7 +160,8 @@ class DocumentLoop:
                         utc_now(),
                     ),
                 )
-            if not issues:
+            blocking_issues = [issue for issue in issues if issue.get("severity") != "warning"]
+            if not blocking_issues:
                 terminal_state = "completed"
                 break
             if round_no < self.max_rounds:

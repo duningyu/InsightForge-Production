@@ -86,6 +86,30 @@ CREATE TABLE IF NOT EXISTS competitor_decision_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_competitor_snapshots_project
     ON competitor_decision_snapshots(project_id, created_at);
+CREATE TABLE IF NOT EXISTS ai_reference_results (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    created_by TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL,
+    idempotency_key TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(project_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_reference_results_project
+    ON ai_reference_results(project_id, created_at);
+CREATE TABLE IF NOT EXISTS ai_reference_adoptions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    reference_id TEXT NOT NULL REFERENCES ai_reference_results(id),
+    created_by TEXT NOT NULL,
+    decisions_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_reference_adoptions_project
+    ON ai_reference_adoptions(project_id, created_at);
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -366,6 +390,16 @@ CREATE TABLE IF NOT EXISTS handoff_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_handoff_runs_project
     ON handoff_runs(project_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS handoff_unresolved_acknowledgements (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    unresolved_json TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(project_id, content_sha256)
+);
 CREATE TABLE IF NOT EXISTS audit_events (
     id TEXT PRIMARY KEY,
     actor TEXT NOT NULL,

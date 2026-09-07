@@ -12,6 +12,7 @@ from app.errors import (
     StructuredRuntimeUnavailableError,
 )
 from app.schemas import (
+    AIReferenceDraft,
     CompetitorComparisonDraft,
     EvidenceRelationSetDraft,
     IdeaBriefDraft,
@@ -31,6 +32,7 @@ PROVIDER_USAGE_OPERATIONS = {
     "design_solutions": "solution_generation",
     "analyze_evidence": "evidence_analysis",
     "compare_competitors": "solution_generation",
+    "generate_ai_reference": "solution_generation",
 }
 SCHEMA_ERROR_CODES = {
     "invalid_content",
@@ -188,6 +190,9 @@ class _LocalGuidanceRuntime:
                 recovery_actions=["配置并测试模型后重试", "改用人工证据复核"],
                 preserved_input=preserved_input,
             ) from None
+
+    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
+        return self._call("generate_ai_reference", context)
 
 
 class _ProfileStructuredRuntime:
@@ -394,6 +399,11 @@ class _ProfileStructuredRuntime:
             kwargs={"claim": claim, "chunks": chunks},
         )
 
+    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
+        return self._call(
+            "generate_ai_reference", preserved_input=context, args=(context,)
+        )
+
 
 class HybridStructuredRuntime:
     """Resolve exactly one configured profile for every project request."""
@@ -492,3 +502,7 @@ class HybridStructuredRuntime:
     ) -> list[dict[str, Any]]:
         runtime = self.for_project(claim.get("project_id"))
         return runtime.analyze_evidence(claim=claim, chunks=chunks)
+
+    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
+        runtime = self.for_project(context.get("project_id"))
+        return runtime.generate_ai_reference(context)

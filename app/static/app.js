@@ -1528,6 +1528,14 @@ function renderHandoff() {
   const docSummary = h?.documents || {};
   const risks = snap.unknowns || [];
   const missing = h?.missing || [];
+  const unresolved = h?.unresolved_items || [];
+  const acknowledgement = h?.unresolved_acknowledgement;
+  const acknowledgementBlock = h?.acknowledgement_required && !acknowledgement ? `
+    <div class="handoff-acknowledgement">
+      <p>当前版本仍有以下内容尚未验证。你可以继续交接，但建议在真实开发或测试过程中进一步确认。</p>
+      <label><input id="handoff-unresolved-confirm" type="checkbox"> 我已了解，确认当前版本仍有待确认事项</label>
+      <button id="handoff-acknowledge-button" class="button button-secondary" type="button" disabled>确认当前版本仍有待确认事项</button>
+    </div>` : (acknowledgement ? "<p class=\"status-note\">已记录你对待确认事项的了解；这不表示这些事项已经被事实验证。</p>" : "");
   qs("#handoff-content").innerHTML = `
     <div class="handoff-status ${h?.ready ? "handoff-ready" : "handoff-blocked"}"><strong>${escapeHtml(h?.ready ? "开发交接已具备正式上下文" : "当前还不能安全交接")}</strong><span>${escapeHtml(h?.ready ? "当前 Snapshot、PRD 和 TechDoc 均满足交接 Gate。" : (missing[0]?.message || "需要先完成当前 Snapshot 和正式文档。"))}</span></div>
     <section class="handoff-section"><h3>MVP 范围</h3>${detailList("In scope", mvp.features || [])}</section>
@@ -1535,12 +1543,24 @@ function renderHandoff() {
     <section class="handoff-section"><h3>Implementation Tasks</h3>${detailList("实施顺序", implementationTasks)}</section>
     <section class="handoff-section"><h3>Acceptance Cases</h3>${detailList("验收案例", acceptanceCases)}</section>
     <section class="handoff-section"><h3>已确认文档</h3><div class="handoff-docs"><span>PRD：${escapeHtml(docSummary.prd?.id || "未确认")}</span><span>TechDoc：${escapeHtml(docSummary.techdoc?.id || "未确认")}</span></div></section>
+    <section class="handoff-section"><h3>仍需确认的事项</h3>${unresolved.length ? detailList("事项", unresolved.map((item) => `${item.item}；${item.why}；建议：${item.how_to_verify}`)) : "<p>当前没有从文档中提取到待确认事项；资料是否充分仍需按实际来源判断。</p>"}${acknowledgementBlock}</section>
     <section class="handoff-section"><h3>未解决风险</h3>${detailList("Unknowns / Risks", risks.length ? risks : ["当前 Snapshot 未记录关键未知项。"])}${missing.length ? detailList("阻塞项", missing.map((item) => item.message)) : ""}</section>
     <section class="handoff-section"><h3>复制/导出</h3><div class="handoff-actions"><button id="copy-handoff-button" class="button button-secondary" type="button">复制当前开发上下文</button><button id="export-handoff-button" class="button button-primary" type="button" ${h?.ready ? "" : "disabled"}>导出 Codex 交接包</button><button id="load-handoff-button" class="button button-quiet" type="button">重新检查准备度</button></div></section>
     <details class="handoff-section advanced-panel"><summary>高级：MCP</summary><p>MCP 只作为已有确认上下文的高级读取/交接接口；当前 P0 不把远程 MCP 或企业权限作为主卖点。</p></details>`;
   qs("#load-handoff-button")?.addEventListener("click", loadHandoff);
   qs("#copy-handoff-button")?.addEventListener("click", copyHandoffContext);
   qs("#export-handoff-button")?.addEventListener("click", exportHandoff);
+  qs("#handoff-unresolved-confirm")?.addEventListener("change", (event) => { qs("#handoff-acknowledge-button").disabled = !event.target.checked; });
+  qs("#handoff-acknowledge-button")?.addEventListener("click", acknowledgeUnresolvedHandoff);
+}
+
+async function acknowledgeUnresolvedHandoff() {
+  if (!state.currentProjectId) return;
+  try {
+    await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/handoff/acknowledge-unresolved`, {method:"POST", body:JSON.stringify({human_confirmed:true, note:"用户确认当前版本仍有待确认事项"})});
+    await loadHandoff();
+    toast("已记录确认；待确认事项仍会保留在交接中。");
+  } catch (error) { reportError(error); }
 }
 
 async function quickStart(event) {
@@ -1826,7 +1846,7 @@ async function loadProject(projectId) {
       activateView(context.activeView);
     }
   } catch (_) { /* recovery must not prevent the project from opening */ }
-  await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough()]);
+  await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadAIReference(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough()]);
 }
 
 async function loadEvidenceData() {
@@ -1971,6 +1991,70 @@ async function exportHandoff() {
     link.click();
     URL.revokeObjectURL(url);
   } catch (error) { reportError(error); }
+}
+
+const aiReferencePanel = {project: null, busy: false, result: null, decisions: [], referenceId: null, requestKey: null};
+const AI_REFERENCE_GROUPS = [
+  ["possible_target_users", "可能的目标用户"], ["possible_scenarios", "可能出现的场景"],
+  ["possible_user_problems", "可能需要解决的问题"], ["missing_information", "目前还缺什么信息"],
+  ["mvp_thoughts", "第一版可以怎么收敛"], ["questions_to_validate", "建议继续确认的问题"],
+  ["research_directions", "后续可以去找哪些资料"],
+];
+function aiReferenceDraftPayload() { return {result: aiReferencePanel.result, decisions: aiReferencePanel.decisions}; }
+function readAIReferenceDecisions() { return [...qsa("#ai-reference-content select")].map((select) => ({category: select.dataset.aiCategory, item: select.dataset.aiItem, decision: select.value, rationale: qs(`[data-ai-rationale-for="${CSS.escape(select.dataset.aiItem)}"]`)?.value.trim() || ""})); }
+function rememberAIReferenceDraft() {
+  if (qs("#ai-reference-content select")) aiReferencePanel.decisions = readAIReferenceDecisions();
+  if (aiReferencePanel.project && aiReferencePanel.result) queueUnifiedDraft(aiReferencePanel.project, "ai_reference", "result", aiReferenceDraftPayload(), {delay: 500});
+}
+function renderAIReference() {
+  const content = qs("#ai-reference-content"); if (!content) return;
+  content.replaceChildren(); const result = aiReferencePanel.result; if (!result) return;
+  const notice = document.createElement("p"); notice.className = "status-note"; notice.textContent = result.uncertainty_notice || "AI生成参考，尚未经外部资料核实。"; content.append(notice);
+  AI_REFERENCE_GROUPS.forEach(([key, label]) => {
+    const values = Array.isArray(result[key]) ? result[key] : []; if (!values.length) return;
+    const section = document.createElement("section"); section.className = "secondary-panel ai-reference-group";
+    const heading = document.createElement("h3"); heading.textContent = label; section.append(heading);
+    values.forEach((item) => {
+      const row = document.createElement("div"); row.className = "ai-reference-item";
+      const text = document.createElement("span"); text.textContent = item; row.append(text);
+      const prior = aiReferencePanel.decisions.find((decision) => decision.category === key && decision.item === item);
+      const select = document.createElement("select"); select.dataset.aiCategory = key; select.dataset.aiItem = item;
+      [["adopt", "采用"], ["modify", "修改"], ["ignore", "忽略"]].forEach(([value, title]) => { const option = document.createElement("option"); option.value = value; option.textContent = title; select.append(option); });
+      select.value = prior?.decision || "ignore";
+      select.addEventListener("change", rememberAIReferenceDraft); row.append(select); section.append(row);
+      const rationale = document.createElement("input"); rationale.type = "text"; rationale.placeholder = "可填写原因（可选）"; rationale.dataset.aiRationaleFor = item;
+      rationale.value = prior?.rationale || ""; rationale.addEventListener("input", rememberAIReferenceDraft); row.append(rationale);
+    }); content.append(section);
+  });
+  const actions = document.createElement("div"); actions.className = "handoff-actions";
+  const apply = document.createElement("button"); apply.id = "ai-reference-apply"; apply.type = "button"; apply.className = "button button-primary"; apply.textContent = "应用到项目"; apply.addEventListener("click", () => void applyAIReference()); actions.append(apply); content.append(actions);
+}
+async function loadAIReference() {
+  aiReferencePanel.project = state.currentProjectId; aiReferencePanel.result = null; aiReferencePanel.decisions = []; aiReferencePanel.referenceId = null;
+  if (!aiReferencePanel.project) { renderAIReference(); return; }
+  try { const stored = await api(`/api/projects/${encodeURIComponent(aiReferencePanel.project)}/ai-reference`); if (stored?.result) { aiReferencePanel.result = stored.result; aiReferencePanel.referenceId = stored.id; } } catch (_) { /* no reference yet */ }
+  const recovered = await loadUnifiedDraft(aiReferencePanel.project, "ai_reference", "result").catch(() => null); const payload = preferredRecoveryPayload(recovered);
+  if (payload?.result && !aiReferencePanel.result) aiReferencePanel.result = payload.result;
+  if (payload?.decisions) aiReferencePanel.decisions = payload.decisions;
+  renderAIReference();
+}
+async function generateAIReference() {
+  if (aiReferencePanel.busy || !aiReferencePanel.project) return;
+  aiReferencePanel.busy = true; qs("#ai-reference-generate").disabled = true; qs("#ai-reference-message").textContent = "正在理解你的想法并整理参考建议…";
+  try {
+    aiReferencePanel.requestKey ||= `ai-reference-${aiReferencePanel.project}`;
+    const response = await api(`/api/projects/${encodeURIComponent(aiReferencePanel.project)}/ai-reference`, {method:"POST", body:JSON.stringify({idempotency_key: aiReferencePanel.requestKey})});
+    aiReferencePanel.referenceId = response.id; aiReferencePanel.result = response.result; aiReferencePanel.decisions = []; renderAIReference(); rememberAIReferenceDraft();
+    qs("#ai-reference-message").textContent = "AI参考已生成，请阅读后选择要采用、修改或忽略的内容。";
+  } catch (_) { qs("#ai-reference-message").textContent = "AI参考生成失败，请稍后重试；没有创建资料来源。"; }
+  finally { aiReferencePanel.busy = false; qs("#ai-reference-generate").disabled = false; }
+}
+async function applyAIReference() {
+  if (aiReferencePanel.busy || !aiReferencePanel.referenceId) return;
+  const decisions = [...qsa("#ai-reference-content select")].map((select) => ({category: select.dataset.aiCategory, item: select.dataset.aiItem, decision: select.value, rationale: qs(`[data-ai-rationale-for="${CSS.escape(select.dataset.aiItem)}"]`)?.value.trim() || ""}));
+  aiReferencePanel.decisions = decisions; rememberAIReferenceDraft(); qs("#ai-reference-message").textContent = "正在保存你的选择…";
+  try { await api(`/api/projects/${encodeURIComponent(aiReferencePanel.project)}/ai-reference/apply`, {method:"POST", body:JSON.stringify({reference_id: aiReferencePanel.referenceId, decisions})}); qs("#ai-reference-message").textContent = "已保存为项目中的待验证参考，不会自动变成证据。"; }
+  catch (_) { qs("#ai-reference-message").textContent = "保存选择失败，你当前的选择仍保留在本机恢复草稿中。"; }
 }
 
 // Only ephemeral per-project input here; this is not the cross-module draft system.
@@ -2161,6 +2245,7 @@ async function mutateCompetitors(path, options, adding = false) {
   }
 }
 function wireEvents() {
+  qs("#ai-reference-generate")?.addEventListener("click", () => void generateAIReference());
   qs("#competitor-open")?.addEventListener("click", openCompetitors);
   qs("#competitor-close")?.addEventListener("click", closeCompetitors);
   qs("#competitor-skip")?.addEventListener("click", skipCompetitorComparison);

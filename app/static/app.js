@@ -505,8 +505,11 @@ function showModelSettings() {
   window.ModelSettings?.open();
 }
 
-function activateView(view) {
+function activateView(view, {recordHistory = false} = {}) {
   const previousView = state.activeView;
+  if (recordHistory && state.currentProjectId && window.history?.pushState) {
+    window.history.pushState({projectId: state.currentProjectId, view}, "", `#view=${encodeURIComponent(view)}`);
+  }
   persistViewContext();
   secureSettingsExit();
   state.activeView = view;
@@ -1971,7 +1974,23 @@ async function exportHandoff() {
 }
 
 // Only ephemeral per-project input here; this is not the cross-module draft system.
-const competitorPanel = {project: null, opener: null, busy: false, revision: 0, drafts: new Map(), candidates: [], comparison: null};
+const competitorPanel = {project: null, opener: null, busy: false, revision: 0, drafts: new Map(), candidates: [], comparison: null, decisionDraft: null};
+function competitorDecisionDraftPayload() {
+  if (!competitorPanel.comparison) return null;
+  const decisions = [...qs("#competitor-decisions").querySelectorAll("select")].map(select => ({
+    candidate_id: select.dataset.candidateId,
+    decision: select.value,
+    rationale: qs(`[data-reason-for="${CSS.escape(select.dataset.candidateId)}"]`).value.trim(),
+  }));
+  return {comparison: competitorPanel.comparison, decisions};
+}
+function rememberCompetitorDecisionDraft() {
+  if (!competitorPanel.project) return;
+  const payload = competitorDecisionDraftPayload();
+  if (!payload) return;
+  competitorPanel.decisionDraft = payload;
+  queueUnifiedDraft(competitorPanel.project, "competitor_decision", "result", payload, {delay: 500});
+}
 function rememberCompetitorInput() {
   if (!competitorPanel.project) return;
   const payload = Object.fromEntries(["name", "url", "description"].map(key => [key, qs(`#competitor-${key}`).value]));
@@ -2009,6 +2028,12 @@ async function openCompetitors() {
   ["name", "url", "description"].forEach((key, i) => { qs(`#competitor-${key}`).value = draft[i]; });
   qs("#competitor-dialog").showModal();
   await loadCompetitors();
+  const recoveredResult = await loadUnifiedDraft(competitorPanel.project, "competitor_decision", "result").catch(() => null);
+  const resultPayload = preferredRecoveryPayload(recoveredResult);
+  if (resultPayload?.comparison) {
+    renderCompetitorComparison(resultPayload.comparison, resultPayload.decisions || []);
+    qs("#competitor-message").textContent = "已恢复上次未完成的比较参考，请继续确认你的决定。";
+  }
 }
 async function loadCompetitors() {
   const project = competitorPanel.project, revision = ++competitorPanel.revision;
@@ -2046,8 +2071,9 @@ async function loadCompetitors() {
     if (revision === competitorPanel.revision) qs("#competitor-message").textContent = "候选产品读取失败，请关闭后重新打开。你的输入仍保留在当前页面。";
   }
 }
-function renderCompetitorComparison(comparison) {
+function renderCompetitorComparison(comparison, savedDecisions = []) {
   competitorPanel.comparison = comparison;
+  competitorPanel.decisionDraft = {comparison, decisions: savedDecisions};
   const panel = qs("#competitor-comparison");
   const content = qs("#competitor-comparison-content");
   const decisions = qs("#competitor-decisions");
@@ -2067,7 +2093,12 @@ function renderCompetitorComparison(comparison) {
     const field = document.createElement("label"); field.textContent = `${item.name || "候选产品"}的决定`;
     const select = document.createElement("select"); select.dataset.candidateId = candidateId;
     [["adopt", "加入我的方案"], ["avoid", "这版先不做"], ["defer", "以后再考虑"]].forEach(([value, label]) => { const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option); });
+    const saved = savedDecisions.find(decision => decision.candidate_id === candidateId);
+    if (saved?.decision) select.value = saved.decision;
     const reason = document.createElement("input"); reason.type = "text"; reason.placeholder = "原因（可选）"; reason.dataset.reasonFor = candidateId;
+    if (saved?.rationale) reason.value = saved.rationale;
+    select.addEventListener("change", rememberCompetitorDecisionDraft);
+    reason.addEventListener("input", rememberCompetitorDecisionDraft);
     field.append(select, reason); decisions.append(field);
   });
 }
@@ -2079,6 +2110,7 @@ async function compareCompetitors() {
   try {
     const result = await api(`/api/projects/${encodeURIComponent(competitorPanel.project)}/competitor-comparisons`, {method:"POST", body:JSON.stringify({candidate_ids:selected})});
     renderCompetitorComparison(result);
+    rememberCompetitorDecisionDraft();
     qs("#competitor-message").textContent = "比较参考已生成，请先阅读并做出你的决定。";
   } catch(error) { qs("#competitor-message").textContent = "比较参考生成失败，请稍后重试。"; }
   finally { competitorPanel.busy = false; renderCompetitorBusy(); }
@@ -2184,7 +2216,11 @@ function wireEvents() {
   qs("#document-validate-selected")?.addEventListener("click", validateSelectedDocument);
   qs("#document-restore-selected")?.addEventListener("click", restoreSelectedDocument);
   qs("#document-export-selected")?.addEventListener("click", exportSelectedDocument);
-  qsa(".nav-item").forEach((button) => button.addEventListener("click", () => activateView(button.dataset.view)));
+  qsa(".nav-item").forEach((button) => button.addEventListener("click", () => activateView(button.dataset.view, {recordHistory: true})));
+  window.addEventListener("popstate", event => {
+    const view = event.state?.projectId === state.currentProjectId ? event.state.view : null;
+    if (view && WORKSPACE_VIEWS.has(view)) activateView(view);
+  });
   qsa("[data-evidence-tab]").forEach((button) => button.addEventListener("click", () => setEvidenceTab(button.dataset.evidenceTab)));
   qs("#add-evidence-form")?.addEventListener("submit", addEvidence);
   qs("#guided-evidence-form")?.addEventListener("submit", addGuidedEvidence);

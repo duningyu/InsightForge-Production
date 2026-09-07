@@ -200,3 +200,14 @@ fake传输一次、COMMITTED一次、无活动reservation。此组合更新为VE
 真实Chromium新验证GET /api/usage/policy驱动页面不限说明，刷新/换账号一致；
 不等于浏览器执行第4次生成。开放测试env示例实际离线加载并通过HTTP账号/policy验证。
 所有其他未完成矩阵项保留NOT_RUN；统一跨模块草稿及竞品候选接口NOT_IMPLEMENTED。
+
+## 当前增量覆盖（2026-09-07）
+
+统一草稿已由代码级与真实浏览器证据覆盖：`tests/test_unified_drafts.py` 验证服务端归属、
+revision/CAS、本地恢复副本与迟到响应上下文保护；`tests/draft_recovery_browser.cjs` 与
+`tests/run_draft_recovery_browser.py` 通过真实 Chromium + 隔离账号/数据库覆盖 generation、
+竞品比较恢复、登出隔离、双标签页冲突及历史前进后退。两份 runner 已纳入版本控制，测试资源均为
+合成数据，Provider/Search 均未进行真实请求。
+
+上述草稿流程当前 VERIFIED，且不重新打开账号批次。竞品完整 Chromium 串联、AI 补充思路、
+无资料人工确认交接及最终缩放/登录到交接 E2E 仍按统一进度文件跟踪。

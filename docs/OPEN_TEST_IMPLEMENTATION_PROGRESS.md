@@ -472,3 +472,26 @@ docs/03_整合与验收边界.md、CODEX_TASK.md。包内说明作为设计输�
 运行中worker重建、取消/失败回收组合及浏览器超过旧限额提交仍未验证。
 因此竞品功能最小接入尚未开始，不能把读包或前置测试写成竞品集成PASS。
 统一草稿、AI参考、无资料交接、完整中文/缩放/E2E仍按原依赖顺序待做；不新增重复清单。
+
+## 2026-09-07 草稿恢复真实 Chromium 收口
+
+本轮接续 `833771524cf6f697a638036181d17784075acf09`。审查了此前未跟踪的
+`tests/draft_recovery_browser.cjs` 与 `tests/run_draft_recovery_browser.py`：二者是正式的
+隔离草稿浏览器 runner，不是截图、trace、缓存或调试产物；未包含绝对工程路径、真实账号、
+凭据或真实数据库。它们已整理并纳入测试版本控制。Python runner 使用项目既有 bundled
+Node Playwright/Chromium 运行时，在隔离 ASGI 应用、合成账号、临时 SQLite/runtime 中运行；
+Provider 仅在 Adapter 传输边界使用 `httpx.MockTransport`，外部连接被 loopback tripwire 阻断。
+
+真实 Chromium 流程 fresh PASS：generation restore（generation POST=1、逻辑任务=1、
+fake generation transport=1、poll GET=11）；竞品比较恢复（comparison POST=1、fake comparison
+transport=1，结果/选择/未保存取舍可恢复）；Idea→竞品→PRD 的 back/forward 无新增动作 POST；
+迟到 draft 响应不污染另一账号页面；登出隔离和双标签页 HTTP/CAS 冲突均通过。
+
+本轮 fresh：`py -3.12 tests/run_draft_recovery_browser.py` PASS（外部连接0）；
+`py -3.12 tests/test_unified_drafts.py` PASS；`node tests/draft_recovery_behavior_harness.js`
+PASS；`py -3.12 tests/run_open_test_regressions.py` 为 146 passed、0 failed、0 skipped，
+network tripwire blocked_external_attempts=0、real_external_connections=0；JS syntax、
+compileall、git diff --check PASS。
+
+统一草稿恢复代码级能力及真实 Chromium 证据已收口；本轮不涉及真实 Provider/Search、生产部署、
+AI 补充思路或无资料人工确认交接。整体开放测试版本仍为 PARTIAL。

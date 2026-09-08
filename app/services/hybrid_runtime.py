@@ -14,6 +14,7 @@ from app.errors import (
 from app.schemas import (
     AIReferenceDraft,
     CompetitorComparisonDraft,
+    EvidenceGuidanceDraft,
     EvidenceRelationSetDraft,
     IdeaBriefDraft,
     QuickStartRequest,
@@ -33,6 +34,7 @@ PROVIDER_USAGE_OPERATIONS = {
     "analyze_evidence": "evidence_analysis",
     "compare_competitors": "solution_generation",
     "generate_ai_reference": "solution_generation",
+    "generate_evidence_guidance": "evidence_analysis",
 }
 SCHEMA_ERROR_CODES = {
     "invalid_content",
@@ -193,6 +195,9 @@ class _LocalGuidanceRuntime:
 
     def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
         return self._call("generate_ai_reference", context)
+
+    def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
+        return self._call("generate_evidence_guidance", context)
 
 
 class _ProfileStructuredRuntime:
@@ -404,6 +409,11 @@ class _ProfileStructuredRuntime:
             "generate_ai_reference", preserved_input=context, args=(context,)
         )
 
+    def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
+        return self._call(
+            "generate_evidence_guidance", preserved_input=context, args=(context,)
+        )
+
 
 class HybridStructuredRuntime:
     """Resolve exactly one configured profile for every project request."""
@@ -506,3 +516,7 @@ class HybridStructuredRuntime:
     def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
         runtime = self.for_project(context.get("project_id"))
         return runtime.generate_ai_reference(context)
+
+    def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
+        runtime = self.for_project(context.get("project_id"))
+        return runtime.generate_evidence_guidance(context)

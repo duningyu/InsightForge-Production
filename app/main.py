@@ -26,6 +26,7 @@ from app.schemas import (
     CompetitorSelectionRequest,
     AIReferenceGenerateRequest,
     AIReferenceApplyRequest,
+    EvidenceGuidanceGenerateRequest,
     CanonicalExampleResponse,
     EvidenceAnalyzeRequest,
     ExampleCopyResponse,
@@ -62,6 +63,7 @@ from app.services.projects import ProjectService
 from app.services.competitors import CompetitorService
 from app.services.competitor_decisions import CompetitorDecisionService
 from app.services.ai_reference import AIReferenceService
+from app.services.evidence_coach import EvidenceCoachService
 from app.errors import (
     BetaDailyLimitReached,
     ConflictError,
@@ -240,6 +242,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             db, application.state.projects
         )
         application.state.ai_reference = AIReferenceService(db)
+        application.state.evidence_coach = EvidenceCoachService(db)
         application.state.example_copies = ExampleCopyService(db)
         application.state.model_profiles = ModelProfileService(db)
         application.state.managed_model_registry = ManagedModelRegistry(
@@ -1344,6 +1347,39 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             reference_id=payload.reference_id,
             actor=competitor_actor(request),
             decisions=[item.model_dump() for item in payload.decisions],
+        )
+
+    @application.get("/api/projects/{project_id}/evidence-guidance")
+    def get_evidence_guidance(project_id: str, request: Request) -> dict[str, Any]:
+        # Authorize the project before checking whether guidance exists.  This
+        # keeps the response from revealing whether another workspace has
+        # generated action cards for the same local project id.
+        actor = competitor_actor(request)
+        application.state.projects.get_project(project_id)
+        row = application.state.db.fetch_one(
+            "SELECT id FROM evidence_guidance_results WHERE project_id=? ORDER BY created_at DESC LIMIT 1",
+            (project_id,),
+        )
+        if row is None:
+            return {"status": "not_started", "project_id": project_id}
+        return application.state.evidence_coach.get(project_id, row["id"], actor=actor)
+
+    @application.post("/api/projects/{project_id}/evidence-guidance", status_code=201)
+    def create_evidence_guidance(
+        project_id: str, payload: EvidenceGuidanceGenerateRequest, request: Request
+    ) -> dict[str, Any]:
+        # Resolve the project through the current authenticated workspace before
+        # invoking the model runtime.  The per-account child app already gives
+        # each account its own database, but this explicit lookup keeps this
+        # endpoint consistent with the other project-scoped writes and prevents
+        # a missing/foreign local id from reaching the runtime at all.
+        actor = competitor_actor(request)
+        application.state.projects.get_project(project_id)
+        return application.state.evidence_coach.generate(
+            project_id,
+            actor=actor,
+            runtime=application.state.structured_runtime.for_project(project_id),
+            idempotency_key=payload.idempotency_key,
         )
 
     @application.get("/api/source-guidance")

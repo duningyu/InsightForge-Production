@@ -17,6 +17,7 @@ from pydantic import BaseModel, ValidationError
 from app.schemas import (
     AIReferenceDraft,
     CompetitorComparisonDraft,
+    EvidenceGuidanceDraft,
     EvidenceRelationSetDraft,
     IdeaBriefDraft,
     QuickStartRequest,
@@ -677,6 +678,19 @@ class ModelAdapter:
             user=json.dumps(context, ensure_ascii=False),
         )
 
+    def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
+        return self._generate(
+            output_model=EvidenceGuidanceDraft,
+            system=(
+                "Generate concrete evidence action cards for the supplied product context. "
+                "Return only structured JSON. Do not browse, invent URLs or sources, claim user research, "
+                "or present AI suggestions as verified facts. Every card must say what to validate, who or "
+                "where to find, concrete action steps, acceptable artifacts, a fill template, decision impact, "
+                "fallback if unavailable, and limitations."
+            ),
+            user=json.dumps(context, ensure_ascii=False),
+        )
+
     def _content_from_response(self, body: dict[str, Any]) -> str:
         malformed = False
         content: Any = None
@@ -819,6 +833,18 @@ class AsyncModelAdapter(ModelAdapter):
                 "Return only structured JSON. Do not invent research, official facts, "
                 "statistics, sources, URLs, or user interviews; keep every suggestion "
                 "as an unverified hypothesis."
+            ),
+            user=json.dumps(context, ensure_ascii=False),
+        )
+
+    async def generate_evidence_guidance_async(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
+        return await self._generate_async(
+            output_model=EvidenceGuidanceDraft,
+            system=(
+                "Generate concrete evidence action cards for the supplied product context. "
+                "Return only structured JSON. Do not browse, invent URLs or sources, claim user research, "
+                "or present AI suggestions as verified facts. Every card must include concrete steps, "
+                "acceptable artifacts, a fill template, decision impact, fallback, and limitations."
             ),
             user=json.dumps(context, ensure_ascii=False),
         )

@@ -4,7 +4,11 @@ import json
 import uuid
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.db import Database, utc_now
+from app.errors import StructuredRuntimeUnavailableError
+from app.schemas import AIReferenceDraft
 from app.services.ai_runtime import sha256_payload
 
 
@@ -57,8 +61,16 @@ class AIReferenceService:
             if existing:
                 return self._row(existing)
         context = self.build_context(project_id)
-        result = runtime.generate_ai_reference(context)
-        result_json = result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
+        try:
+            result = runtime.generate_ai_reference(context)
+            parsed = result if isinstance(result, AIReferenceDraft) else AIReferenceDraft.model_validate(result)
+        except ValidationError as exc:
+            raise StructuredRuntimeUnavailableError(
+                "这次没有生成可用建议，请重新尝试。"
+            ) from exc
+        result_json = parsed.model_dump(mode="json")
+        if not any(result_json.get(category) for category in _CATEGORIES):
+            raise StructuredRuntimeUnavailableError("这次没有生成可用建议，请重新尝试。")
         result_json["uncertainty_notice"] = "AI生成参考，尚未经外部资料核实。"
         now = utc_now()
         result_id = f"ai_reference_{uuid.uuid4().hex}"

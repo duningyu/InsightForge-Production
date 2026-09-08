@@ -239,6 +239,18 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
 .evidence-form label { display: grid; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 750; }
 .evidence-content-field { grid-column: 1 / -2; }
 .evidence-form .button { align-self: end; }
+.evidence-coach-entry { margin-top: 10px; }
+.evidence-entry-disabled { display: inline-flex; align-items: center; min-height: 38px; padding: 9px 13px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); background: var(--surface-soft); font-size: 13px; font-weight: 700; cursor: not-allowed; }
+.evidence-coach-panel { margin-top: 16px; padding: 18px; border: 1px solid #c8d4ce; border-radius: 15px; background: var(--surface); }
+.evidence-coach-panel > .secondary-panel-heading { margin-bottom: 10px; }
+.evidence-coach-panel > .status-note { margin: 0 0 14px; }
+.evidence-coach-card { display: grid; gap: 12px; margin-top: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface-soft); }
+.evidence-coach-card h3 { margin: 0; font-size: 18px; }
+.evidence-coach-block { padding-top: 11px; border-top: 1px solid var(--line); }
+.evidence-coach-block h4 { margin: 0 0 5px; font-size: 12px; color: var(--ink); }
+.evidence-coach-block p, .evidence-coach-block ul { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+.evidence-coach-block ul { padding-left: 20px; }
+.evidence-coach-card .status-note { margin: 0; }
 .impact-row { display: grid; grid-template-columns: 140px minmax(0,1fr); gap: 14px; padding: 15px 0; border-bottom: 1px solid var(--line); }
 .impact-row p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .impact-label { color: var(--brand); font-size: 12px; font-weight: 850; }

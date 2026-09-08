@@ -122,6 +122,36 @@ class AIReferenceDraft(StrictModel):
     uncertainty_notice: str = "AI生成参考，尚未经外部资料核实。"
 
 
+class EvidenceActionCard(StrictModel):
+    """A concrete, optional plan for collecting useful project material.
+
+    This is guidance only.  It deliberately does not model a source, claim, or
+    verification result so generating the cards cannot create evidence by
+    accident.
+    """
+
+    title: str = Field(min_length=1, max_length=240)
+    question_to_validate: str = Field(min_length=1, max_length=2000)
+    why_it_matters: str = Field(min_length=1, max_length=2000)
+    who_or_where: list[str] = Field(default_factory=list, max_length=10)
+    action_steps: list[str] = Field(default_factory=list, max_length=10)
+    suggested_questions: list[str] = Field(default_factory=list, max_length=10)
+    acceptable_artifacts: list[str] = Field(default_factory=list, max_length=10)
+    fill_template: list[str] = Field(default_factory=list, max_length=20)
+    decision_impact: str = Field(min_length=1, max_length=2000)
+    fallback_if_unavailable: str = Field(min_length=1, max_length=2000)
+    limitations: str = Field(min_length=1, max_length=2000)
+
+
+class EvidenceGuidanceDraft(StrictModel):
+    cards: list[EvidenceActionCard] = Field(default_factory=list, max_length=5)
+    disclosure: str = "AI建议你去补这些资料，尚未加入项目资料，也不代表已经核实。"
+
+
+class EvidenceGuidanceGenerateRequest(StrictModel):
+    idempotency_key: str | None = Field(default=None, max_length=200)
+
+
 class AIReferenceGenerateRequest(StrictModel):
     idempotency_key: str | None = Field(default=None, max_length=200)
 

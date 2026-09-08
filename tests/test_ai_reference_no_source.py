@@ -1,6 +1,9 @@
 import json
 
+import pytest
+
 from app.db import Database
+from app.errors import StructuredRuntimeUnavailableError
 from app.schemas import AIReferenceDraft
 from app.services.ai_reference import AIReferenceService
 from app.services.document_versions import DocumentVersionService
@@ -39,6 +42,15 @@ class FakeReferenceRuntime:
         )
 
 
+class EmptyReferenceRuntime:
+    mode = "fake"
+    provider = "fake-transport"
+    model = "synthetic-model"
+
+    def generate_ai_reference(self, context):
+        return AIReferenceDraft()
+
+
 def test_ai_reference_is_bounded_and_not_a_source(tmp_path):
     db = Database(tmp_path / "reference.sqlite3")
     db.init_schema()
@@ -66,6 +78,24 @@ def test_ai_reference_is_bounded_and_not_a_source(tmp_path):
     assert applied["status"] == "applied"
     assert applied["decisions"][0]["provenance"] == "AI_REFERENCE"
     assert service.get_context(project_id, actor="synthetic-user")["adopted"][0]["item"] == "第一次找实习的学生"
+
+
+def test_empty_ai_reference_is_not_saved_as_success(tmp_path):
+    db = Database(tmp_path / "empty-reference.sqlite3")
+    db.init_schema()
+    project_id = ProjectService(db).create_project(
+        title="空结果项目", summary="用于验证空的 AI 参考不能伪装成功。", actor="synthetic-user"
+    )["id"]
+
+    with pytest.raises(StructuredRuntimeUnavailableError, match="没有生成可用建议"):
+        AIReferenceService(db).generate(
+            project_id, actor="synthetic-user", runtime=EmptyReferenceRuntime()
+        )
+
+    assert db.fetch_one(
+        "SELECT COUNT(*) AS n FROM ai_reference_results WHERE project_id=?", (project_id,)
+    )["n"] == 0
+    assert db.fetch_one("SELECT COUNT(*) AS n FROM sources WHERE project_id=?", (project_id,))["n"] == 0
 
 
 def test_no_source_disclosure_is_warning_but_structural_issue_still_blocks():

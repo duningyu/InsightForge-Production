@@ -26,10 +26,14 @@ class FakeElement {
     this.classList = new FakeClassList();
     this.listeners = new Map();
     this.attributes = new Map();
+    this.children = [];
     this.innerHTML = "";
     this.textContent = "";
   }
   addEventListener(name, callback) { this.listeners.set(name, callback); }
+  append(...children) { this.children.push(...children); }
+  appendChild(child) { this.children.push(child); return child; }
+  replaceChildren(...children) { this.children = children; this.innerHTML = ""; }
   async trigger(name, extra = {}) {
     const callback = this.listeners.get(name);
     if (!callback) throw new Error(`missing ${name} listener`);
@@ -90,6 +94,8 @@ global.window = {
   __INSIGHTFORGE_TEST__: true,
   confirm: () => true,
   ModelSettings: undefined,
+  addEventListener() {},
+  removeEventListener() {},
 };
 global.fetch = async (path) => ({
   ok: true,

@@ -1168,7 +1168,13 @@ function renderEvidenceEntryGuidance() {
   if (!panel) return;
   const mode = state.evidenceEntry.mode;
   if (!mode) {
-    panel.innerHTML = `<div class="evidence-entry-options"><button class="button button-secondary" data-evidence-entry="public_search" type="button">让 AI 帮我找公开资料</button><button class="button button-secondary" data-evidence-entry="own_material" type="button">我有自己的资料</button><button class="button button-quiet" data-evidence-entry="no_evidence" type="button">暂时没有，先继续</button></div><p class="muted">先选择资料入口；来源确认和项目校验仍由你决定。</p>`;
+    panel.innerHTML = `<div class="evidence-entry-options"><span class="evidence-entry-disabled" role="status">联网查找暂未开启</span><button class="button button-secondary" data-evidence-entry="own_material" type="button">我有自己的资料</button><button class="button button-quiet" data-evidence-entry="no_evidence" type="button">暂时没有，先继续</button></div><p class="muted">联网查找暂未开启，你可以先手动添加资料、记录已有产品，或者跳过这一步。</p>`;
+    return;
+  }
+  if (mode === "action_guidance") {
+    panel.innerHTML = '<div class="evidence-entry-choice"><strong>资料行动卡</strong><p>AI会把待确认判断整理成具体行动：找谁、问什么、拿到什么以及会影响哪个产品决定。</p><button id="evidence-guidance-generate" class="button button-primary" type="button">生成资料行动卡</button><button class="button button-quiet" data-evidence-entry="reset" type="button">返回入口选择</button></div>';
+    qs("#evidence-guidance-generate")?.addEventListener("click", () => void generateEvidenceGuidance());
+    renderEvidenceGuidance();
     return;
   }
   if (mode === "public_search") {
@@ -1186,6 +1192,10 @@ function renderEvidenceEntryGuidance() {
 function selectEvidenceEntry(mode) {
   state.evidenceEntry.mode = mode === "reset" ? null : mode;
   renderEvidenceEntryGuidance();
+  renderEvidenceGuidance();
+  if (state.currentProjectId) {
+    queueUnifiedDraft(state.currentProjectId, "evidence_guidance", "entry", {mode: state.evidenceEntry.mode}, {delay: 0});
+  }
   qs("#guided-evidence-form")?.addEventListener("submit", addGuidedEvidence);
   qsa("[data-evidence-entry]").forEach((button) => button.addEventListener("click", () => selectEvidenceEntry(button.dataset.evidenceEntry)));
 }
@@ -1203,10 +1213,140 @@ async function addGuidedEvidence(event) {
   } catch (error) { state.evidenceEntry.submitting = false; reportError(error); }
 }
 
+const evidenceGuidancePanel = {project: null, busy: false, result: null, guidanceId: null, requestKey: null};
+const evidenceGuidanceFields = [
+  ["要确认什么", "question_to_validate"],
+  ["为什么重要", "why_it_matters"],
+  ["找谁 / 去哪里", "who_or_where"],
+  ["具体怎么做", "action_steps"],
+  ["可以这样问", "suggested_questions"],
+  ["拿到什么就可以填写", "acceptable_artifacts"],
+  ["填写模板", "fill_template"],
+  ["会影响哪个产品决定", "decision_impact"],
+  ["暂时拿不到怎么办", "fallback_if_unavailable"],
+  ["这条材料的局限", "limitations"],
+];
+
+function appendEvidenceGuidanceBlock(parent, label, value) {
+  const block = document.createElement("section");
+  block.className = "evidence-coach-block";
+  const heading = document.createElement("h4");
+  heading.textContent = label;
+  block.append(heading);
+  if (Array.isArray(value)) {
+    const list = document.createElement("ul");
+    value.forEach((item) => {
+      const li = document.createElement("li");
+      li.textContent = String(item || "暂未确认");
+      list.append(li);
+    });
+    block.append(list);
+  } else {
+    const copy = document.createElement("p");
+    copy.textContent = String(value || "暂未确认");
+    block.append(copy);
+  }
+  parent.append(block);
+}
+
+function renderEvidenceGuidance() {
+  const panel = qs("#evidence-coach-panel");
+  const content = qs("#evidence-guidance-content");
+  const message = qs("#evidence-guidance-message");
+  if (!panel || !content || !message) return;
+  const active = state.evidenceEntry.mode === "action_guidance";
+  panel.classList.toggle("hidden", !active);
+  if (!active) return;
+  content.replaceChildren();
+  if (evidenceGuidancePanel.busy) {
+    message.textContent = "正在整理可以实际补充的资料…";
+    return;
+  }
+  const cards = Array.isArray(evidenceGuidancePanel.result?.cards) ? evidenceGuidancePanel.result.cards : [];
+  if (!cards.length) {
+    message.textContent = evidenceGuidancePanel.result
+      ? "这次没有生成可用的资料行动建议，请稍后重试；没有创建资料来源。"
+      : "点击“生成资料行动卡”，让 AI 帮你把待确认判断变成下一步行动。";
+    return;
+  }
+  message.textContent = "AI建议你去补这些资料，尚未加入项目资料，也不代表已经核实。";
+  cards.forEach((card, index) => {
+    const article = document.createElement("article");
+    article.className = "evidence-coach-card";
+    const title = document.createElement("h3");
+    title.textContent = "行动卡 " + (index + 1) + "： " + String(card.title || "待确认事项");
+    article.append(title);
+    evidenceGuidanceFields.forEach(([label, key]) => appendEvidenceGuidanceBlock(article, label, card[key]));
+    const status = document.createElement("p");
+    status.className = "status-note";
+    status.textContent = "AI建议，仍需你结合实际情况判断；这不是已验证资料。";
+    article.append(status);
+    content.append(article);
+  });
+}
+
+async function loadEvidenceGuidance() {
+  const project = state.currentProjectId;
+  evidenceGuidancePanel.project = project;
+  evidenceGuidancePanel.busy = false;
+  evidenceGuidancePanel.result = null;
+  evidenceGuidancePanel.guidanceId = null;
+  evidenceGuidancePanel.requestKey = project ? "evidence-guidance-" + project : null;
+  if (!project) {
+    renderEvidenceGuidance();
+    return;
+  }
+  try {
+    const recoveredEntry = preferredRecoveryPayload(await loadUnifiedDraft(project, "evidence_guidance", "entry"));
+    if (recoveredEntry?.mode) state.evidenceEntry.mode = recoveredEntry.mode;
+  } catch (_) {}
+  try {
+    const stored = await api("/api/projects/" + encodeURIComponent(project) + "/evidence-guidance");
+    if (stored?.status === "completed" && stored.result?.cards?.length) {
+      evidenceGuidancePanel.result = stored.result;
+      evidenceGuidancePanel.guidanceId = stored.id || null;
+    }
+  } catch (_) {}
+  if (!evidenceGuidancePanel.result) {
+    try {
+      const recoveredResult = preferredRecoveryPayload(await loadUnifiedDraft(project, "evidence_guidance", "result"));
+      if (recoveredResult?.result?.cards?.length) evidenceGuidancePanel.result = recoveredResult.result;
+    } catch (_) {}
+  }
+  renderEvidenceEntryGuidance();
+  renderEvidenceGuidance();
+}
+
+async function generateEvidenceGuidance() {
+  if (!state.currentProjectId || evidenceGuidancePanel.busy) return;
+  evidenceGuidancePanel.project = state.currentProjectId;
+  evidenceGuidancePanel.busy = true;
+  evidenceGuidancePanel.requestKey ||= "evidence-guidance-" + state.currentProjectId;
+  renderEvidenceGuidance();
+  try {
+    const response = await api("/api/projects/" + encodeURIComponent(state.currentProjectId) + "/evidence-guidance", {
+      method: "POST",
+      body: JSON.stringify({idempotency_key: evidenceGuidancePanel.requestKey}),
+    });
+    evidenceGuidancePanel.result = response?.result || null;
+    evidenceGuidancePanel.guidanceId = response?.id || null;
+    await queueUnifiedDraft(state.currentProjectId, "evidence_guidance", "result", {result: evidenceGuidancePanel.result}, {delay: 0});
+    renderEvidenceGuidance();
+  } catch (_) {
+    evidenceGuidancePanel.result = null;
+    const message = qs("#evidence-guidance-message");
+    if (message) message.textContent = "这次没有生成可用的资料行动建议，请稍后重试；没有创建资料来源。";
+  } finally {
+    evidenceGuidancePanel.busy = false;
+    renderEvidenceGuidance();
+  }
+}
+
 function renderEvidence() {
   renderEvidenceClaims();
   renderImpactHistory();
   renderEvidenceEntryGuidance();
+  renderEvidenceGuidance();
   qs("#guided-evidence-form")?.addEventListener("submit", addGuidedEvidence);
   qsa("[data-evidence-entry]").forEach((button) => button.addEventListener("click", () => selectEvidenceEntry(button.dataset.evidenceEntry)));
   renderSourceLibrary();
@@ -1549,7 +1689,7 @@ function renderHandoff() {
     <section class="handoff-section"><h3>明确不做</h3>${detailList("本版暂不包含", nonGoals.length ? nonGoals : ["当前 Snapshot 暂未声明额外非目标；交接前不要擅自扩展范围。"])}</section>
     <section class="handoff-section"><h3>实施任务</h3>${detailList("实施顺序", implementationTasks)}</section>
     <section class="handoff-section"><h3>验收案例</h3>${detailList("验收案例", acceptanceCases)}</section>
-    <section class="handoff-section"><h3>已确认文档</h3><div class="handoff-docs"><span>PRD：${escapeHtml(docSummary.prd?.id || "未确认")}</span><span>TechDoc：${escapeHtml(docSummary.techdoc?.id || "未确认")}</span></div></section>
+    <section class="handoff-section"><h3>已确认文档</h3><div class="handoff-docs"><span>PRD：${escapeHtml(handoffDocumentLabel(docSummary.prd))}</span><span>TechDoc：${escapeHtml(handoffDocumentLabel(docSummary.techdoc))}</span></div></section>
     <section class="handoff-section"><h3>仍需确认的事项</h3>${unresolved.length ? detailList("事项", unresolved.map((item) => `${item.item}；${item.why}；建议：${item.how_to_verify}`)) : "<p>当前没有从文档中提取到待确认事项；资料是否充分仍需按实际来源判断。</p>"}${acknowledgementBlock}</section>
     <section class="handoff-section"><h3>未解决风险</h3>${detailList("仍需确认", risks.length ? risks : ["当前 Snapshot 未记录关键未知项。"])}${missing.length ? detailList("阻塞项", missing.map((item) => item.message)) : ""}</section>
     <section class="handoff-section"><h3>复制/导出</h3><div class="handoff-actions"><button id="copy-handoff-button" class="button button-secondary" type="button">复制当前开发上下文</button><button id="export-handoff-button" class="button button-primary" type="button" ${h?.ready ? "" : "disabled"}>导出 Codex 交接包</button><button id="load-handoff-button" class="button button-quiet" type="button">重新检查准备度</button></div></section>
@@ -1559,6 +1699,12 @@ function renderHandoff() {
   qs("#export-handoff-button")?.addEventListener("click", exportHandoff);
   qs("#handoff-unresolved-confirm")?.addEventListener("change", (event) => { qs("#handoff-acknowledge-button").disabled = !event.target.checked; });
   qs("#handoff-acknowledge-button")?.addEventListener("click", acknowledgeUnresolvedHandoff);
+}
+
+function handoffDocumentLabel(documentSummary) {
+  if (!documentSummary || !(documentSummary.version_id || documentSummary.id)) return "未确认";
+  const version = documentSummary.version ? ` v${documentSummary.version}` : "";
+  return `已确认${version}`;
 }
 
 async function acknowledgeUnresolvedHandoff() {
@@ -1830,6 +1976,7 @@ async function loadProject(projectId) {
     state.generationIntentId = null;
     state.generationTerminalFailure = false;
   }
+  state.evidenceEntry = {mode: null, submitting: false, pending: false};
   state.currentProjectId = projectId;
   state.documentWorkspace = {...state.documentWorkspace, versions: [], selectedVersionId: null, compareVersionId: null, draft: null, dirty: false, error: null};
   renderProjectPicker();
@@ -1857,7 +2004,7 @@ async function loadProject(projectId) {
       activateView(context.activeView);
     }
   } catch (_) { /* recovery must not prevent the project from opening */ }
-  await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadAIReference(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough()]);
+  await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadAIReference(), loadEvidenceGuidance(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough()]);
 }
 
 async function loadEvidenceData() {
@@ -2257,6 +2404,7 @@ async function mutateCompetitors(path, options, adding = false) {
 }
 function wireEvents() {
   qs("#ai-reference-generate")?.addEventListener("click", () => void generateAIReference());
+  qs("#evidence-coach-open")?.addEventListener("click", () => selectEvidenceEntry("action_guidance"));
   qs("#competitor-open")?.addEventListener("click", openCompetitors);
   qs("#competitor-close")?.addEventListener("click", closeCompetitors);
   qs("#competitor-skip")?.addEventListener("click", skipCompetitorComparison);
@@ -2358,6 +2506,9 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     loadDocumentWorkspace,
     renderDocumentWorkspace,
     renderEvidenceEntryGuidance,
+    renderEvidenceGuidance,
+    loadEvidenceGuidance,
+    generateEvidenceGuidance,
     selectEvidenceEntry,
     addGuidedEvidence,
     createGuidanceNavigator,

@@ -1,5 +1,17 @@
 # 开放测试改版：源码增量与未完成边界
 
+## 当前状态摘要（UX Evidence Coach 增量接入，2026-09-08）
+
+本轮基于 `2c0849513beb5e87a94d9f8aed8f37c4d07126e2` 的后继工作区，读取并审查了用户提供的 `InsightForge_UX_EvidenceCoach_PatchKit_20260907.zip`。参考包仅用于规则、字段和界面模式对照，没有覆盖当前工程源码，没有导入 demo 数据/数据库，也没有改变账号、workspace、统一草稿、文档版本、竞品快照、Provider Adapter 或交接的既有权威机制。
+
+- 已接入资料行动卡：复用当前项目上下文与同一结构化模型 runtime/Provider Adapter，一次有界批处理生成具体的“要确认什么、找谁/去哪里、怎么做、可填写材料、填写模板、影响哪个产品决定、拿不到时怎么办、局限”；结果作为 AI 建议保存，不创建 source，不升级为证据。
+- AI 参考结果增加结构化响应校验：空结果或不符合 schema 时返回真实失败，不显示“已生成”；前端使用安全文本节点渲染，不执行模型 HTML。搜索未配置时继续显示诚实说明并禁用联网查找入口，只保留手动资料和跳过路径。
+- 资料行动卡 GET/POST 先通过当前认证身份和项目归属校验，再读取/生成；幂等重放复用同一结果。现有文档确认/Handoff 状态同步和既有用户优先 UX 回归保持通过。
+- 真实 Chromium 资料行动卡/AI参考/无资料交接流程 PASS：AI参考 POST `1`、资料行动卡 POST `1`、方案生成 POST `1`、fake Provider 调用 `brief=1, ai=1, evidence_guidance=1, generation=1`；模块/刷新恢复不重复生成，source 数量保持 0，页面错误与未预期 HTTP/console 错误均为 0，外部连接为 0。
+- Fresh 回归：资料行动卡/AI参考/文档 UX 定向后端 `15 passed`；`py -3.12 tests/run_open_test_regressions.py` 为 `152 passed`，外部连接拦截/实际外部连接均为 0；账号 Chromium、final UI/布局/缩放、加载/文档/方案/草稿/任务行为夹具、JS syntax、compileall、diff check 均通过。
+- 生产边界：未部署、未修改生产 runtime/data、未读取真实凭据、未调用真实 Provider/Search；工作区在提交后应保持 CLEAN。整体开放测试状态仍按既有未完成范围报告为 `INSIGHTFORGE_USER_FIRST_OPEN_TEST_IMPLEMENTATION_PARTIAL`。
+- 本轮涉及的实际映射：模型调用为 `app/services/ai_reference.py`、`app/services/ai_runtime.py`、`app/services/hybrid_runtime.py`、`app/services/provider_adapters.py`；资料行动卡服务为 `app/services/evidence_coach.py`，路由为 `app/main.py` 的 `/api/projects/{project_id}/evidence-guidance`；持久化由 `app/db.py` 的 `evidence_guidance_results` 提供；页面/样式为 `app/static/app.js`、`app/static/index.html`、`app/static/styles.css`；测试为 `tests/test_evidence_coach.py` 与 `tests/run_ai_reference_no_source_browser.py`/`.cjs`。
+
 ## 当前状态摘要（最终中文与认证交接收口）
 
 当前开发依据：`52fd693c9574e465cab8b51171d2eb18615029bd` 的后继工作区；本轮最终收口修复与验证已完成，未部署。

@@ -110,6 +110,20 @@ CREATE TABLE IF NOT EXISTS ai_reference_adoptions (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_reference_adoptions_project
     ON ai_reference_adoptions(project_id, created_at);
+CREATE TABLE IF NOT EXISTS evidence_guidance_results (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    created_by TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL,
+    idempotency_key TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(project_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_guidance_results_project
+    ON evidence_guidance_results(project_id, created_at);
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,

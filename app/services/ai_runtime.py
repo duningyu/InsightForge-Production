@@ -14,6 +14,7 @@ from app.schemas import (
     CompetitorComparisonDraft,
     CompetitorComparisonItem,
     CompetitorProjectLevel,
+    EvidenceGuidanceDraft,
     EvidenceRelationSetDraft,
     IdeaBriefDraft,
     QuickStartRequest,
@@ -49,6 +50,8 @@ class StructuredAIRuntime(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft: ...
+
+    def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft: ...
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -226,6 +229,26 @@ class DeterministicDemoRuntime:
             research_directions=["访谈目标用户并观察他们当前的替代做法"],
         )
 
+    def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
+        idea = str(context.get("idea") or "当前项目想法")
+        return EvidenceGuidanceDraft(
+            cards=[
+                {
+                    "title": "找一次真实的使用或受阻经历",
+                    "question_to_validate": f"有明确场景的人是否真的会遇到“{idea[:40]}”相关问题？",
+                    "why_it_matters": "这能帮助你判断第一版是否应该优先解决这个问题。",
+                    "who_or_where": ["最近遇到过类似场景的人", "相关社区或线下交流场合"],
+                    "action_steps": ["请对方回忆最近一次具体经历", "记录当时怎么做、哪里卡住"],
+                    "suggested_questions": ["最近一次发生在什么时候？", "当时你是怎么处理的？"],
+                    "acceptable_artifacts": ["一段匿名原话", "当前做法的简短说明"],
+                    "fill_template": ["对象：", "时间和场景：", "现在怎样处理：", "对方原话：", "这是原话还是我的理解："],
+                    "decision_impact": "帮助判断MVP应解决的核心步骤，以及哪些功能可以先不做。",
+                    "fallback_if_unavailable": "如果暂时找不到合适的人，先记录自己的观察，并明确标为待确认。",
+                    "limitations": "少量个人经历不能代表全部目标用户或市场事实。",
+                }
+            ]
+        )
+
 
 class OpenAIStructuredRuntime:
     mode: RuntimeMode = "llm_structured"
@@ -382,6 +405,31 @@ class OpenAIStructuredRuntime:
             raise StructuredRuntimeUnavailableError("STRUCTURED_LLM_EMPTY_OUTPUT")
         return parsed
 
+    def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
+        self.model_rounds_used = 1
+        system = (
+            "Generate a bounded set of concrete evidence action cards for a product idea. "
+            "Return only the requested structured schema. Do not search the web, invent sources, "
+            "claim user research, or turn suggestions into evidence. Every card must include "
+            "what to validate, who or where to find, concrete steps, acceptable artifacts, a fill template, "
+            "decision impact, a fallback, and limitations."
+        )
+        try:
+            response = self.client.responses.parse(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+                ],
+                text_format=EvidenceGuidanceDraft,
+            )
+            parsed = response.output_parsed
+        except Exception as exc:  # pragma: no cover - live adapter
+            raise StructuredRuntimeUnavailableError(f"STRUCTURED_LLM_CALL_FAILED: {exc}") from exc
+        if parsed is None:
+            raise StructuredRuntimeUnavailableError("STRUCTURED_LLM_EMPTY_OUTPUT")
+        return parsed
+
 
 class ManagedQwenStructuredRuntime:
     """Use only the deployment-managed Bailian credential, never a demo fallback."""
@@ -471,6 +519,7 @@ class ManagedQwenStructuredRuntime:
             "analyze_evidence": "evidence_analysis",
             "compare_competitors": "solution_generation",
             "generate_ai_reference": "solution_generation",
+            "generate_evidence_guidance": "evidence_analysis",
         }.get(method)
         reservation = None
         if operation is not None and self._before_provider_call is not None:
@@ -528,7 +577,7 @@ class ManagedQwenStructuredRuntime:
     async def _call_async(self, method: str, *args: Any, **kwargs: Any) -> Any:
         self.model_rounds_used = 1
         dispatch_control = kwargs.pop("dispatch_control", None)
-        operation = {"design_solutions": "solution_generation", "analyze_evidence": "evidence_analysis", "generate_ai_reference": "solution_generation"}.get(method)
+        operation = {"design_solutions": "solution_generation", "analyze_evidence": "evidence_analysis", "generate_ai_reference": "solution_generation", "generate_evidence_guidance": "evidence_analysis"}.get(method)
         reservation = None
         if operation is not None and self._before_provider_call is not None:
             reservation = self._before_provider_call(operation)
@@ -601,6 +650,9 @@ class ManagedQwenStructuredRuntime:
 
     def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
         return self._call("generate_ai_reference", context)
+
+    def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
+        return self._call("generate_evidence_guidance", context)
 
     async def async_design_solutions(self, brief: IdeaBriefDraft, *, generation_intent_id: str | None = None, generation_run_id: str | None = None, dispatch_control: DispatchControlContext | None = None) -> SolutionSetDraft:
         return await self._call_async("design_solutions", brief, dispatch_control=dispatch_control, _generation_intent_id=generation_intent_id, _generation_run_id=generation_run_id)

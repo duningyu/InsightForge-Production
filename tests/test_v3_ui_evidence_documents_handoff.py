@@ -44,8 +44,9 @@ def test_impact_history_exposes_support_weaken_conflict_unresolved_and_human_pro
 
 def test_handoff_orders_executable_content_before_mcp_controls():
     js = (STATIC / "app.js").read_text(encoding="utf-8")
-    tokens = ["MVP 范围", "明确不做", "Implementation Tasks", "Acceptance Cases", "已确认文档", "未解决风险", "复制/导出", "高级：MCP"]
-    positions = [js.index(token) for token in tokens]
+    handoff = js[js.index('qs("#handoff-content")'):]
+    tokens = ["MVP 范围", "明确不做", "实施任务", "验收案例", "已确认文档", "未解决风险", "复制/导出", "高级：MCP"]
+    positions = [handoff.index(token) for token in tokens]
     assert positions == sorted(positions)
 
 

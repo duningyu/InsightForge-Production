@@ -33,6 +33,7 @@ include = ["app*"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = ["integration: uses disposable local services such as Docker"]
 
 [tool.setuptools.package-data]
 app = ["static/*"]

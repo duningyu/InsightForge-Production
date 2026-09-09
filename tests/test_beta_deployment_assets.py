@@ -104,6 +104,34 @@ def test_caddy_renderer_rejects_plaintext_passwords():
     assert "CADDY_HASH_REQUIRED" in result.stdout + result.stderr
 
 
+def test_caddy_renderer_accepts_existing_user_and_beta003_verifier_for_one_participant():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "render_beta_caddy.py"),
+            "--template",
+            str(ROOT / "deploy" / "beta" / "Caddyfile.template"),
+            "--public-ip",
+            "203.0.113.10",
+            "--credential",
+            "beta_003:existing003:$2b$12$C6UzMDM.H6dfI/f/IKcEe.9zJkVTdgi0QoM6JSlrMju7Wn3F6oN6C",
+            "--credential",
+            "beta_003:deployment_verifier:$2b$12$C6UzMDM.H6dfI/f/IKcEe.9zJkVTdgi0QoM6JSlrMju7Wn3F6oN6C",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    rendered = result.stdout
+    assert rendered.count("basic_auth {") == 1
+    assert "existing003 $2b$12$C6UzMDM.H6df" in rendered
+    assert "deployment_verifier $2b$12$C6UzMDM.H6df" in rendered
+
+
 def test_phase_a_artifact_builder_excludes_all_private_runtime_material(tmp_path):
     fixture_root = tmp_path / "source"
     (fixture_root / "app" / "static").mkdir(parents=True)

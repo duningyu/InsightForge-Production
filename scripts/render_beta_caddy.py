@@ -33,16 +33,23 @@ def _credential(value: str) -> tuple[str, str, str]:
 def render(template: str, *, public_ip: str, credentials: list[str]) -> str:
     ipaddress.ip_address(public_ip)
     parsed = [_credential(item) for item in credentials]
-    participants = [item[0] for item in parsed]
-    if len(set(participants)) != len(participants):
-        raise ValueError("CADDY_DUPLICATE_PARTICIPANT")
+    identities_by_participant: dict[str, list[tuple[str, str]]] = {}
+    for participant, username, password_hash in parsed:
+        identities = identities_by_participant.setdefault(participant, [])
+        if any(existing_username == username for existing_username, _ in identities):
+            raise ValueError("CADDY_DUPLICATE_USERNAME")
+        identities.append((username, password_hash))
     blocks = []
-    for participant, username, password_hash in sorted(parsed):
+    for participant in sorted(identities_by_participant):
         service = participant.replace("_", "")
+        auth_lines = "\n".join(
+            f"    {username} {password_hash}"
+            for username, password_hash in identities_by_participant[participant]
+        )
         blocks.append(
             f"{service}.{public_ip}.nip.io {{\n"
             "  basic_auth {\n"
-            f"    {username} {password_hash}\n"
+            f"{auth_lines}\n"
             "  }\n"
             f"  reverse_proxy {service}:8000\n"
             "}"

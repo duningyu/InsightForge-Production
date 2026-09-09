@@ -133,11 +133,20 @@ function visibleRect(page, selector) {
         }).filter((item) => item.visible);
         const header = ['#home-button', '#settings-button', '#project-context', '#account-controls', '#mobile-nav-button'].flatMap(rect);
         const headerOverlap = header.some((a, i) => header.slice(i + 1).some((b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top));
+        const headerControls = Array.from(document.querySelectorAll('#project-select, #project-model-profile, #new-idea-button, #account-new-project, #account-logout')).map((node) => {
+          const r = node.getBoundingClientRect();
+          const s = getComputedStyle(node);
+          return {id: node.id, top: r.top, bottom: r.bottom, height: r.height, whiteSpace: s.whiteSpace, visible: s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0};
+        }).filter((item) => item.visible);
         const cols = getComputedStyle(document.querySelector('.solution-grid')).gridTemplateColumns.split(' ').length;
-        return {overflow: document.documentElement.scrollWidth > innerWidth + 1, headerOverlap, header, solutionColumns: cols, cards: rect('.solution-card, .document-card, .handoff-section')};
+        return {overflow: document.documentElement.scrollWidth > innerWidth + 1, headerOverlap, header, headerControls, solutionColumns: cols, cards: rect('.solution-card, .document-card, .handoff-section')};
       });
       if (metrics.overflow) failures.push(`${viewport.name}: horizontal overflow`);
       if (metrics.headerOverlap) failures.push(`${viewport.name}: top account/header controls overlap`);
+      for (const control of metrics.headerControls) {
+        if (control.whiteSpace !== 'nowrap') failures.push(`${viewport.name}: ${control.id} may wrap header text`);
+        if (control.height > 52) failures.push(`${viewport.name}: ${control.id} is vertically compressed (${control.height}px)`);
+      }
       if (viewport.width >= 1200 && metrics.solutionColumns < 2) failures.push(`${viewport.name}: result grid collapsed unexpectedly`);
       if (metrics.cards.some((r) => r.right > viewport.width + 1 || r.left < -1)) failures.push(`${viewport.name}: result card escapes viewport`);
       results.push({...viewport, ...metrics});

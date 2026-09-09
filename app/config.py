@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 class Settings:
     app_name: str = "InsightForge"
     app_version: str = "3.0.0"
+    data_root: Path = Path(".")
     database_path: Path = Path("data/insightforge.sqlite3")
     max_loop_rounds: int = 2
     default_top_k: int = 8
@@ -36,10 +37,18 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        data_root_value = os.getenv("INSIGHTFORGE_DATA_ROOT")
+        data_root = Path(data_root_value) if data_root_value else Path(".")
+        database_value = os.getenv("INSIGHTFORGE_DATABASE_PATH")
+        runtime_value = os.getenv("RUNTIME_DIR")
+        accounts_value = os.getenv("INSIGHTFORGE_ACCOUNTS_DIR")
         settings = cls(
             app_name=os.getenv("INSIGHTFORGE_APP_NAME", "InsightForge"),
             app_version=os.getenv("INSIGHTFORGE_APP_VERSION", "3.0.0"),
-            database_path=Path(os.getenv("INSIGHTFORGE_DATABASE_PATH", "data/insightforge.sqlite3")),
+            data_root=data_root,
+            database_path=Path(database_value) if database_value else (
+                data_root / "insightforge.sqlite3" if data_root_value else Path("data/insightforge.sqlite3")
+            ),
             max_loop_rounds=int(os.getenv("INSIGHTFORGE_MAX_LOOP_ROUNDS", "2")),
             default_top_k=int(os.getenv("INSIGHTFORGE_DEFAULT_TOP_K", "8")),
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6"),
@@ -59,9 +68,13 @@ class Settings:
             beta_session_cookie_secure=os.getenv("BETA_SESSION_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes"},
             beta_timezone=os.getenv("BETA_TIMEZONE", "Asia/Shanghai"),
             daily_user_limits_enabled=os.getenv("INSIGHTFORGE_DAILY_USER_LIMITS_ENABLED", "false").strip().lower() in {"1", "true", "yes"},
-            runtime_dir=Path(os.getenv("RUNTIME_DIR", "runtime")),
+            runtime_dir=Path(runtime_value) if runtime_value else (
+                data_root / "runtime" if data_root_value else Path("runtime")
+            ),
             accounts_enabled=os.getenv("INSIGHTFORGE_ACCOUNTS_ENABLED", "false").lower() == "true",
-            accounts_dir=Path(os.getenv("INSIGHTFORGE_ACCOUNTS_DIR", "data/accounts")),
+            accounts_dir=Path(accounts_value) if accounts_value else (
+                data_root / "accounts" if data_root_value else Path("data/accounts")
+            ),
         )
         if not 1 <= settings.max_loop_rounds <= 5:
             raise ValueError("INSIGHTFORGE_MAX_LOOP_ROUNDS must be in [1, 5]")

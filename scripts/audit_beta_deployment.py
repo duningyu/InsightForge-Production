@@ -24,6 +24,12 @@ DOCKERIGNORE_REQUIRED = {
     "data/*.sqlite",
     "data/*.sqlite3",
     "beta_invites_private.csv",
+    "private/",
+    "private_backups/",
+    "credentials/",
+    "*.pem",
+    "*.key",
+    "*.secret",
 }
 
 
@@ -35,8 +41,12 @@ def audit(project_root: Path) -> list[str]:
         required = {
             "pinned_python": "FROM python:3.12." in content,
             "non_root": "USER insightforge" in content,
-            "bind_all_container_interfaces": '"--host", "0.0.0.0"' in content,
-            "port_8000": '"--port", "8000"' in content,
+            "bind_all_container_interfaces": '0.0.0.0' in content,
+            "port_contract": (
+                'PORT:-8000' in content
+                or "os.getenv('PORT'" in content
+                or (relative == "deploy/beta/Dockerfile" and '"--port", "8000"' in content)
+            ),
             "healthcheck": "HEALTHCHECK" in content and "/api/health" in content,
             "no_copy_dot": "COPY . " not in content and "COPY .\n" not in content,
             "no_key_bake": "API_KEY" not in content and "Authorization" not in content,

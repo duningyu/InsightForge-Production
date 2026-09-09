@@ -18,6 +18,15 @@ artifacts
 !.env.example
 reports/
 backups/
+private/
+private_backups/
+**/private/
+**/private_backups/
+credentials/
+**/credentials/
+*.pem
+*.key
+*.secret
 runtime/
 data/*.db
 data/*.sqlite

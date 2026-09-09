@@ -59,7 +59,8 @@ def test_v3_document_generation_requires_current_snapshot(client):
         json={"doc_type": "prd", "idempotency_key": "v3-no-snapshot"},
     )
     assert response.status_code == 422
-    assert "snapshot" in response.json()["detail"].lower()
+    assert response.json()["error_code"] == "PROJECT_SNAPSHOT_REQUIRED"
+    assert "确认当前项目版本" in response.json()["detail"]
 
 
 def test_v3_document_generation_records_snapshot_claim_source_dependencies_and_health(client):

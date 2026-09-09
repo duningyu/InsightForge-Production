@@ -182,16 +182,87 @@ function toast(message) {
 
 function isStructuredRuntimeFailure(error) {
   const message = String(error?.message || "");
-  return /STRUCTURED_|OPENAI_API_KEY|DETERMINISTIC_DEMO_UNSUPPORTED|CLARIFICATION_REQUIRED/.test(message);
+  return error?.code === "STRUCTURED_RUNTIME_UNAVAILABLE" || /STRUCTURED_|OPENAI_API_KEY|DETERMINISTIC_DEMO_UNSUPPORTED|CLARIFICATION_REQUIRED/.test(message);
+}
+
+function technicalErrorMessage(error) {
+  return String(error?.payload?.detail || error?.payload?.message || error?.message || error?.detail || error?.error_code || "").trim();
+}
+
+function stableErrorCode(error) {
+  const code = String(error?.code || error?.payload?.error_code || error?.error_code || "").trim();
+  const raw = technicalErrorMessage(error).toLowerCase();
+  if (code) {
+    return /^[A-Z][A-Z0-9_]{2,}$/.test(code) ? code : "RUNTIME_OPERATION_FAILED";
+  }
+  if (/structured_|openai_api_key|deterministic_demo_unsupported|managed_qwen/.test(raw)) return "STRUCTURED_RUNTIME_UNAVAILABLE";
+  if (/competitor snapshot is required|confirmed competitor snapshot/.test(raw)) return "COMPETITOR_SNAPSHOT_REQUIRED";
+  if (/snapshot is not part of this project|competitor snapshot is not part/.test(raw)) return "COMPETITOR_SNAPSHOT_NOT_FOUND";
+  if (/timeout|timed out|超时/.test(raw)) return "MODEL_TIMEOUT";
+  if (/traceback|exception|keyerror|valueerror|sql|\\app\\|\/app\//.test(raw)) return "RUNTIME_OPERATION_FAILED";
+  return "RUNTIME_OPERATION_FAILED";
+}
+
+function humanizeErrorMessage(error, fallback = "这次操作没有完成，请稍后重试。") {
+  const code = String(error?.code || error?.payload?.error_code || error?.error_code || "");
+  const raw = technicalErrorMessage(error);
+  if (code === "STRUCTURED_RUNTIME_UNAVAILABLE" || /STRUCTURED_|OPENAI_API_KEY|DETERMINISTIC_DEMO_UNSUPPORTED|MANAGED_QWEN/.test(raw)) {
+    return "AI参考这次没有生成可用内容，请稍后重试。你的项目内容未被改成资料。";
+  }
+  if (code === "COMPETITOR_SNAPSHOT_REQUIRED" || /confirmed competitor snapshot|competitor snapshot is required|competitor snapshot is not part of this project|snapshot is not part of this project|竞品决策信息/.test(raw)) {
+    return "当前方案缺少竞品决策信息。请返回方案页重新确认；如果本次不需要竞品比较，可以选择暂时跳过。";
+  }
+  if (/current confirmed snapshot|current confirmed Snapshot|confirmed Snapshot is required/i.test(raw)) {
+    return "当前项目还没有可用的方案快照，请先完成方案选择后再生成文档。";
+  }
+  if (code === "MODEL_TIMEOUT" || /timeout|timed out|超时/i.test(raw)) return "AI服务本次响应超时，你的输入已保留，请稍后重试。";
+  if (code === "PROVIDER_FAILURE") return "AI服务暂时无法完成请求，你的输入已保留，请稍后重试。";
+  if (code === "GENERATION_PENDING") return "本次生成仍在处理中，请稍候查看结果。";
+  if (code === "SOLUTION_GENERATION_IN_PROGRESS") return "正在生成方案，请稍候。";
+  if (code === "IDEA_BRIEF_REQUIRED" || code === "IDEA_BRIEF_NOT_CONFIRMED") return "请先完善并确认项目定义，再生成方案。";
+  if (code === "BETA_DAILY_LIMIT_REACHED") return "今日可用次数已用尽，其他项目资料不会受到影响。";
+  return fallback;
+}
+
+function humanizeRecoveryAction(action) {
+  const value = String(action || "").trim();
+  if (!value) return "";
+  const known = {
+    retry: "稍后重试",
+    retry_generation: "稍后重新生成",
+    review_project: "返回项目页检查当前输入",
+    check_model: "检查模型配置后重试",
+    add_evidence: "补充相关资料后再试",
+  };
+  if (known[value]) return known[value];
+  if (/^[A-Z][A-Z0-9_]{2,}$/.test(value) || /[a-z]+_[a-z_]+/.test(value)) return "按页面提示检查后重试";
+  return /[\u3400-\u9fff]/.test(value) ? value : "按页面提示检查后重试";
+}
+
+function humanizeSnapshotAction(action) {
+  const value = String(action || "").trim();
+  if (!value) return "继续验证关键判断";
+  const known = {
+    add_evidence: "补充一条能改变当前判断的资料",
+    review_evidence: "查看仍需确认的关键判断",
+    generate_documents: "继续整理正式文档",
+    confirm_snapshot: "确认当前项目成果",
+  };
+  if (known[value]) return known[value];
+  if (/^[A-Z][A-Z0-9_]{2,}$/.test(value) || /[a-z]+_[a-z_]+/.test(value)) return "继续验证关键判断";
+  return /[\u3400-\u9fff]/.test(value) ? value : "继续验证关键判断";
 }
 
 function renderRuntimeDisclosure({failure = null} = {}) {
   const node = qs("#runtime-disclosure");
   if (!node) return;
   if (failure && state.runtimeMode === "llm_structured") {
+    const error = {message: String(failure || "")};
+    const humanMessage = humanizeErrorMessage(error, "AI参考这次没有生成可用内容，请稍后重试。你的项目内容未被改成资料。");
+    const code = stableErrorCode(error);
     node.classList.remove("hidden");
     node.classList.add("runtime-failure");
-    node.innerHTML = `<div><strong>结构化模型调用失败</strong><span>${escapeHtml(failure)}</span></div><button id="show-demo-switch-help" class="button button-secondary" type="button">切换到本地演示模式</button>`;
+    node.innerHTML = `<div><strong>${escapeHtml(humanMessage)}</strong><details class="technical-details"><summary>技术详情</summary><code>错误代码：${escapeHtml(code)}</code><span>建议稍后重试；原始错误仅保留在服务端日志中。</span></details></div><button id="show-demo-switch-help" class="button button-secondary" type="button">切换到本地演示模式</button>`;
     qs("#show-demo-switch-help")?.addEventListener("click", () => {
       toast("切换到本地演示模式需要设置 INSIGHTFORGE_STRUCTURED_AI_MODE=deterministic_demo 并重启服务；系统不会静默切换。");
     });
@@ -212,8 +283,9 @@ function reportError(error) {
   if (error?.status === 429 || isStructuredRuntimeFailure(error)) console.warn(error);
   else console.error(error);
   if (isStructuredRuntimeFailure(error)) renderRuntimeDisclosure({failure: error.message});
+  const humanMessage = humanizeErrorMessage(error);
   if (error?.code === "IDEA_BRIEF_REQUIRED" || error?.code === "IDEA_BRIEF_NOT_CONFIRMED") {
-    toast(error.message || "请先完善并确认项目定义，再生成方案。");
+    toast(humanMessage);
     const dialog = qs("#idea-brief-dialog");
     if (dialog && state.ideaBrief) {
       renderIdeaBrief(true);
@@ -244,19 +316,19 @@ function reportError(error) {
     toast(`AI 返回的内容未通过应用校验。${settlement}未自动重试；再次生成将发起新的模型请求。`);
     return;
   }
-  if (error?.code === "PROVIDER_FAILURE") { toast(error.message || "AI 服务未能完成本次请求；未自动重试。", 4500); return; }
-  if (error?.code === "GENERATION_PENDING") { toast(error.message || "本次生成仍在处理中，请稍候查看结果。", 4000); return; }
-  if (error?.code === "IDEMPOTENT_REPLAY") { toast(error.message || "已找到这次操作的已有结果，不会重复发起生成。", 4000); return; }
+  if (error?.code === "PROVIDER_FAILURE") { toast(humanMessage, 4500); return; }
+  if (error?.code === "GENERATION_PENDING") { toast(humanMessage, 4000); return; }
+  if (error?.code === "IDEMPOTENT_REPLAY") { toast("已找到这次操作的已有结果，不会重复发起生成。", 4000); return; }
   if (error?.code === "BETA_DAILY_LIMIT_REACHED" || error?.payload?.blocked_operation) {
     const operation = error?.payload?.operation_type || error?.payload?.blocked_operation;
-    toast(error.message || `${operation} 今日额度已用尽；其他操作额度不受影响。`);
+    toast(humanMessage || `${operation} 今日额度已用尽；其他操作额度不受影响。`);
     return;
   }
   if (error?.status === 503 && error?.code === "MODEL_TIMEOUT") {
     toast("AI 服务本次响应超时，你的输入已保留，请稍后重试。");
     return;
   }
-  toast(error?.message || "操作失败");
+  toast(humanMessage);
 }
 
 function isRecoveryPayload(value) {
@@ -266,22 +338,23 @@ function isRecoveryPayload(value) {
 function showRecoveryPayload(payload) {
   const message = String(payload?.message || "生成未完成；你的输入已保留。");
   const code = String(payload?.error_code || "");
-  const friendly = ({
+  const humanMessage = humanizeErrorMessage({message, code, payload}, ({
     APPLICATION_POSTPROCESS_FAILURE: "生成结果需要重新整理",
     PROVIDER_FAILURE: "AI 服务暂时无法完成请求",
     MODEL_TIMEOUT: "AI 服务响应超时",
     OVERENGINEERED_SOLUTION_SET: "方案范围需要进一步收敛",
-  })[code] || "这次操作没有完成";
+  })[code] || "这次操作没有完成");
+  const safeCode = stableErrorCode({message, code, payload});
   const actions = Array.isArray(payload?.recovery_actions)
-    ? payload.recovery_actions.map((action) => String(action)).filter(Boolean)
+    ? payload.recovery_actions.map((action) => humanizeRecoveryAction(action)).filter(Boolean)
     : [];
   const node = qs("#runtime-disclosure");
   if (node) {
     node.classList.remove("hidden");
     node.classList.add("runtime-failure");
-    node.innerHTML = `<div><strong>${escapeHtml(friendly)}</strong><span>${escapeHtml(message)}</span>${actions.length ? `<ul>${actions.map((action) => `<li>${escapeHtml(action)}</li>`).join("")}</ul>` : ""}<details class="technical-details"><summary>技术详情</summary><code>${escapeHtml(code)}</code></details></div>`;
+    node.innerHTML = `<div><strong>${escapeHtml(humanMessage)}</strong>${actions.length ? `<ul>${actions.map((action) => `<li>${escapeHtml(action)}</li>`).join("")}</ul>` : ""}<details class="technical-details"><summary>技术详情</summary><code>错误代码：${escapeHtml(safeCode)}</code><span>原始错误仅保留在服务端日志中。</span></details></div>`;
   }
-  toast(actions.length ? `${message} 可执行：${actions.join("；")}` : message);
+  toast(actions.length ? `${humanMessage} 可执行：${actions.join("；")}` : humanMessage);
 }
 
 function closeStaleIdeaBriefDialog() {
@@ -984,8 +1057,92 @@ function renderIdeaBrief(dialog = false) {
     </div>`;
 }
 
-function detailList(title, items = []) {
-  return `<div class="detail-block"><strong>${escapeHtml(title)}</strong><ul>${items.map((x) => `<li>${escapeHtml(x)}</li>`).join("") || "<li>暂无</li>"}</ul></div>`;
+const STRUCTURED_LABELS = {
+  data_field: "资料字段", purpose: "用途", source: "来源", risk: "风险", mitigation: "应对方式",
+  step: "步骤", action: "操作", ui_hint: "页面提示", input_type: "输入类型", field: "字段",
+  required: "是否必填", description: "说明", evidence: "依据", dependency: "依赖项",
+  camera_quality_and_lighting: "相机拍摄质量和门店光照", camera_quality_and_lighting_requirements: "相机拍摄质量和门店光照要求",
+  public_dataset_or_manual_upload: "公开数据集或人工上传", user_registration_address: "用户注册地址",
+};
+
+function parseStructuredValue(value) {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]")))) return value;
+  try { return JSON.parse(trimmed); } catch (_) { return value; }
+}
+
+function presentStructuredValue(value, fallback = "待确认", depth = 0) {
+  const parsed = depth === 0 ? parseStructuredValue(value) : value;
+  if (parsed === null || parsed === undefined || parsed === "") return fallback;
+  if (["string", "number", "boolean"].includes(typeof parsed)) return String(parsed);
+  if (Array.isArray(parsed)) return parsed.map((item) => presentStructuredValue(item, fallback, depth + 1)).join("；") || fallback;
+  if (typeof parsed === "object") {
+    const entries = Object.entries(parsed).filter(([, item]) => item !== null && item !== undefined && item !== "");
+    return entries.map(([key, item]) => `${STRUCTURED_LABELS[key] || "说明"}：${presentStructuredValue(item, fallback, depth + 1)}`).join("；") || fallback;
+  }
+  return fallback;
+}
+
+function presentInputOutput(value, fallback = "待确认") {
+  return presentStructuredValue(value, fallback);
+}
+
+function presentProductFlow(step, index) {
+  const parsed = parseStructuredValue(step);
+  const title = typeof parsed === "object" && parsed !== null ? presentStructuredValue(parsed.step || parsed.title, `第 ${index + 1} 步`) : `第 ${index + 1} 步`;
+  const action = typeof parsed === "object" && parsed !== null ? parsed.action || parsed.description || parsed : parsed;
+  const hint = typeof parsed === "object" && parsed !== null ? parsed.ui_hint || parsed.hint : "";
+  return `<article class="product-flow-step"><div class="product-flow-number">${index + 1}</div><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(presentStructuredValue(action))}</p>${hint ? `<small>${escapeHtml(presentStructuredValue(hint))}</small>` : ""}</div></article>`;
+}
+
+function humanizeHandoffMessage(message) {
+  const value = String(message || "").trim();
+  if (!value) return "需要先完成当前项目成果和正式文档。";
+  const known = {
+    PRD_NOT_CONFIRMED: "PRD 还没有确认当前版本。",
+    TECHDOC_NOT_CONFIRMED: "技术文档还没有确认当前版本。",
+    DOCUMENTS_NOT_READY: "PRD 和技术文档还没有同时准备好。",
+    UNRESOLVED_ACKNOWLEDGEMENT_REQUIRED: "请先确认你已了解当前仍待确认的事项。",
+  };
+  if (known[value]) return known[value];
+  if (/^[A-Z][A-Z0-9_]{2,}$/.test(value) || /[a-z]+_[a-z_]+/.test(value)) return "还有一项交接前条件未完成。";
+  if (/exception|traceback|valueerror|keyerror|snapshot|sql|\\\\|\/app\//i.test(value)) return "还有一项交接前条件未完成。";
+  return /[\u3400-\u9fff]/.test(value) ? value : "还有一项交接前条件未完成。";
+}
+
+function humanizeArtifactReason(reason) {
+  const value = String(reason || "").trim();
+  if (!value) return "当前项目成果、判断或资料依赖发生变化";
+  const known = {
+    stale_evidence: "相关资料或判断已经变化，需要重新检查",
+    needs_review: "这份内容需要重新检查",
+    source_archived: "引用的资料已归档，需要重新检查",
+  };
+  if (known[value]) return known[value];
+  if (/^[A-Z][A-Z0-9_]{2,}$/.test(value) || /[a-z]+_[a-z_]+/.test(value)) return "相关资料或判断发生变化，需要重新检查";
+  return /[\u3400-\u9fff]/.test(value) ? value : "相关资料或判断发生变化，需要重新检查";
+}
+
+function humanizeDependency(dependency) {
+  const value = String(dependency || "");
+  const [kind] = value.split(":", 1);
+  return ({source: "项目资料", claim: "项目判断", project_snapshot: "方案选择", competitor_snapshot: "竞品决策"})[kind] || "项目依赖";
+}
+
+function detailList(title, items = [], presenter = presentStructuredValue) {
+  const values = Array.isArray(items) ? items : [items];
+  const blockClass = ["输入", "输出"].includes(title) ? " input-output-block" : "";
+  return `<div class="detail-block${blockClass}"><strong>${escapeHtml(title)}</strong><ul>${values.map((x, index) => `<li>${escapeHtml(presenter(x, index))}</li>`).join("") || "<li>暂无</li>"}</ul></div>`;
+}
+
+function productFlowList(items = []) {
+  const values = Array.isArray(items) ? items : [items];
+  return `<div class="detail-block product-flow-block"><strong>用户流程</strong><div class="product-flow">${values.map((item, index) => presentProductFlow(item, index)).join("") || "<p class=\"muted\">暂无流程，待确认。</p>"}</div></div>`;
+}
+
+function inputOutputBlocks(inputs = [], outputs = []) {
+  return `<div class="input-output-grid">${detailList("输入", inputs, presentInputOutput)}${detailList("输出", outputs, presentInputOutput)}</div>`;
 }
 
 function openSolutionDetails(candidateId, trigger) {
@@ -1009,13 +1166,13 @@ function openSolutionDetails(candidateId, trigger) {
   const rows = [
     ["目标用户", solution.target_user], ["问题", solution.problem],
     ["典型场景", solution.scenarios], ["适合当前想法的原因", solution.why_fit],
-    ["用户流程", solution.user_flow], ["核心功能", solution.features],
+    ["核心功能", solution.features], ["数据要求", solution.data_requirements], ["风险", solution.risks],
     ["最小可用版本（MVP）范围", solution.mvp_pages],
     ["实现思路", solution.implementation_plan], ["技术组成", solution.technical_components],
     ["核心判断逻辑", solution.decision_logic], ["取舍", solution.tradeoffs],
-    ["风险", solution.risks], ["待确认事项", solution.unknowns],
+    ["待确认事项", solution.unknowns],
   ];
-  qs("#solution-detail-content").innerHTML = rows.map(([title, value]) =>
+  qs("#solution-detail-content").innerHTML = productFlowList(solution.user_flow) + inputOutputBlocks(solution.inputs, solution.outputs) + rows.map(([title, value]) =>
     detailList(title, Array.isArray(value) && value.length ? value : value && !Array.isArray(value) ? [value] : ["已有方案未提供此项；尚待确认。"])
   ).join("");
   if (!dialog.open) dialog.showModal();
@@ -1055,13 +1212,12 @@ function renderSolutions() {
       <div class="solution-card-head"><span>方案 ${String.fromCharCode(65 + index)}</span><span class="pill">${escapeHtml(mechanismLabel(solution.mechanism))}</span></div>
       <h3>${escapeHtml(solution.title)}</h3>
       <p>${escapeHtml(solution.why_fit)}</p>
-      <dl class="compact-spec"><div><dt>MVP 难度</dt><dd>${escapeHtml(complexityLabel(solution.complexity))}</dd></div><div><dt>数据要求</dt><dd>${escapeHtml((solution.data_requirements || [])[0] || "待确认")}</dd></div><div><dt>最大风险</dt><dd>${escapeHtml((solution.risks || [])[0] || "待验证")}</dd></div></dl>
+      <dl class="compact-spec"><div><dt>MVP 难度</dt><dd>${escapeHtml(complexityLabel(solution.complexity))}</dd></div><div><dt>数据要求</dt><dd>${escapeHtml(presentStructuredValue((solution.data_requirements || [])[0], "待确认"))}</dd></div><div><dt>最大风险</dt><dd>${escapeHtml(presentStructuredValue((solution.risks || [])[0], "待验证"))}</dd></div></dl>
       <details><summary>查看完整实施方案</summary>
-        ${detailList("用户流程", solution.user_flow)}
+        ${productFlowList(solution.user_flow)}
         ${detailList("MVP 页面", solution.mvp_pages)}
         ${detailList("核心功能", solution.features)}
-        ${detailList("输入", solution.inputs)}
-        ${detailList("输出", solution.outputs)}
+        ${inputOutputBlocks(solution.inputs, solution.outputs)}
         ${detailList("核心判断逻辑", solution.decision_logic)}
         ${detailList("数据来源", solution.data_requirements)}
         ${detailList("技术组成", solution.technical_components)}
@@ -1097,10 +1253,10 @@ function renderSnapshot() {
       <article class="result-card"><span>MVP</span><strong>${escapeHtml((snap.mvp?.pages || []).length)} 个页面 · ${escapeHtml((snap.mvp?.features || []).length)} 个核心能力</strong><small>${escapeHtml((snap.mvp?.implementation_plan || [])[0] || "按最小范围实施")}</small></article>
       <article class="result-card risk"><span>当前最大未知项</span><strong>${escapeHtml(unknown)}</strong><small>优先验证会改变方案的判断</small></article>
     </div>
-    <section class="snapshot-section"><h2>产品流程</h2><div class="flow-row">${(snap.user_flow || []).map((step) => `<span>${escapeHtml(step)}</span>`).join("<b>→</b>")}</div></section>
-    <section class="snapshot-section"><h2>输入 / 输出</h2><div class="two-column"><div>${detailList("输入", snap.inputs || [])}</div><div>${detailList("输出", snap.outputs || [])}</div></div></section>`;
+    <section class="snapshot-section"><h2>产品流程</h2><div class="product-flow">${(snap.user_flow || []).map((step, index) => presentProductFlow(step, index)).join("") || "<p class=\"muted\">暂无流程，待确认。</p>"}</div></section>
+    <section class="snapshot-section"><h2>输入 / 输出</h2><div class="two-column"><div>${detailList("输入", snap.inputs || [], presentInputOutput)}</div><div>${detailList("输出", snap.outputs || [], presentInputOutput)}</div></div></section>`;
   const next = snap.next_action || {};
-  action.textContent = next.action || "继续验证关键判断";
+  action.textContent = humanizeSnapshotAction(next.action);
   action.dataset.claimId = next.claim_id || "";
   action.classList.remove("hidden");
   reconfirm.classList.toggle("hidden", snap.ux_state !== "reconfirm_required" || Boolean(snap.has_open_proposal));
@@ -1372,13 +1528,13 @@ function renderDocumentCard(docType, title, description) {
   const health = doc.artifact_health?.health_status || "unknown";
   const confirmed = doc.status === "approved";
   const stale = health === "stale_evidence" || health === "needs_review";
-  const dependencyLabels = (doc.dependencies || []).map((dep) => `${dep.dependency_type}:${dep.dependency_id}`).slice(0, 8);
+  const dependencyLabels = (doc.dependencies || []).map((dep) => humanizeDependency(dep.dependency_type)).slice(0, 8);
   let statusCopy = "当前草稿";
   if (confirmed && stale) statusCopy = "历史确认 · 当前证据已变化";
   else if (confirmed && health === "current") statusCopy = "已确认 · 当前有效";
   else if (doc.validation_status === "passed" && health === "current") statusCopy = "系统检查通过 · 等待用户确认";
   else if (stale) statusCopy = "当前版本需要重新检查";
-  const warning = stale ? `<div class="document-warning"><strong>受影响：</strong>${escapeHtml(doc.artifact_health?.reason || "当前项目成果、判断或资料依赖发生变化")}${dependencyLabels.length ? `<small>受影响依赖：${escapeHtml(dependencyLabels.join("、"))}</small>` : ""}<small>历史内容保持不变；请基于当前资料重新生成或检查，而不是覆盖旧版本。</small></div>` : "";
+  const warning = stale ? `<div class="document-warning"><strong>受影响：</strong>${escapeHtml(humanizeArtifactReason(doc.artifact_health?.reason))}${dependencyLabels.length ? `<small>受影响依赖：${escapeHtml(dependencyLabels.join("、"))}</small>` : ""}<small>历史内容保持不变；请基于当前资料重新生成或检查，而不是覆盖旧版本。</small></div>` : "";
   const canConfirm = !confirmed && doc.validation_status === "passed" && health === "current";
   return `<article class="document-card ${stale ? "document-stale" : ""}">
     <div class="document-card-head"><h3>${title}</h3><span>v${escapeHtml(doc.version)}</span></div>
@@ -1388,7 +1544,7 @@ function renderDocumentCard(docType, title, description) {
       <button class="button button-secondary" ${generateAttribute} type="button">${stale ? "基于当前证据重新生成" : "生成新版本"}</button>
       <a class="button button-quiet" href="/api/documents/${encodeURIComponent(doc.id)}/export?format=md">导出 MD</a>
     </div>
-    <details class="technical-details"><summary>查看技术详情</summary><pre>${escapeHtml(JSON.stringify({validation_status: doc.validation_status, lifecycle_status: doc.lifecycle_status, artifact_health: doc.artifact_health, dependencies: doc.dependencies || []}, null, 2))}</pre></details>
+    <details class="technical-details"><summary>查看技术详情</summary><span>检查状态：${escapeHtml(statusPresentation(doc.validation_status || "not_run").label)}</span><span>版本状态：${escapeHtml(statusPresentation(doc.lifecycle_status || doc.status || "draft").label)}</span><span>关联资料数量：${escapeHtml(String((doc.dependencies || []).length))}</span></details>
   </article>`;
 }
 
@@ -1421,7 +1577,9 @@ function renderDocumentWorkspace() {
   if (workspace.error) {
     if (errorNode) {
       errorNode.classList.remove("hidden");
-      errorNode.innerHTML = `<strong>文档版本暂时无法加载</strong><span>${escapeHtml(workspace.error.message)}</span><details class="technical-details"><summary>技术详情</summary><code>${escapeHtml(workspace.error.code)}</code></details>`;
+      const humanMessage = humanizeErrorMessage(workspace.error, "文档版本暂时无法加载，请稍后重试。");
+      const code = stableErrorCode(workspace.error) || "DOCUMENT_VERSION_LOAD_FAILED";
+      errorNode.innerHTML = `<strong>文档版本暂时无法加载</strong><span>${escapeHtml(humanMessage)}</span><details class="technical-details"><summary>技术详情</summary><code>错误代码：${escapeHtml(code)}</code><span>原始错误仅保留在服务端日志中。</span></details>`;
     }
     editor.value = "";
     editor.disabled = true;
@@ -1459,7 +1617,7 @@ function renderDocumentWorkspace() {
     const healthCopy = statusPresentation(health);
     return `<article class="document-version-row${selectedClass}${compareClass}">
       <div><strong>v${escapeHtml(version.version)}</strong><span>${escapeHtml(lifecycle.label)} · ${escapeHtml(validation.label)} · ${escapeHtml(healthCopy.label)}</span><small>${escapeHtml(formatProjectDate(version.created_at))}</small></div>
-      <details class="technical-details"><summary>技术详情</summary><code>${escapeHtml(JSON.stringify({status: version.status || "draft", validation_status: version.validation_status || "not_run", health_status: health}))}</code></details>
+      <details class="technical-details"><summary>技术详情</summary><span>版本状态：${escapeHtml(lifecycle.label)}</span><span>检查状态：${escapeHtml(validation.label)}</span><span>资料状态：${escapeHtml(healthCopy.label)}</span></details>
       <div class="document-version-actions"><button class="button button-secondary" type="button" data-doc-select="${escapeHtml(version.id)}">编辑/查看</button><button class="button button-quiet" type="button" data-doc-compare="${escapeHtml(version.id)}">${version.id === workspace.compareVersionId ? "取消对比" : "设为对比"}</button></div>
     </article>`;
   }).join("") : `<div class="empty-state"><p>当前 ${escapeHtml(workspace.docType.toUpperCase())} 还没有正式版本。</p></div>`;
@@ -1561,7 +1719,7 @@ async function loadDocumentDiff() {
     if (node.dataset.loadedPair !== pair) return;
     node.textContent = result.changed ? (result.unified_diff || "版本内容不同，但没有可显示的行级差异。") : "两个版本内容一致。";
   } catch (error) {
-    if (node.dataset.loadedPair === pair) node.textContent = `无法获取差异：${error.message}`;
+    if (node.dataset.loadedPair === pair) node.textContent = humanizeErrorMessage(error, "暂时无法获取版本差异，请稍后重试。");
   }
 }
 
@@ -1684,14 +1842,14 @@ function renderHandoff() {
       <button id="handoff-acknowledge-button" class="button button-secondary" type="button" disabled>确认当前版本仍有待确认事项</button>
     </div>` : (acknowledgement ? "<p class=\"status-note\">已记录你对待确认事项的了解；这不表示这些事项已经被事实验证。</p>" : "");
   qs("#handoff-content").innerHTML = `
-    <div class="handoff-status ${h?.ready ? "handoff-ready" : "handoff-blocked"}"><strong>${escapeHtml(h?.ready ? "开发交接已具备正式上下文" : "当前还不能安全交接")}</strong><span>${escapeHtml(h?.ready ? "当前项目成果、PRD 和 TechDoc 均满足交接条件。" : (missing[0]?.message || "需要先完成当前项目成果和正式文档。"))}</span></div>
+    <div class="handoff-status ${h?.ready ? "handoff-ready" : "handoff-blocked"}"><strong>${escapeHtml(h?.ready ? "开发交接已具备正式上下文" : "当前还不能安全交接")}</strong><span>${escapeHtml(h?.ready ? "当前项目成果、PRD 和 TechDoc 均满足交接条件。" : humanizeHandoffMessage(missing[0]?.message))}</span></div>
     <section class="handoff-section"><h3>MVP 范围</h3>${detailList("本版包含", mvp.features || [])}</section>
     <section class="handoff-section"><h3>明确不做</h3>${detailList("本版暂不包含", nonGoals.length ? nonGoals : ["当前 Snapshot 暂未声明额外非目标；交接前不要擅自扩展范围。"])}</section>
     <section class="handoff-section"><h3>实施任务</h3>${detailList("实施顺序", implementationTasks)}</section>
     <section class="handoff-section"><h3>验收案例</h3>${detailList("验收案例", acceptanceCases)}</section>
     <section class="handoff-section"><h3>已确认文档</h3><div class="handoff-docs"><span>PRD：${escapeHtml(handoffDocumentLabel(docSummary.prd))}</span><span>TechDoc：${escapeHtml(handoffDocumentLabel(docSummary.techdoc))}</span></div></section>
-    <section class="handoff-section"><h3>仍需确认的事项</h3>${unresolved.length ? detailList("事项", unresolved.map((item) => `${item.item}；${item.why}；建议：${item.how_to_verify}`)) : "<p>当前没有从文档中提取到待确认事项；资料是否充分仍需按实际来源判断。</p>"}${acknowledgementBlock}</section>
-    <section class="handoff-section"><h3>未解决风险</h3>${detailList("仍需确认", risks.length ? risks : ["当前 Snapshot 未记录关键未知项。"])}${missing.length ? detailList("阻塞项", missing.map((item) => item.message)) : ""}</section>
+    <section class="handoff-section"><h3>仍需确认的事项</h3>${unresolved.length ? detailList("事项", unresolved.map(humanizeUnresolvedItem)) : "<p>当前没有从文档中提取到待确认事项；资料是否充分仍需按实际来源判断。</p>"}${acknowledgementBlock}</section>
+    <section class="handoff-section"><h3>未解决风险</h3>${detailList("仍需确认", risks.length ? risks : ["当前方案未记录关键未知项。"])}${missing.length ? detailList("阻塞项", missing.map((item) => humanizeHandoffMessage(item.message))) : ""}</section>
     <section class="handoff-section"><h3>复制/导出</h3><div class="handoff-actions"><button id="copy-handoff-button" class="button button-secondary" type="button">复制当前开发上下文</button><button id="export-handoff-button" class="button button-primary" type="button" ${h?.ready ? "" : "disabled"}>导出 Codex 交接包</button><button id="load-handoff-button" class="button button-quiet" type="button">重新检查准备度</button></div></section>
     <details class="handoff-section advanced-panel"><summary>高级：MCP</summary><p>MCP 只作为已有确认上下文的高级读取/交接接口；当前 P0 不把远程 MCP 或企业权限作为主卖点。</p></details>`;
   qs("#load-handoff-button")?.addEventListener("click", loadHandoff);
@@ -1705,6 +1863,19 @@ function handoffDocumentLabel(documentSummary) {
   if (!documentSummary || !(documentSummary.version_id || documentSummary.id)) return "未确认";
   const version = documentSummary.version ? ` v${documentSummary.version}` : "";
   return `已确认${version}`;
+}
+
+function humanizeUnresolvedItem(item) {
+  const safeText = (value, fallback) => {
+    const text = String(value || "").trim();
+    if (!text) return fallback;
+    if (/traceback|exception|valueerror|keyerror|sql|stack trace|[A-Z][A-Z0-9_]{2,}|[a-z]+_[a-z_]+|(?:^|[\\/])(?:app|src|var|tmp)(?:[\\/]|$)/i.test(text)) return fallback;
+    return text;
+  };
+  const subject = safeText(item?.item, "还有一项内容需要确认");
+  const why = safeText(item?.why, "当前还没有足够依据");
+  const how = safeText(item?.how_to_verify, "补充资料或进行一次实际验证");
+  return `${subject}；${why}；建议：${how}`;
 }
 
 async function acknowledgeUnresolvedHandoff() {
@@ -1996,8 +2167,12 @@ async function loadProject(projectId) {
     const recovered = await loadUnifiedDraft(projectId, "ui_context", "main");
     const context = preferredRecoveryPayload(recovered);
     if (context && Object.prototype.hasOwnProperty.call(context, "useCompetitorSnapshot")) {
+      const recoveredSnapshotId = context.competitorSnapshotId || null;
+      // Preserve an explicit SNAPSHOT mode even when its binding is missing.
+      // The server must reject that broken new record; silently turning it into
+      // SKIPPED would be fail-open and could change document provenance.
       state.useCompetitorSnapshot = Boolean(context.useCompetitorSnapshot);
-      state.competitorSnapshotId = context.competitorSnapshotId || null;
+      state.competitorSnapshotId = recoveredSnapshotId;
     }
     if (context?.evidenceTab) state.evidenceTab = context.evidenceTab;
     if (context?.activeView && WORKSPACE_VIEWS.has(context.activeView) && context.activeView !== state.activeView) {
@@ -2090,12 +2265,13 @@ async function loadDocuments() {
 
 async function generateDocument(docType) {
   try {
+    const useSnapshot = Boolean(state.useCompetitorSnapshot);
     const result = await api(`/api/projects/${state.currentProjectId}/documents/generate`, {
       method: "POST",
       body: JSON.stringify({
         doc_type: docType,
-        competitor_snapshot_id: state.useCompetitorSnapshot ? state.competitorSnapshotId : null,
-        use_competitor_snapshot: Boolean(state.useCompetitorSnapshot),
+        competitor_snapshot_id: useSnapshot && state.competitorSnapshotId ? state.competitorSnapshotId : null,
+        use_competitor_snapshot: useSnapshot,
       }),
     });
     toast(`${docType.toUpperCase()} 已生成：${result.version_id || result.id || "新版本"}`);
@@ -2167,6 +2343,11 @@ function rememberAIReferenceDraft() {
 function renderAIReference() {
   const content = qs("#ai-reference-content"); if (!content) return;
   content.replaceChildren(); const result = aiReferencePanel.result; if (!result) return;
+  const hasContent = AI_REFERENCE_GROUPS.some(([key]) => Array.isArray(result[key]) && result[key].length);
+  if (!hasContent) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "这次没有生成可用建议，请重新尝试。"; content.append(empty);
+    return;
+  }
   const notice = document.createElement("p"); notice.className = "status-note"; notice.textContent = result.uncertainty_notice || "AI生成参考，尚未经外部资料核实。"; content.append(notice);
   AI_REFERENCE_GROUPS.forEach(([key, label]) => {
     const values = Array.isArray(result[key]) ? result[key] : []; if (!values.length) return;
@@ -2174,13 +2355,15 @@ function renderAIReference() {
     const heading = document.createElement("h3"); heading.textContent = label; section.append(heading);
     values.forEach((item) => {
       const row = document.createElement("div"); row.className = "ai-reference-item";
-      const text = document.createElement("span"); text.textContent = item; row.append(text);
-      const prior = aiReferencePanel.decisions.find((decision) => decision.category === key && decision.item === item);
-      const select = document.createElement("select"); select.dataset.aiCategory = key; select.dataset.aiItem = item;
+      const itemText = presentStructuredValue(item, "待确认");
+      const itemKey = typeof item === "string" ? item : JSON.stringify(item);
+      const text = document.createElement("span"); text.textContent = itemText; row.append(text);
+      const prior = aiReferencePanel.decisions.find((decision) => decision.category === key && decision.item === itemKey);
+      const select = document.createElement("select"); select.dataset.aiCategory = key; select.dataset.aiItem = itemKey;
       [["adopt", "采用"], ["modify", "修改"], ["ignore", "忽略"]].forEach(([value, title]) => { const option = document.createElement("option"); option.value = value; option.textContent = title; select.append(option); });
       select.value = prior?.decision || "ignore";
       select.addEventListener("change", rememberAIReferenceDraft); row.append(select); section.append(row);
-      const rationale = document.createElement("input"); rationale.type = "text"; rationale.placeholder = "可填写原因（可选）"; rationale.dataset.aiRationaleFor = item;
+      const rationale = document.createElement("input"); rationale.type = "text"; rationale.placeholder = "可填写原因（可选）"; rationale.dataset.aiRationaleFor = itemKey;
       rationale.value = prior?.rationale || ""; rationale.addEventListener("input", rememberAIReferenceDraft); row.append(rationale);
     }); content.append(section);
   });
@@ -2203,7 +2386,8 @@ async function generateAIReference() {
     aiReferencePanel.requestKey ||= `ai-reference-${aiReferencePanel.project}`;
     const response = await api(`/api/projects/${encodeURIComponent(aiReferencePanel.project)}/ai-reference`, {method:"POST", body:JSON.stringify({idempotency_key: aiReferencePanel.requestKey})});
     aiReferencePanel.referenceId = response.id; aiReferencePanel.result = response.result; aiReferencePanel.decisions = []; renderAIReference(); rememberAIReferenceDraft();
-    qs("#ai-reference-message").textContent = "AI参考已生成，请阅读后选择要采用、修改或忽略的内容。";
+    const hasContent = AI_REFERENCE_GROUPS.some(([key]) => Array.isArray(response.result?.[key]) && response.result[key].length);
+    qs("#ai-reference-message").textContent = hasContent ? "AI参考已生成，请阅读后选择要采用、修改或忽略的内容。" : "这次没有生成可用建议，请重新尝试。";
   } catch (_) { qs("#ai-reference-message").textContent = "AI参考生成失败，请稍后重试；没有创建资料来源。"; }
   finally { aiReferencePanel.busy = false; qs("#ai-reference-generate").disabled = false; }
 }
@@ -2494,10 +2678,20 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     confirmIdeaBrief,
     openIdeaBriefReview,
     renderIdeaBrief,
+    renderAIReference,
+    setTestAIReference(result, decisions = []) { aiReferencePanel.result = result; aiReferencePanel.decisions = decisions; aiReferencePanel.referenceId = "test-reference"; renderAIReference(); },
+    setTestEvidenceGuidance(result) {
+      state.evidenceEntry.mode = "action_guidance";
+      evidenceGuidancePanel.busy = false;
+      evidenceGuidancePanel.result = result;
+      evidenceGuidancePanel.guidanceId = result ? "test-guidance" : null;
+      renderEvidenceGuidance();
+    },
     renderSolutions,
     renderDocuments,
     renderHandoff,
     activateView,
+    setEvidenceTab,
     renderGuidanceCard,
     openSolutionDetails,
     generateSolutions,

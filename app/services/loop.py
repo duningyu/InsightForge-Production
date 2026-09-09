@@ -12,6 +12,9 @@ from app.services.validation import DocumentValidator
 from app.services.artifact_health import ArtifactHealthService
 
 
+_UNSET_COMPETITOR_BINDING = object()
+
+
 class DocumentLoop:
     def __init__(
         self,
@@ -39,7 +42,7 @@ class DocumentLoop:
         *,
         idempotency_key: str | None = None,
         require_snapshot: bool = False,
-        competitor_snapshot_id: str | None = None,
+        competitor_snapshot_id: str | None | object = _UNSET_COMPETITOR_BINDING,
         use_competitor_snapshot: bool = True,
     ) -> dict[str, Any]:
         if doc_type not in {"prd", "techdoc"}:
@@ -49,18 +52,22 @@ class DocumentLoop:
             raise KeyError("project not found")
         current_snapshot_id = project.get("current_snapshot_id")
         current_competitor_snapshot_id = project.get("current_competitor_snapshot_id")
-        effective_competitor_snapshot_id = competitor_snapshot_id
-        if use_competitor_snapshot and competitor_snapshot_id is not None:
+        explicit_competitor_binding = competitor_snapshot_id is not _UNSET_COMPETITOR_BINDING
+        bound_competitor_snapshot_id = None if not explicit_competitor_binding else competitor_snapshot_id
+        effective_competitor_snapshot_id = bound_competitor_snapshot_id
+        if use_competitor_snapshot and explicit_competitor_binding and bound_competitor_snapshot_id is None:
+            raise ValueError("current confirmed competitor snapshot is required for this document generation")
+        if use_competitor_snapshot and bound_competitor_snapshot_id is not None:
             competitor_snapshot = self.db.fetch_one(
                 "SELECT project_id FROM competitor_decision_snapshots WHERE id = ?",
-                (competitor_snapshot_id,),
+                (bound_competitor_snapshot_id,),
             )
             if competitor_snapshot is None or competitor_snapshot["project_id"] != project_id:
                 raise ValueError("competitor snapshot is not part of this project")
         if require_snapshot and not current_snapshot_id:
             raise ValueError("current confirmed Snapshot is required for 3.0 document generation")
         if require_snapshot and use_competitor_snapshot and not (
-            current_competitor_snapshot_id or competitor_snapshot_id
+            current_competitor_snapshot_id or bound_competitor_snapshot_id
         ):
             raise ValueError("current confirmed competitor snapshot is required for this document generation")
         canvas = self.db.get_canvas(project_id)
@@ -181,7 +188,7 @@ class DocumentLoop:
         version = int(version_row["max_version"]) + 1
         version_id = f"version_{uuid.uuid4().hex}"
         validation_status = "passed" if terminal_state == "completed" else "needs_human_review"
-        if effective_competitor_snapshot_id is None and use_competitor_snapshot:
+        if effective_competitor_snapshot_id is None and use_competitor_snapshot and not explicit_competitor_binding:
             competitor_snapshot = self.db.fetch_one(
                 "SELECT current_competitor_snapshot_id FROM projects WHERE id=?",
                 (project_id,),

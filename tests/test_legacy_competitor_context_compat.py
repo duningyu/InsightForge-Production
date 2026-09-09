@@ -109,3 +109,100 @@ def test_new_generation_declaring_competitor_context_fails_closed_without_snapsh
             require_snapshot=True,
             use_competitor_snapshot=True,
         )
+
+
+def test_explicit_snapshot_mode_without_bound_id_fails_closed_even_if_latest_exists(db):
+    project_id = "project_insightforge_demo"
+    _ensure_confirmed_project_snapshot(db)
+    now = utc_now()
+    comparison_id = "compat-latest-comparison"
+    snapshot_id = "compat-latest-snapshot"
+    db.execute(
+        """
+        INSERT INTO competitor_comparisons(
+            id, project_id, created_by, candidate_ids_json, result_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (comparison_id, project_id, "synthetic-owner", "[]", json.dumps({"competitors": []}), now),
+    )
+    db.execute(
+        """
+        INSERT INTO competitor_decision_snapshots(
+            id, project_id, created_by, comparison_id, candidate_ids_json,
+            content_json, content_sha256, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            snapshot_id,
+            project_id,
+            "synthetic-owner",
+            comparison_id,
+            "[]",
+            json.dumps({"decisions": []}),
+            "compat-latest-hash",
+            now,
+        ),
+    )
+    db.execute(
+        "UPDATE projects SET current_competitor_snapshot_id=? WHERE id=?",
+        (snapshot_id, project_id),
+    )
+
+    with pytest.raises(ValueError, match="current confirmed competitor snapshot is required"):
+        DocumentLoop(db).run(
+            project_id,
+            "prd",
+            idempotency_key="compat-explicit-missing-binding",
+            require_snapshot=True,
+            use_competitor_snapshot=True,
+            competitor_snapshot_id=None,
+        )
+
+
+def test_foreign_competitor_snapshot_is_rejected(db):
+    project_id = "project_insightforge_demo"
+    _ensure_confirmed_project_snapshot(db)
+    foreign_project_id = "project_foreign"
+    db.execute(
+        "INSERT INTO projects(id, title, summary, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (foreign_project_id, "Foreign", "Foreign project", utc_now(), utc_now()),
+    )
+    now = utc_now()
+    comparison_id = "compat-foreign-comparison"
+    snapshot_id = "compat-foreign-snapshot"
+    db.execute(
+        """
+        INSERT INTO competitor_comparisons(
+            id, project_id, created_by, candidate_ids_json, result_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (comparison_id, foreign_project_id, "foreign-owner", "[]", json.dumps({"competitors": []}), now),
+    )
+    db.execute(
+        """
+        INSERT INTO competitor_decision_snapshots(
+            id, project_id, created_by, comparison_id, candidate_ids_json,
+            content_json, content_sha256, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            snapshot_id,
+            foreign_project_id,
+            "foreign-owner",
+            comparison_id,
+            "[]",
+            json.dumps({"decisions": []}),
+            "compat-foreign-hash",
+            now,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="not part of this project"):
+        DocumentLoop(db).run(
+            project_id,
+            "prd",
+            idempotency_key="compat-foreign-snapshot",
+            require_snapshot=True,
+            use_competitor_snapshot=True,
+            competitor_snapshot_id=snapshot_id,
+        )

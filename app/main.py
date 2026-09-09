@@ -449,15 +449,34 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
 
     @application.exception_handler(KeyError)
     async def key_error_handler(_request, exc: KeyError):
-        return JSONResponse(status_code=404, content={"detail": str(exc).strip("'")})
+        raw = str(exc).strip("'")
+        # KeyError text is an implementation detail in many repository paths.
+        # Keep the one established legacy-guide message actionable, but never
+        # expose arbitrary keys, paths, or exception wording to the UI.
+        if raw == "legacy guided session not found":
+            detail = "这个项目没有旧版引导记录。"
+        else:
+            detail = "请求的内容不存在或已失效。"
+        return JSONResponse(
+            status_code=404,
+            content={"detail": detail, "error_code": "RESOURCE_NOT_FOUND"},
+        )
 
     @application.exception_handler(PermissionError)
     async def permission_error_handler(_request, exc: PermissionError):
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        raw = str(exc).lower()
+        if "explicit human confirmation" in raw:
+            detail = "请先明确确认这项操作，再继续。"
+            code = "HUMAN_CONFIRMATION_REQUIRED"
+        else:
+            detail = "你没有权限执行这项操作。"
+            code = "FORBIDDEN"
+        return JSONResponse(status_code=403, content={"detail": detail, "error_code": code})
 
     @application.exception_handler(ConflictError)
     async def conflict_error_handler(_request, exc: ConflictError):
         detail = str(exc)
+        conflict_code = detail.split(":", 1)[0].strip()
         if isinstance(exc, DraftConflictError):
             return JSONResponse(
                 status_code=409,
@@ -509,7 +528,30 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                     "action": "retry_solution_generation",
                 },
             )
-        return JSONResponse(status_code=409, content={"detail": detail})
+        safe_conflicts = {
+            "COMPETITOR_SNAPSHOT_REQUIRED": (
+                "请先选择要采用的竞品决策版本；如果本次不需要竞品比较，请选择暂时跳过。",
+                "COMPETITOR_SNAPSHOT_REQUIRED",
+            ),
+            "COMPETITOR_SNAPSHOT_NOT_FOUND": (
+                "本次竞品比较不属于当前项目，无法继续。",
+                "COMPETITOR_SNAPSHOT_NOT_FOUND",
+            ),
+            "STALE_CHANGE_PROPOSAL": (
+                "项目状态已变化，这项调整不能直接应用，请刷新后重新检查。",
+                "STALE_CHANGE_PROPOSAL",
+            ),
+        }
+        if detail in safe_conflicts or conflict_code in safe_conflicts:
+            safe_detail, code = safe_conflicts.get(detail, safe_conflicts[conflict_code])
+            return JSONResponse(status_code=409, content={"detail": safe_detail, "error_code": code})
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "当前项目状态已变化，请刷新后重试。",
+                "error_code": "PROJECT_STATE_CONFLICT",
+            },
+        )
 
     @application.exception_handler(BetaDailyLimitReached)
     async def beta_daily_limit_handler(_request, exc: BetaDailyLimitReached):
@@ -517,7 +559,16 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
 
     @application.exception_handler(StructuredRuntimeUnavailableError)
     async def structured_runtime_error_handler(_request, exc: StructuredRuntimeUnavailableError):
-        return JSONResponse(status_code=503, content={"detail": str(exc)})
+        # Provider/runtime details are diagnostic data, not primary user copy.
+        # Keep the response actionable and stable; the frontend may expose only
+        # the raw exception inside its collapsed technical-details disclosure.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "这次没有生成可用内容，请稍后重试。你的项目内容未被改成资料。",
+                "error_code": "STRUCTURED_RUNTIME_UNAVAILABLE",
+            },
+        )
 
     @application.exception_handler(StructuredRuntimeRecoveryError)
     async def structured_runtime_recovery_handler(
@@ -529,12 +580,35 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
     async def credential_backend_error_handler(_request, _exc: CredentialBackendUnavailable):
         return JSONResponse(
             status_code=503,
-            content={"detail": "Credential storage is unavailable."},
+            content={
+                "detail": "凭据服务暂时不可用，请稍后重试。",
+                "error_code": "CREDENTIAL_BACKEND_UNAVAILABLE",
+            },
         )
+
+    def safe_value_error_payload(exc: ValueError) -> dict[str, str]:
+        raw = str(exc).lower()
+        if "doc_type must" in raw:
+            return {"detail": "文档类型不受支持，请选择 PRD 或技术文档。", "error_code": "INVALID_DOCUMENT_TYPE"}
+        if "competitor snapshot is not part" in raw:
+            return {"detail": "当前竞品决策版本不属于这个项目，无法继续。", "error_code": "COMPETITOR_SNAPSHOT_NOT_FOUND"}
+        if "competitor snapshot is required" in raw:
+            return {"detail": "当前生成缺少已绑定的竞品决策版本，请重新选择或暂时跳过竞品比较。", "error_code": "COMPETITOR_SNAPSHOT_REQUIRED"}
+        if "current confirmed snapshot" in raw:
+            return {"detail": "请先确认当前项目版本，再生成文档。", "error_code": "PROJECT_SNAPSHOT_REQUIRED"}
+        if "project canvas is missing" in raw:
+            return {"detail": "项目定义还不完整，请先补充项目内容。", "error_code": "PROJECT_DEFINITION_MISSING"}
+        if "idempotency key" in raw:
+            return {"detail": "这次请求已绑定到其他操作，请重新发起。", "error_code": "IDEMPOTENCY_KEY_CONFLICT"}
+        if "unknown retrieval profile" in raw:
+            return {"detail": "当前检索配置不可用，请重新选择。", "error_code": "INVALID_RETRIEVAL_PROFILE"}
+        if "source_scope_mismatch" in raw:
+            return {"detail": "这份资料不属于当前项目，无法执行这项操作。", "error_code": "SOURCE_SCOPE_MISMATCH"}
+        return {"detail": "当前项目状态不支持这项操作，请刷新后重试。", "error_code": "INVALID_PROJECT_STATE"}
 
     @application.exception_handler(ValueError)
     async def value_error_handler(_request, exc: ValueError):
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return JSONResponse(status_code=422, content=safe_value_error_payload(exc))
 
     @application.get("/", include_in_schema=False)
     def index() -> FileResponse:
@@ -914,6 +988,12 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             return JSONResponse(status_code=422, content={
                 "error_code": "CLIENT_DISPATCH_IDENTITY_FORBIDDEN",
                 "message": "验收执行身份必须来自服务端授权。",
+            })
+
+        if x_use_competitor_snapshot and not x_competitor_snapshot_id:
+            return JSONResponse(status_code=409, content={
+                "error_code": "COMPETITOR_SNAPSHOT_REQUIRED",
+                "message": "请先选择要采用的竞品决策版本；如果本次不需要竞品比较，请选择暂时跳过。",
             })
 
         if x_use_competitor_snapshot and x_competitor_snapshot_id:

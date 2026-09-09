@@ -93,4 +93,5 @@ def test_unknown_profile_is_rejected(client):
         json={"query": "项目", "profile_id": "made_up", "source_types": None},
     )
     assert response.status_code == 422
-    assert "unknown retrieval profile" in response.json()["detail"]
+    assert response.json()["error_code"] == "INVALID_RETRIEVAL_PROFILE"
+    assert "检索配置" in response.json()["detail"]

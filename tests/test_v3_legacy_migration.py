@@ -177,7 +177,8 @@ def test_new_quick_start_project_has_no_guided_session_and_guide_get_is_404(clie
     assert client.app.state.db.fetch_one("SELECT id FROM guided_sessions WHERE project_id=?", (project_id,)) is None
     response = client.get(f"/api/projects/{project_id}/guide")
     assert response.status_code == 404
-    assert "legacy guided session not found" in response.json()["detail"]
+    assert response.json()["detail"] == "这个项目没有旧版引导记录。"
+    assert response.json()["error_code"] == "RESOURCE_NOT_FOUND"
 
 
 def test_existing_legacy_guided_session_remains_readable_and_writable_in_3_0_release_line(client):

@@ -175,7 +175,8 @@ def test_accept_stale_from_snapshot_returns_409(client):
         json={"human_confirmed": True, "note": "stale"},
     )
     assert response.status_code == 409
-    assert "STALE_CHANGE_PROPOSAL" in response.json()["detail"]
+    assert response.json()["error_code"] == "STALE_CHANGE_PROPOSAL"
+    assert "项目状态已变化" in response.json()["detail"]
 
 
 def test_derived_ux_state_uses_snapshot_health_and_open_material_proposals(client):

@@ -148,6 +148,8 @@ function isExpectedHttpError(error) {
     await page.locator('#ai-reference-generate').click();
     await waitForVisible(page, '#ai-reference-content .status-note');
     assert.match(await page.locator('#ai-reference-content').innerText(), /AI生成参考，尚未经外部资料核实/);
+    assert.ok(await page.locator('#ai-reference-content .ai-reference-item-content').count() > 1, 'AI suggestions need visible content blocks');
+    assert.match(await page.locator('#ai-reference-content').innerText(), /可能的目标用户|可能出现的场景|可能需要解决的问题/);
     assert.equal((await page.evaluate(async id => (await fetch(`/api/projects/${id}/sources`)).json(), input.aiProject)).length, 0);
     const selects = page.locator('#ai-reference-content select');
     assert.ok(await selects.count() > 1);

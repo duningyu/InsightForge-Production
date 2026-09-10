@@ -45,8 +45,12 @@ def test_snapshot_uses_structured_presenters_and_vertical_flow():
 
 def test_ai_reference_renders_object_items_without_object_stringification():
     js = (STATIC / "app.js").read_text(encoding="utf-8")
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert "presentStructuredValue(item, \"待确认\")" in js
     assert "JSON.stringify(item)" in js
+    assert "ai-reference-item-content" in js
+    assert 'id="generation-progress-retry"' in html
+    assert "重新生成" in html
     assert "这次没有生成可用建议，请重新尝试。" in js
     assert "setTestAIReference" in js
 

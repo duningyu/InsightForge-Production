@@ -122,6 +122,22 @@ const recoveryCases = {
   },
 };
 
+function recoveryUiText() {
+  const disclosure = getElement("#runtime-disclosure");
+  return `${disclosure.textContent}\n${disclosure.innerHTML}`;
+}
+
+function assertSafeRecoveryMessage(payload, suffix) {
+  const rendered = recoveryUiText();
+  assert.ok(rendered.includes("你的输入已保留") || rendered.includes("项目内容已保留") || rendered.includes("这次操作没有完成"), `${suffix} shows an actionable safe recovery message`);
+  assert.ok(!rendered.includes("Traceback") && !rendered.includes("ValueError") && !rendered.includes("KeyError"), `${suffix} does not show a backend exception`);
+  assert.ok(!rendered.includes("/app/") && !rendered.includes("\\\\"), `${suffix} does not show a server path`);
+  for (const action of payload.recovery_actions) {
+    const humanized = action === "retry" || action === "retry_generation" ? "重试" : action;
+    assert.ok(rendered.includes(humanized) || rendered.includes("按页面提示检查后重试"), `${suffix} shows a safe recovery action`);
+  }
+}
+
 async function exerciseQuickStart(payload, suffix) {
   recoveryPayload = payload;
   fetchCalls.length = 0;
@@ -145,9 +161,7 @@ async function exerciseQuickStart(payload, suffix) {
   assert.equal(dialog.showModalCalls, 0, `${suffix} never opens a stale IdeaBrief dialog`);
   assert.ok(dialog.closeCalls >= 1, `${suffix} closes any stale IdeaBrief dialog`);
   assert.ok(fetchCalls.some((call) => call.path === "/api/projects"), `${suffix} refreshes history after project capture`);
-  const disclosure = getElement("#runtime-disclosure").innerHTML;
-  assert.ok(disclosure.includes(payload.message), `${suffix} shows the Chinese recovery message`);
-  for (const action of payload.recovery_actions) assert.ok(disclosure.includes(action), `${suffix} shows recovery action ${action}`);
+  assertSafeRecoveryMessage(payload, suffix);
 }
 
 async function exerciseSolutions(payload, suffix) {
@@ -162,9 +176,7 @@ async function exerciseSolutions(payload, suffix) {
   assert.equal(hooks.state.solutions, null, `${suffix} clears stale candidates`);
   assert.ok(!getElement("#solutions-content").innerHTML.includes("过时候选"), `${suffix} never renders a stale candidate`);
   assert.equal(fetchCalls.length, 1, `${suffix} performs no blind follow-up request`);
-  const disclosure = getElement("#runtime-disclosure").innerHTML;
-  assert.ok(disclosure.includes(payload.message), `${suffix} shows the Chinese recovery message`);
-  for (const action of payload.recovery_actions) assert.ok(disclosure.includes(action), `${suffix} shows recovery action ${action}`);
+  assertSafeRecoveryMessage(payload, suffix);
 }
 
 async function main() {
@@ -197,6 +209,16 @@ async function main() {
     await Promise.all([generation, duplicate]);
     assert.equal(getElement("#loading-status").hidden, true, "terminal failure clears progress");
     assert.equal(asyncCalls.length, 3, "one POST and two GETs, no additional generation");
+    assert.match(
+      getElement("#generation-progress-state").textContent,
+      /模型输出结构无效|重新生成/,
+      "terminal failure shows a safe actionable message",
+    );
+    assert.equal(
+      getElement("#generation-progress-retry").hidden,
+      false,
+      "terminal failure exposes a retry action",
+    );
   } finally {
     global.fetch = originalFetch;
     global.setTimeout = originalTimeout;

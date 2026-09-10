@@ -385,8 +385,11 @@
     <h2 id="generation-progress-title">方案生成进度</h2>
     <p id="generation-progress-state" role="status" aria-live="polite"></p>
     <p>关闭窗口不会停止任务。停止任务也不保证已发生的模型调用或远端费用被取消。</p>
-    <button id="generation-stop" type="button" class="button">停止生成</button>
-    <button id="generation-progress-close" type="button" class="button">关闭窗口</button>
+    <div class="dialog-actions generation-progress-actions">
+      <button id="generation-progress-retry" type="button" class="button button-primary" hidden>重新生成</button>
+      <button id="generation-stop" type="button" class="button">停止生成</button>
+      <button id="generation-progress-close" type="button" class="button">关闭窗口</button>
+    </div>
   </dialog>
 </body>
 </html>

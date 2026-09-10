@@ -217,6 +217,8 @@ function humanizeErrorMessage(error, fallback = "这次操作没有完成，请�
   }
   if (code === "MODEL_TIMEOUT" || /timeout|timed out|超时/i.test(raw)) return "AI服务本次响应超时，你的输入已保留，请稍后重试。";
   if (code === "PROVIDER_FAILURE") return "AI服务暂时无法完成请求，你的输入已保留，请稍后重试。";
+  if (code === "APPLICATION_POSTPROCESS_FAILURE") return "AI返回的方案未通过应用校验，你的项目内容已保留，请重新生成。";
+  if (code === "MODEL_OUTPUT_SCHEMA_INVALID") return "AI返回的方案结构不完整，你的项目内容已保留，请重新生成。";
   if (code === "GENERATION_PENDING") return "本次生成仍在处理中，请稍候查看结果。";
   if (code === "SOLUTION_GENERATION_IN_PROGRESS") return "正在生成方案，请稍候。";
   if (code === "IDEA_BRIEF_REQUIRED" || code === "IDEA_BRIEF_NOT_CONFIRMED") return "请先完善并确认项目定义，再生成方案。";
@@ -1971,13 +1973,18 @@ async function confirmIdeaBrief(event) {
 
 function renderGenerationProgress(result = state.activeGeneration || {}) {
   const running = ["PENDING", "RUNNING"].includes(result.status);
+  const failed = result.status === "FAILED";
   const message = result.error_code === "ASYNC_GENERATION_CANCELLED"
     ? "任务已停止。已发生的模型调用记录仍保留，停止任务不代表远端费用已取消。"
     : result.status === "SUCCEEDED" ? "方案已生成。"
-    : result.status === "FAILED" ? "任务未完成，请查看页面上的具体说明。"
+    : failed ? humanizeErrorMessage({code: result.error_code, message: result.message, payload: result}, "这次生成没有完成，你的项目内容已保留，请重新生成。")
     : result.cancel_requested ? "正在停止任务……请等待服务端确认。" : "方案正在生成，请稍候……";
   if (qs("#generation-progress-state")) qs("#generation-progress-state").textContent = message;
   if (qs("#generation-stop")) qs("#generation-stop").disabled = !running || Boolean(result.cancel_requested);
+  if (qs("#generation-progress-retry")) {
+    qs("#generation-progress-retry").hidden = !failed;
+    qs("#generation-progress-retry").disabled = false;
+  }
   if (qs("#generation-progress-open")) qs("#generation-progress-open").hidden = !state.activeGeneration;
   if (result.status === "SUCCEEDED" && qs("#generation-progress-dialog")?.open) closeGenerationProgress();
 }
@@ -1989,6 +1996,12 @@ function showGenerationProgress() {
 function closeGenerationProgress() {
   qs("#generation-progress-dialog")?.close();
   qs("#generation-progress-open")?.focus();
+}
+async function retryFailedGeneration() {
+  if (state.generationInFlight || !state.generationTerminalFailure || !state.currentProjectId) return;
+  state.activeGeneration = null;
+  closeGenerationProgress();
+  await generateSolutions({newIntent: true});
 }
 async function cancelActiveGeneration() {
   const task = state.activeGeneration;
@@ -2357,14 +2370,19 @@ function renderAIReference() {
       const row = document.createElement("div"); row.className = "ai-reference-item";
       const itemText = presentStructuredValue(item, "待确认");
       const itemKey = typeof item === "string" ? item : JSON.stringify(item);
-      const text = document.createElement("span"); text.textContent = itemText; row.append(text);
+      const itemContent = document.createElement("div"); itemContent.className = "ai-reference-item-content";
+      const itemLabel = document.createElement("strong"); itemLabel.textContent = "具体建议";
+      const text = document.createElement("p"); text.textContent = itemText; itemContent.append(itemLabel, text);
       const prior = aiReferencePanel.decisions.find((decision) => decision.category === key && decision.item === itemKey);
       const select = document.createElement("select"); select.dataset.aiCategory = key; select.dataset.aiItem = itemKey;
       [["adopt", "采用"], ["modify", "修改"], ["ignore", "忽略"]].forEach(([value, title]) => { const option = document.createElement("option"); option.value = value; option.textContent = title; select.append(option); });
       select.value = prior?.decision || "ignore";
-      select.addEventListener("change", rememberAIReferenceDraft); row.append(select); section.append(row);
+      select.addEventListener("change", rememberAIReferenceDraft);
       const rationale = document.createElement("input"); rationale.type = "text"; rationale.placeholder = "可填写原因（可选）"; rationale.dataset.aiRationaleFor = itemKey;
-      rationale.value = prior?.rationale || ""; rationale.addEventListener("input", rememberAIReferenceDraft); row.append(rationale);
+      rationale.value = prior?.rationale || ""; rationale.className = "ai-reference-item-explanation"; rationale.addEventListener("input", rememberAIReferenceDraft);
+      const controls = document.createElement("div"); controls.className = "ai-reference-item-controls";
+      const decisionLabel = document.createElement("label"); decisionLabel.textContent = "如何处理这条建议"; decisionLabel.append(select);
+      controls.append(decisionLabel, rationale); row.append(itemContent, controls); section.append(row);
     }); content.append(section);
   });
   const actions = document.createElement("div"); actions.className = "handoff-actions";
@@ -2603,6 +2621,7 @@ function wireEvents() {
   qs("#competitor-save-snapshot")?.addEventListener("click", () => void saveCompetitorSnapshot());
   qs("#generation-progress-open")?.addEventListener("click", showGenerationProgress);
   qs("#generation-progress-close")?.addEventListener("click", closeGenerationProgress);
+  qs("#generation-progress-retry")?.addEventListener("click", () => void retryFailedGeneration());
   qs("#generation-progress-dialog")?.addEventListener("cancel", (event) => { event.preventDefault(); closeGenerationProgress(); });
   qs("#generation-stop")?.addEventListener("click", cancelActiveGeneration);
   qs("#beta-feedback-button")?.addEventListener("click", () => qs("#beta-feedback-dialog")?.showModal());
@@ -2672,6 +2691,8 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     beginLoading,
     showGenerationProgress,
     closeGenerationProgress,
+    retryFailedGeneration,
+    renderGenerationProgress,
     cancelActiveGeneration,
     state,
     quickStart,

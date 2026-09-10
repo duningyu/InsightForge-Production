@@ -4,9 +4,10 @@ Use this only for a future isolated Stage A project. Do not run `railway up`
 or `railway config apply` as part of the readiness audit.
 
 1. Create a new Railway project.
-2. Deploy from the repository and select the repository's `Dockerfile`.
+2. Deploy from the repository and select `deploy/beta/Dockerfile`.
 3. Add the variables from `deployment/railway/env.example`; let Railway inject
-   `PORT`, set `HOST=0.0.0.0`, and set `INSIGHTFORGE_DATA_ROOT=/app/data`.
+   `PORT` and set `INSIGHTFORGE_DATA_ROOT=/app/data`. Do not add a manual
+   `PORT=8000`; local Docker uses 8000 only when `PORT` is absent.
 4. Add one Volume and mount it at `/app/data`.
 5. Set the healthcheck path to `/api/health`.
 6. Keep replicas at `1`.

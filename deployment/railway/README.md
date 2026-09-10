@@ -7,11 +7,14 @@ service.
 
 ## Architecture
 
-- One Railway Web Service built from the repository `Dockerfile`.
+- One Railway Web Service built from `deploy/beta/Dockerfile` (the Dockerfile
+  used by the Stage A service).
 - One Railway Volume mounted at `/app/data`.
 - One replica only. SQLite and in-process tasks are not a multi-replica contract.
-- The process binds `0.0.0.0:${PORT}`. When `PORT` is absent for local Docker,
-  the default is `8000`.
+- The container startup command reads Railway's injected `PORT` and binds
+  `0.0.0.0:${PORT}`. When `PORT` is absent for local Docker, the default is
+  `8000`. Do not set `PORT=8000` manually in Railway; the platform must own
+  that value.
 - `GET /api/health` is the unauthenticated, lightweight healthcheck.
 - Stage A does not depend on Tailscale Funnel, Caddy Basic Auth, or a beta
   participant identity.

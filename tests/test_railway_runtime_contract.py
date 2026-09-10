@@ -37,13 +37,14 @@ def test_explicit_legacy_paths_still_override_data_root(monkeypatch, tmp_path):
 
 
 def test_docker_command_uses_railway_port_with_local_default():
-    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (REPO_ROOT / "deploy" / "beta" / "Dockerfile").read_text(encoding="utf-8")
 
     assert "${PORT:-8000}" in dockerfile
+    assert 'CMD ["sh", "-c"' in dockerfile
 
 
 def test_docker_healthcheck_uses_effective_port():
-    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (REPO_ROOT / "deploy" / "beta" / "Dockerfile").read_text(encoding="utf-8")
 
     assert "os.getenv('PORT', '8000')" in dockerfile
     assert "127.0.0.1:{port}" in dockerfile

@@ -8,6 +8,12 @@ or `railway config apply` as part of the readiness audit.
 3. Add the variables from `deployment/railway/env.example`; let Railway inject
    `PORT` and set `INSIGHTFORGE_DATA_ROOT=/app/data`. Do not add a manual
    `PORT=8000`; local Docker uses 8000 only when `PORT` is absent.
+   For the isolated Stage A fixture acceptance only, set
+   `INSIGHTFORGE_SAFE_FIXTURE_MODE=true` with
+   `BETA_PARTICIPANT_ID=railway_stage_a` and accounts disabled. Keep it
+   unset/false in beta, Stage B, and production. The optional
+   `INSIGHTFORGE_SAFE_FIXTURE_SCENARIO=solution_generation_fail_once` is a
+   deterministic recovery check, not a real Provider call.
 4. Add one Volume and mount it at `/app/data`.
 5. Set the healthcheck path to `/api/health`.
 6. Keep replicas at `1`.

@@ -109,6 +109,7 @@ from app.services.loop import DocumentLoop
 from app.services.model_profiles import ModelProfileService
 from app.services.guidance import GuidanceService
 from app.services.hybrid_runtime import HybridStructuredRuntime
+from app.services.safe_fixture import StageASafeFixtureRuntime, safe_fixture_enabled
 from app.services.credential_store import CredentialBackendUnavailable
 from app.tools import ToolRegistry
 from app.retrieval_profiles import list_retrieval_profiles
@@ -157,6 +158,8 @@ def _sanitize_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, 
 def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                settings_override: Settings | None = None) -> FastAPI:
     settings = settings_override or Settings.from_env()
+    if settings.safe_fixture_mode and not safe_fixture_enabled(settings):
+        raise RuntimeError("SAFE_FIXTURE_SCOPE_REJECTED")
     if settings.accounts_enabled:
         from app.accounts import create_account_app
         return create_account_app(settings)
@@ -265,6 +268,10 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                 dispatch_ledger=application.state.provider_dispatch_ledger,
             )
 
+        fixture_runtime = (
+            StageASafeFixtureRuntime(scenario=settings.safe_fixture_scenario)
+            if safe_fixture_enabled(settings) else None
+        )
         application.state.structured_runtime = HybridStructuredRuntime(
             application.state.model_profiles,
             local_runtime=build_structured_runtime(
@@ -289,6 +296,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                 else None
             ),
             managed_runtime_factory=managed_runtime_factory if settings.beta_mode and settings.beta_managed_mode else None,
+            fixture_runtime=fixture_runtime,
         )
         application.state.quick_start = QuickStartService(
             db, application.state.projects, application.state.structured_runtime
@@ -326,6 +334,9 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         application.state.async_generation_worker = AsyncGenerationWorker(
             application.state.async_generation_repository,
             async_executor=execute_async_solution_generation,
+            provider_dispatch_allowed=lambda run: not bool(
+                getattr(application.state.structured_runtime.for_project(run.project_id), "fixture_origin", None)
+            ),
         )
         application.state.async_generation_worker.start()
         application.state.decisions = DecisionService()
@@ -1093,9 +1104,10 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                 return JSONResponse(status_code=claim.status_code or 201, content=claim.payload or {})
             return JSONResponse(status_code=claim.status_code or 409, content=claim.payload or {})
         try:
-            application.state.solution_generation_guard.mark_provider_call(
-                participant_id, project_id, attempt_id
-            )
+            if not getattr(application.state.structured_runtime.for_project(project_id), "fixture_origin", None):
+                application.state.solution_generation_guard.mark_provider_call(
+                    participant_id, project_id, attempt_id
+                )
             generate_kwargs = {
                 "actor": x_actor,
                 "managed_selection": selection,

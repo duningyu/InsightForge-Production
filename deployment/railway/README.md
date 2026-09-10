@@ -47,6 +47,19 @@ Stage A leaves `INSIGHTFORGE_ACCOUNTS_ENABLED=false`. Formal multi-user account
 productionization is a separate gate documented in
 `ACCOUNT_PRODUCTIONIZATION_GAPS.md`.
 
+## Stage A Safe Fixture
+
+For the isolated Stage A acceptance run only, the service may enable
+`INSIGHTFORGE_SAFE_FIXTURE_MODE=true` and optionally set
+`INSIGHTFORGE_SAFE_FIXTURE_SCENARIO=solution_generation_fail_once`. The
+application additionally requires accounts to remain disabled and the Stage A
+participant identity (`railway_stage_a`); otherwise it fails closed. The fixture
+uses the normal generation and persistence pipeline, but it is deterministic and
+is not a real AI or Search result. Generated references, evidence cards, and
+solutions are labelled `Stage A 演示结果 · 非真实 AI 生成`; Provider dispatch and
+real Search calls remain zero. Keep the mode unset or `false` in beta, Stage B,
+and production. This is not an authentication bypass or a public fixture API.
+
 ## Healthcheck and first boot
 
 Configure the Railway healthcheck path as `/api/health`. It must return 2xx

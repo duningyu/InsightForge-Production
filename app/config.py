@@ -34,6 +34,8 @@ class Settings:
     runtime_dir: Path = Path("runtime")
     accounts_enabled: bool = False
     accounts_dir: Path = Path("data/accounts")
+    safe_fixture_mode: bool = False
+    safe_fixture_scenario: str = "success"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -75,6 +77,8 @@ class Settings:
             accounts_dir=Path(accounts_value) if accounts_value else (
                 data_root / "accounts" if data_root_value else Path("data/accounts")
             ),
+            safe_fixture_mode=os.getenv("INSIGHTFORGE_SAFE_FIXTURE_MODE", "false").strip().lower() in {"1", "true", "yes"},
+            safe_fixture_scenario=os.getenv("INSIGHTFORGE_SAFE_FIXTURE_SCENARIO", "success").strip(),
         )
         if not 1 <= settings.max_loop_rounds <= 5:
             raise ValueError("INSIGHTFORGE_MAX_LOOP_ROUNDS must be in [1, 5]")
@@ -88,6 +92,8 @@ class Settings:
             raise ValueError("BETA_CONSENT_VERSION must be positive")
         if settings.beta_session_idle_timeout_minutes != 30:
             raise ValueError("BETA_SESSION_IDLE_TIMEOUT_MINUTES must remain 30")
+        if settings.safe_fixture_scenario not in {"success", "solution_generation_fail_once"}:
+            raise ValueError("INSIGHTFORGE_SAFE_FIXTURE_SCENARIO is unsupported")
         try:
             ZoneInfo(settings.beta_timezone)
         except ZoneInfoNotFoundError as exc:

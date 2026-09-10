@@ -482,7 +482,11 @@ class SolutionDesignService:
             (latest["id"],),
         )
         candidates = [self._serialize_candidate(row) for row in rows]
-        return {"run": latest, "latest_run": latest, "candidates": candidates}
+        result = {"run": latest, "latest_run": latest, "candidates": candidates}
+        if latest.get("provider") == "safe_fixture":
+            result["fixture_origin"] = "STAGE_A_SYNTHETIC"
+            result["fixture_disclosure"] = "Stage A 演示结果 · 非真实 AI 生成"
+        return result
 
     async def generate_async(
         self,
@@ -528,7 +532,14 @@ class SolutionDesignService:
                 action="solution_generation_recovery_required", status="recovery_required",
                 error_code=exc.error_code, safe_diagnostic=exc.safe_diagnostic,
             )
-            return exc.as_payload(preserved_input=brief)
+            payload = exc.as_payload(preserved_input=brief)
+            fixture_origin = getattr(runtime, "fixture_origin", None)
+            if fixture_origin:
+                payload["fixture_origin"] = fixture_origin
+                payload["fixture_disclosure"] = getattr(
+                    runtime, "disclosure", "Stage A 演示结果 · 非真实 AI 生成"
+                )
+            return payload
 
         try:
             candidates = validate_solution_set(

@@ -1209,7 +1209,8 @@ function renderSolutions() {
     qs("#open-idea-brief-button")?.addEventListener("click", openIdeaBriefReview);
     return;
   }
-  target.innerHTML = `<div class="solution-grid">${state.solutions.candidates.map((solution, index) => `
+  const fixtureNotice = state.solutions.fixture_disclosure || (state.solutions.fixture_origin === "STAGE_A_SYNTHETIC" ? "Stage A 演示结果 · 非真实 AI 生成" : "");
+  target.innerHTML = `${fixtureNotice ? `<p class="fixture-disclosure status-note">${escapeHtml(fixtureNotice)}</p>` : ""}<div class="solution-grid">${state.solutions.candidates.map((solution, index) => `
     <article class="solution-card" data-candidate-id="${escapeHtml(solution.id)}">
       <div class="solution-card-head"><span>方案 ${String.fromCharCode(65 + index)}</span><span class="pill">${escapeHtml(mechanismLabel(solution.mechanism))}</span></div>
       <h3>${escapeHtml(solution.title)}</h3>
@@ -1428,6 +1429,13 @@ function renderEvidenceGuidance() {
     return;
   }
   message.textContent = "AI建议你去补这些资料，尚未加入项目资料，也不代表已经核实。";
+  const fixtureNotice = evidenceGuidancePanel.result?.fixture_disclosure || (evidenceGuidancePanel.result?.fixture_origin === "STAGE_A_SYNTHETIC" ? "Stage A 演示结果 · 非真实 AI 生成" : "");
+  if (fixtureNotice) {
+    const notice = document.createElement("p");
+    notice.className = "fixture-disclosure status-note";
+    notice.textContent = fixtureNotice;
+    content.append(notice);
+  }
   cards.forEach((card, index) => {
     const article = document.createElement("article");
     article.className = "evidence-coach-card";
@@ -2362,6 +2370,10 @@ function renderAIReference() {
     return;
   }
   const notice = document.createElement("p"); notice.className = "status-note"; notice.textContent = result.uncertainty_notice || "AI生成参考，尚未经外部资料核实。"; content.append(notice);
+  const fixtureNotice = result.fixture_disclosure || (result.fixture_origin === "STAGE_A_SYNTHETIC" ? "Stage A 演示结果 · 非真实 AI 生成" : "");
+  if (fixtureNotice) {
+    const disclosure = document.createElement("p"); disclosure.className = "fixture-disclosure status-note"; disclosure.textContent = fixtureNotice; content.append(disclosure);
+  }
   AI_REFERENCE_GROUPS.forEach(([key, label]) => {
     const values = Array.isArray(result[key]) ? result[key] : []; if (!values.length) return;
     const section = document.createElement("section"); section.className = "secondary-panel ai-reference-group";

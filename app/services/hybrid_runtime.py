@@ -437,6 +437,7 @@ class HybridStructuredRuntime:
         after_provider_success: Callable[[str, Any], Any] | None = None,
         managed_runtime: StructuredAIRuntime | None = None,
         managed_runtime_factory: Callable[[Any], StructuredAIRuntime] | None = None,
+        fixture_runtime: StructuredAIRuntime | None = None,
     ) -> None:
         if max_model_rounds < 1 or max_model_rounds > 2:
             raise ValueError("max_model_rounds must be in [1, 2]")
@@ -456,6 +457,7 @@ class HybridStructuredRuntime:
             raise ValueError("managed_runtime must use a managed runtime")
         self.managed_runtime = managed_runtime
         self.managed_runtime_factory = managed_runtime_factory
+        self.fixture_runtime = fixture_runtime
 
     @property
     def mode(self) -> str:
@@ -485,6 +487,8 @@ class HybridStructuredRuntime:
         )
 
     def for_project(self, project_id: str | None, managed_selection: Any | None = None) -> StructuredAIRuntime:
+        if self.fixture_runtime is not None:
+            return self.fixture_runtime
         if self.managed_runtime_factory is not None and managed_selection is not None:
             return self.managed_runtime_factory(managed_selection)
         if self.managed_runtime is not None:
@@ -520,3 +524,13 @@ class HybridStructuredRuntime:
     def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
         runtime = self.for_project(context.get("project_id"))
         return runtime.generate_evidence_guidance(context)
+
+    def design_solutions(
+        self,
+        brief: IdeaBriefDraft,
+        *,
+        project_id: str | None = None,
+        managed_selection: Any | None = None,
+    ) -> SolutionSetDraft:
+        runtime = self.for_project(project_id, managed_selection=managed_selection)
+        return runtime.design_solutions(brief)

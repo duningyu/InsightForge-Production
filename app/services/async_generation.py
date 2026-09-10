@@ -373,8 +373,9 @@ class AsyncGenerationRepository:
 
 
 class AsyncGenerationWorker:
-    def __init__(self, repository: AsyncGenerationRepository, executor: Callable[[AsyncRun], dict[str, Any]] | None = None, *, async_executor: Callable[[AsyncRun], Any] | None = None, poll_seconds: float = 0.05):
+    def __init__(self, repository: AsyncGenerationRepository, executor: Callable[[AsyncRun], dict[str, Any]] | None = None, *, async_executor: Callable[[AsyncRun], Any] | None = None, poll_seconds: float = 0.05, provider_dispatch_allowed: Callable[[AsyncRun], bool] | None = None):
         self.repository, self.executor, self.async_executor, self.poll_seconds = repository, executor, async_executor, poll_seconds
+        self.provider_dispatch_allowed = provider_dispatch_allowed
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._active_loop: asyncio.AbstractEventLoop | None = None
@@ -419,7 +420,8 @@ class AsyncGenerationWorker:
                 return
             if current.cancel_requested_at:
                 raise asyncio.CancelledError
-            self.repository.mark_provider_call(run.generation_run_id)
+            if self.provider_dispatch_allowed is None or self.provider_dispatch_allowed(run):
+                self.repository.mark_provider_call(run.generation_run_id)
             if self.async_executor is not None:
                 payload = await self.async_executor(run)
             elif self.executor is not None:

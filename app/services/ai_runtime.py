@@ -73,7 +73,7 @@ def build_ai_trace_payload(
     status: str,
     component_version: str,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "provider": runtime.provider,
         "model": runtime.model,
         "prompt_version": runtime.prompt_version,
@@ -90,6 +90,11 @@ def build_ai_trace_payload(
         "profile_id": getattr(runtime, "profile_id", None),
         "profile_revision": getattr(runtime, "profile_revision", None),
     }
+    fixture_origin = getattr(runtime, "fixture_origin", None)
+    if fixture_origin:
+        payload["fixture_origin"] = fixture_origin
+        payload["disclosure"] = getattr(runtime, "disclosure", None)
+    return payload
 
 
 class DeterministicDemoRuntime:

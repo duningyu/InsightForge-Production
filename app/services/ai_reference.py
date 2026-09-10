@@ -72,6 +72,12 @@ class AIReferenceService:
         if not any(result_json.get(category) for category in _CATEGORIES):
             raise StructuredRuntimeUnavailableError("这次没有生成可用建议，请重新尝试。")
         result_json["uncertainty_notice"] = "AI生成参考，尚未经外部资料核实。"
+        fixture_origin = getattr(runtime, "fixture_origin", None)
+        if fixture_origin:
+            result_json["fixture_origin"] = fixture_origin
+            result_json["fixture_disclosure"] = getattr(
+                runtime, "disclosure", "Stage A 演示结果 · 非真实 AI 生成"
+            )
         now = utc_now()
         result_id = f"ai_reference_{uuid.uuid4().hex}"
         self.db.execute(

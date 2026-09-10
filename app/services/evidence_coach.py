@@ -85,6 +85,12 @@ class EvidenceCoachService:
         self._validate_cards(parsed)
         result_json = parsed.model_dump(mode="json")
         result_json["disclosure"] = _DISCLOSURE
+        fixture_origin = getattr(runtime, "fixture_origin", None)
+        if fixture_origin:
+            result_json["fixture_origin"] = fixture_origin
+            result_json["fixture_disclosure"] = getattr(
+                runtime, "disclosure", "Stage A 演示结果 · 非真实 AI 生成"
+            )
         now = utc_now()
         result_id = f"evidence_guidance_{uuid.uuid4().hex}"
         content_sha256 = sha256_payload(result_json)

@@ -179,11 +179,65 @@ async function exerciseSolutions(payload, suffix) {
   assertSafeRecoveryMessage(payload, suffix);
 }
 
+async function exerciseRetryClearsStaleFailure() {
+  const originalFetch = global.fetch;
+  hooks.state.runtimeMode = "hybrid";
+  hooks.showRecoveryPayload({
+    error_code: "PROVIDER_FAILURE",
+    message: "这次操作没有完成；你的项目内容已保留。",
+    recovery_actions: ["retry_generation"],
+  }, "solution_generation");
+  assert.equal(
+    getElement("#runtime-disclosure").classList.contains("hidden"),
+    false,
+    "initial generation failure is visible",
+  );
+  global.fetch = async (path, options = {}) => {
+    if (options.method === "POST") {
+      return jsonResponse({
+        candidates: [{id: "solution-a", title: "可恢复方案", why_fit: "用于验证重试后的成功结果。"}],
+      }, 200);
+    }
+    if (path.endsWith("/next-action")) return jsonResponse({}, 200);
+    throw new Error(`unexpected retry fetch ${path}`);
+  };
+  try {
+    hooks.state.currentProjectId = "retry-project";
+    hooks.state.solutions = null;
+    await hooks.generateSolutions({newIntent: true});
+    assert.equal(hooks.state.solutions.candidates.length, 1, "retry renders the successful solution result");
+    assert.equal(
+      getElement("#runtime-disclosure").classList.contains("hidden"),
+      true,
+      "successful retry clears the stale failure banner",
+    );
+    hooks.renderRuntimeDisclosure();
+    assert.equal(
+      getElement("#runtime-disclosure").classList.contains("hidden"),
+      true,
+      "refresh-equivalent disclosure render does not restore the old failure",
+    );
+    hooks.showRecoveryPayload({
+      error_code: "PROVIDER_FAILURE",
+      message: "新的独立生成失败；你的项目内容已保留。",
+      recovery_actions: ["retry_generation"],
+    }, "solution_generation");
+    assert.equal(
+      getElement("#runtime-disclosure").classList.contains("hidden"),
+      false,
+      "a new independent solution failure remains visible",
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
 async function main() {
   await exerciseQuickStart(recoveryCases.local, "local");
   await exerciseQuickStart(recoveryCases.credential, "credential");
   await exerciseSolutions(recoveryCases.quota, "quota");
   await exerciseSolutions(recoveryCases.schema, "schema");
+  await exerciseRetryClearsStaleFailure();
   // Exercise the actual async orchestration, including the idle polling gap.
   const originalFetch = global.fetch;
   const originalTimeout = global.setTimeout;

@@ -35,6 +35,7 @@ const state = {
   generationIntentId: null,
   generationTerminalFailure: false,
   generationFailureCode: null,
+  runtimeDisclosureContext: null,
   betaMode: false,
   betaConsented: false,
   betaConsentVersion: 1,
@@ -337,7 +338,8 @@ function isRecoveryPayload(value) {
   return Boolean(value && typeof value.error_code === "string");
 }
 
-function showRecoveryPayload(payload) {
+function showRecoveryPayload(payload, context = "general") {
+  state.runtimeDisclosureContext = context;
   const message = String(payload?.message || "生成未完成；你的输入已保留。");
   const code = String(payload?.error_code || "");
   const humanMessage = humanizeErrorMessage({message, code, payload}, ({
@@ -357,6 +359,12 @@ function showRecoveryPayload(payload) {
     node.innerHTML = `<div><strong>${escapeHtml(humanMessage)}</strong>${actions.length ? `<ul>${actions.map((action) => `<li>${escapeHtml(action)}</li>`).join("")}</ul>` : ""}<details class="technical-details"><summary>技术详情</summary><code>错误代码：${escapeHtml(safeCode)}</code><span>原始错误仅保留在服务端日志中。</span></details></div>`;
   }
   toast(actions.length ? `${humanMessage} 可执行：${actions.join("；")}` : humanMessage);
+}
+
+function clearSolutionGenerationFailureNotice() {
+  if (state.runtimeDisclosureContext !== "solution_generation") return;
+  state.runtimeDisclosureContext = null;
+  renderRuntimeDisclosure();
 }
 
 function closeStaleIdeaBriefDialog() {
@@ -2053,6 +2061,7 @@ async function generateSolutions({newIntent = false} = {}) {
   }
   state.generationTerminalFailure = false;
   state.generationFailureCode = null;
+  clearSolutionGenerationFailureNotice();
   const button = qs("#generate-solutions-button");
   if (button) {
     button.disabled = true;
@@ -2089,13 +2098,14 @@ async function generateSolutions({newIntent = false} = {}) {
         state.generationTerminalFailure = true;
         state.generationFailureCode = result.error_code || null;
         renderSolutions();
-        showRecoveryPayload(result);
+        showRecoveryPayload(result, "solution_generation");
         return result;
       }
       state.solutions = result;
       state.generationIntentId = null;
       state.generationTerminalFailure = false;
       state.generationFailureCode = null;
+      clearSolutionGenerationFailureNotice();
       renderSolutions();
       await loadProjectNextAction();
       return result;
@@ -2135,13 +2145,14 @@ async function pollSolutionGeneration(runId, projectId = state.currentProjectId)
       state.generationTerminalFailure = true;
       state.generationFailureCode = result.error_code || null;
       renderSolutions();
-      showRecoveryPayload(result);
+      showRecoveryPayload(result, "solution_generation");
       return result;
     }
     state.solutions = result;
     state.generationIntentId = null;
     state.generationTerminalFailure = false;
     state.generationFailureCode = null;
+    clearSolutionGenerationFailureNotice();
     renderSolutions();
     await loadProjectNextAction();
     return result;
@@ -2701,6 +2712,7 @@ function wireEvents() {
 const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
   __test: {
     beginLoading,
+    showRecoveryPayload,
     showGenerationProgress,
     closeGenerationProgress,
     retryFailedGeneration,

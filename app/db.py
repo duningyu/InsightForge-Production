@@ -886,6 +886,56 @@ CREATE TABLE IF NOT EXISTS provider_dispatch_events (
 );
 CREATE INDEX IF NOT EXISTS idx_provider_dispatch_events_permit
     ON provider_dispatch_events(permit_id, observed_at);
+CREATE TABLE IF NOT EXISTS stage_b_evaluation_receipts (
+    evaluation_id TEXT PRIMARY KEY,
+    execution_id TEXT,
+    idea_id TEXT NOT NULL,
+    evaluation_type TEXT NOT NULL DEFAULT 'PROVIDER_CONNECTIVITY_SMOKE',
+    execution_mode TEXT NOT NULL,
+    participant_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    prompt_template_version TEXT NOT NULL,
+    context_version TEXT NOT NULL,
+    retry_ordinal INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    dispatch_permit_id TEXT,
+    dispatch_ordinal INTEGER,
+    dispatch_count INTEGER NOT NULL DEFAULT 0,
+    transport_ordinal INTEGER,
+    transport_count INTEGER NOT NULL DEFAULT 0,
+    transport_attempted INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    dispatch_prepared_at TEXT,
+    transport_started_at TEXT,
+    transport_completed_at TEXT,
+    response_non_empty INTEGER,
+    decode_status TEXT,
+    schema_validation TEXT,
+    application_postprocess TEXT,
+    failure_classification TEXT,
+    failure_reason TEXT,
+    latency_ms REAL,
+    input_token_count INTEGER,
+    output_token_count INTEGER,
+    total_token_count INTEGER,
+    budget_before INTEGER NOT NULL,
+    budget_consumed INTEGER NOT NULL DEFAULT 0,
+    budget_after INTEGER NOT NULL,
+    prompt_sha256 TEXT,
+    response_sha256 TEXT,
+    artifact_relative_path TEXT,
+    artifact_sha256 TEXT,
+    request_bytes INTEGER,
+    response_bytes INTEGER,
+    artifact_persistence_status TEXT,
+    UNIQUE(execution_id, retry_ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_stage_b_evaluation_receipts_created
+    ON stage_b_evaluation_receipts(created_at);
+CREATE INDEX IF NOT EXISTS idx_stage_b_evaluation_receipts_operation
+    ON stage_b_evaluation_receipts(operation, status);
 """
 
 

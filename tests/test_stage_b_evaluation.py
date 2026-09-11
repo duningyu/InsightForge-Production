@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from app.main import create_app
+from app.config import Settings
 from app.services.stage_b_evaluation import (
     DIRECT_BASELINE_PROMPT_VERSION,
     INSIGHTFORGE_PROMPT_VERSION,
@@ -48,6 +50,20 @@ def test_stage_b_guard_is_default_deny_and_requires_stage_b_scope() -> None:
         accounts_enabled=False,
         participant_id="railway_stage_b",
     ).allowed
+
+
+def test_app_rejects_real_provider_stage_b_outside_scope(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="REAL_PROVIDER_STAGE_B_SCOPE_REJECTED"):
+        create_app(
+            database_path=tmp_path / "db.sqlite3",
+            seed=False,
+            settings_override=Settings(
+                real_provider_stage_b=True,
+                safe_fixture_mode=False,
+                accounts_enabled=False,
+                beta_participant_id="beta_003",
+            ),
+        )
 
 
 def test_direct_baseline_is_frozen_and_receives_only_raw_idea() -> None:

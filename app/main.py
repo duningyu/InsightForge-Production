@@ -110,6 +110,7 @@ from app.services.model_profiles import ModelProfileService
 from app.services.guidance import GuidanceService
 from app.services.hybrid_runtime import HybridStructuredRuntime
 from app.services.safe_fixture import StageASafeFixtureRuntime, safe_fixture_enabled
+from app.services.stage_b_evaluation import evaluate_stage_b_guard
 from app.services.credential_store import CredentialBackendUnavailable
 from app.tools import ToolRegistry
 from app.retrieval_profiles import list_retrieval_profiles
@@ -160,6 +161,16 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
     settings = settings_override or Settings.from_env()
     if settings.safe_fixture_mode and not safe_fixture_enabled(settings):
         raise RuntimeError("SAFE_FIXTURE_SCOPE_REJECTED")
+    if settings.real_provider_stage_b:
+        try:
+            evaluate_stage_b_guard(
+                real_provider_stage_b=settings.real_provider_stage_b,
+                safe_fixture_mode=settings.safe_fixture_mode,
+                accounts_enabled=settings.accounts_enabled,
+                participant_id=settings.beta_participant_id,
+            )
+        except Exception as exc:
+            raise RuntimeError("REAL_PROVIDER_STAGE_B_SCOPE_REJECTED") from exc
     if settings.accounts_enabled:
         from app.accounts import create_account_app
         return create_account_app(settings)

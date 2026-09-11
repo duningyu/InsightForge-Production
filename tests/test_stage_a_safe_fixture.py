@@ -27,6 +27,9 @@ def test_safe_fixture_is_default_off_and_stage_a_scoped(monkeypatch):
         replace(settings, safe_fixture_mode=True, beta_participant_id="beta_003")
     ) is False
     assert safe_fixture_enabled(
+        replace(settings, safe_fixture_mode=True, beta_participant_id="railway_stage_b")
+    ) is False
+    assert safe_fixture_enabled(
         replace(
             settings,
             safe_fixture_mode=True,

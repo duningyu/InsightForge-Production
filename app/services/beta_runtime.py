@@ -5,12 +5,18 @@ import re
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 
-PARTICIPANT_RE = re.compile(r"^(?:beta_[0-9]{3}|railway_stage_a|user_[a-f0-9]{32})$")
+PARTICIPANT_RE = re.compile(r"^(?:beta_[0-9]{3}|user_[a-f0-9]{32})$")
+APPROVED_RAILWAY_STAGE_PARTICIPANTS = frozenset({"railway_stage_a", "railway_stage_b"})
 
 
 def validate_participant_id(value: str) -> str:
-    if not isinstance(value, str) or not PARTICIPANT_RE.fullmatch(value):
-        raise ValueError("participant_id must match beta_[0-9]{3}, railway_stage_a, or be a server account identity")
+    if not isinstance(value, str) or (
+        value not in APPROVED_RAILWAY_STAGE_PARTICIPANTS and not PARTICIPANT_RE.fullmatch(value)
+    ):
+        raise ValueError(
+            "participant_id must match beta_[0-9]{3}, be one of the approved Railway stage identities, "
+            "or be a server account identity"
+        )
     return value
 
 

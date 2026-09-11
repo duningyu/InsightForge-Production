@@ -35,8 +35,24 @@ def test_runtime_paths_reject_traversal_and_validate_participant():
     finally:
         import shutil
         shutil.rmtree(paths.root, ignore_errors=True)
-    for value in ("beta_001", "beta_999"):
+    for value in ("beta_001", "beta_999", "railway_stage_a", "railway_stage_b"):
         assert validate_participant_id(value) == value
+
+
+def test_stage_participant_contract_rejects_unapproved_identities():
+    import pytest
+
+    for value in (
+        "railway_stage",
+        "railway_stage_c",
+        "railway_prod",
+        "stage_b",
+        "beta_01",
+        "beta_0001",
+        "arbitrary_string",
+    ):
+        with pytest.raises(ValueError, match="approved Railway stage identities"):
+            validate_participant_id(value)
 
 
 def test_runtime_and_database_persist_across_app_restart(monkeypatch, tmp_path):
@@ -56,3 +72,28 @@ def test_runtime_roots_are_independent(tmp_path):
     a_file.write_text("synthetic source", encoding="utf-8")
     assert a_file.exists()
     assert not b.child("source.txt", area="uploads").exists()
+
+
+def test_railway_stage_identities_keep_storage_and_context_metadata_distinct(tmp_path):
+    from types import SimpleNamespace
+    from app.services.beta_runtime import BetaInstanceContext
+
+    stage_a = BetaInstanceContext.from_settings(SimpleNamespace(
+        beta_participant_id="railway_stage_a",
+        database_path=tmp_path / "stage-a" / "insightforge.sqlite3",
+        runtime_dir=tmp_path / "stage-a" / "runtime",
+        beta_mode=True,
+        beta_release_id="stage-a",
+    ))
+    stage_b = BetaInstanceContext.from_settings(SimpleNamespace(
+        beta_participant_id="railway_stage_b",
+        database_path=tmp_path / "stage-b" / "insightforge.sqlite3",
+        runtime_dir=tmp_path / "stage-b" / "runtime",
+        beta_mode=True,
+        beta_release_id="stage-b",
+    ))
+
+    assert stage_a.participant_id == "railway_stage_a"
+    assert stage_b.participant_id == "railway_stage_b"
+    assert stage_a.database_path != stage_b.database_path
+    assert stage_a.runtime.root != stage_b.runtime.root

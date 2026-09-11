@@ -127,7 +127,12 @@ class StageBEvaluationReceiptStore:
         root = artifact_root or (database.path.parent / "private" / "stage_b_evaluation")
         self.artifact_root = root.resolve()
         repo_root = Path(__file__).resolve().parents[2]
-        if self.artifact_root == repo_root or repo_root in self.artifact_root.parents:
+        persistent_root = database.path.parent.resolve()
+        artifact_is_in_checkout = self.artifact_root == repo_root or repo_root in self.artifact_root.parents
+        artifact_is_in_persistent_root = (
+            self.artifact_root == persistent_root or persistent_root in self.artifact_root.parents
+        )
+        if artifact_is_in_checkout and not artifact_is_in_persistent_root:
             raise StageBGuardError("PRIVATE_ARTIFACT_ROOT_MUST_BE_OUTSIDE_REPOSITORY")
 
     def create(

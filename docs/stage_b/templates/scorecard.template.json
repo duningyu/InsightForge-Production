@@ -1,0 +1,11 @@
+{
+  "batch_id": "",
+  "ideas": {
+    "idea_A": {"insightforge": {}, "direct_baseline": {}, "winner": "", "comments": ""},
+    "idea_B": {"insightforge": {}, "direct_baseline": {}, "winner": "", "comments": ""},
+    "idea_C": {"insightforge": {}, "direct_baseline": {}, "winner": "", "comments": ""}
+  },
+  "document_inheritance": [],
+  "critical_failures": [],
+  "decision": "UNSET"
+}

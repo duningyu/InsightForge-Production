@@ -36,6 +36,8 @@ class Settings:
     accounts_dir: Path = Path("data/accounts")
     safe_fixture_mode: bool = False
     safe_fixture_scenario: str = "success"
+    real_provider_stage_b: bool = False
+    stage_b_transport_budget: int = 12
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -79,6 +81,8 @@ class Settings:
             ),
             safe_fixture_mode=os.getenv("INSIGHTFORGE_SAFE_FIXTURE_MODE", "false").strip().lower() in {"1", "true", "yes"},
             safe_fixture_scenario=os.getenv("INSIGHTFORGE_SAFE_FIXTURE_SCENARIO", "success").strip(),
+            real_provider_stage_b=os.getenv("REAL_PROVIDER_STAGE_B", "false").strip().lower() in {"1", "true", "yes"},
+            stage_b_transport_budget=int(os.getenv("INSIGHTFORGE_STAGE_B_TRANSPORT_BUDGET", "12")),
         )
         if not 1 <= settings.max_loop_rounds <= 5:
             raise ValueError("INSIGHTFORGE_MAX_LOOP_ROUNDS must be in [1, 5]")
@@ -94,6 +98,8 @@ class Settings:
             raise ValueError("BETA_SESSION_IDLE_TIMEOUT_MINUTES must remain 30")
         if settings.safe_fixture_scenario not in {"success", "solution_generation_fail_once"}:
             raise ValueError("INSIGHTFORGE_SAFE_FIXTURE_SCENARIO is unsupported")
+        if not 1 <= settings.stage_b_transport_budget <= 12:
+            raise ValueError("INSIGHTFORGE_STAGE_B_TRANSPORT_BUDGET must be in [1, 12]")
         try:
             ZoneInfo(settings.beta_timezone)
         except ZoneInfoNotFoundError as exc:

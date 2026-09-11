@@ -1,0 +1,15 @@
+{
+  "batch_id": "",
+  "prompt_versions": {
+    "ai_reference": "stage-b-insightforge-v1",
+    "solutions": "stage-b-solution-v1",
+    "direct_baseline": "stage-b-direct-baseline-v1",
+    "context": "stage-b-context-v1"
+  },
+  "provider": "bailian",
+  "model": "qwen3.7-flash",
+  "idea_ids": ["idea_A", "idea_B", "idea_C"],
+  "real_provider_transport_budget": 12,
+  "private_artifact_root": "",
+  "notes": "Do not put raw ideas, prompts, responses, secrets, or user identifiers here."
+}

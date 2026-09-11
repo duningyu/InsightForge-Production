@@ -167,6 +167,75 @@ class StageBEvaluationReceiptStore:
                 ),
             )
 
+    def create_dry_check(
+        self,
+        *,
+        evaluation_id: str,
+        idea_id: str,
+        participant: str = STAGE_B_PARTICIPANT,
+        max_transports: int = DEFAULT_STAGE_B_TRANSPORT_BUDGET,
+    ) -> dict[str, Any]:
+        """Create a durable Stage-B observability receipt without a provider call.
+
+        This is deliberately a store-level operator primitive rather than a
+        provider execution path: it creates no dispatch permit/event, does not
+        touch provider credentials, and never consumes transport budget.
+        """
+        evaluate_stage_b_guard(
+            real_provider_stage_b=True,
+            safe_fixture_mode=False,
+            accounts_enabled=False,
+            participant_id=participant,
+        )
+        if max_transports <= 0:
+            raise ValueError("max_transports must be positive")
+        budget_before = max_transports - self.consumed_count()
+        if budget_before < 0:
+            raise StageBGuardError("STAGE_B_TRANSPORT_BUDGET_EXHAUSTED")
+        self.create(
+            evaluation_id=evaluation_id,
+            idea_id=idea_id,
+            execution_mode="DRY_OBSERVABILITY",
+            operation="observability_dry_check",
+            provider=STAGE_B_PROVIDER,
+            model=STAGE_B_MODEL,
+            prompt_version="stage-b-observability-dry-v1",
+            context_version=CONTEXT_VERSION,
+            retry_ordinal=0,
+            budget_before=budget_before,
+            participant=participant,
+            execution_id=evaluation_id,
+            evaluation_type="OBSERVABILITY_CLOUD_DRY_CHECK",
+            prompt=None,
+        )
+        self.mark_dry_success(evaluation_id)
+        self.write_artifact(
+            evaluation_id,
+            prompt=None,
+            response={
+                "kind": "OBSERVABILITY_CLOUD_DRY_CHECK",
+                "synthetic": True,
+                "message": "stage-b durable observability verification",
+            },
+        )
+        return self.inspect(evaluation_id)
+
+    def mark_dry_success(self, evaluation_id: str) -> None:
+        """Finalize a dry receipt without setting any transport fields."""
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE stage_b_evaluation_receipts
+                SET status='DRY_SUCCEEDED', response_non_empty=1,
+                    decode_status='NOT_APPLICABLE',
+                    schema_validation='NOT_APPLICABLE',
+                    application_postprocess='NOT_APPLICABLE',
+                    failure_classification='NONE'
+                WHERE evaluation_id=?
+                """,
+                (evaluation_id,),
+            )
+
     def mark_dispatch_prepared(self, evaluation_id: str, *, permit_id: str | None = None) -> None:
         with self.database.connect() as connection:
             connection.execute(
@@ -308,6 +377,7 @@ class StageBEvaluationReceiptStore:
         artifact = self.artifact_root / relative if relative else None
         row["artifact_exists"] = bool(artifact and artifact.is_file())
         row["artifact_hash_available"] = bool(row.get("artifact_sha256"))
+        row["artifact_bytes"] = artifact.stat().st_size if artifact and artifact.is_file() else None
         return row
 
     def consumed_count(self) -> int:

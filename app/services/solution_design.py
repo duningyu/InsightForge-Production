@@ -7,7 +7,7 @@ from app.schemas import SolutionCandidateDraft
 from app.services.dispatch_control import DispatchControlContext
 
 from app.services.generation_contracts import (
-    GenerationContractError, validate_solutions, parse_generation, call_generation,
+    GenerationContractError, _material_difference_count, validate_solutions, parse_generation, call_generation,
     candidate_public, solution_public, await_generation,
 )
 

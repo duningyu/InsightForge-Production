@@ -421,9 +421,9 @@ class HandoffService:
         claim_documents = [self.claims.list_for_version(prd["id"]), self.claims.list_for_version(techdoc["id"])]
         sources = self._source_manifest(project_id)
         retrieval_trace = self._retrieval_trace([prd["id"], techdoc["id"]])
-        confirmed_context = self._approved_context(project, canvas).replace("批准", "确认")
+        confirmed_context = self._approved_context(project, canvas, snapshot).replace("批准", "确认")
         files: dict[str, bytes] = {
-            "README_FIRST.md": self._readme(project=project, canvas=canvas, readiness=readiness, target_client=target_client).replace("批准", "确认").encode("utf-8"),
+            "README_FIRST.md": self._readme(project=project, canvas=canvas, readiness=readiness, target_client=target_client, context_filename="CONFIRMED_CONTEXT.md").replace("批准", "确认").encode("utf-8"),
             "PROJECT_SNAPSHOT.json": self._json_bytes(snapshot),
             "MVP_SCOPE.md": self._mvp_scope(snapshot).encode("utf-8"),
             "UNRESOLVED_RISKS.md": self._unresolved_risks(snapshot).encode("utf-8"),
@@ -583,6 +583,7 @@ class HandoffService:
         canvas: dict[str, Any],
         readiness: dict[str, Any],
         target_client: str,
+        context_filename: str = "APPROVED_CONTEXT.md",
     ) -> str:
         warning_lines = "\n".join(
             f"- {item['message']}" for item in readiness["warnings"]
@@ -595,7 +596,7 @@ Canvas 版本：v{canvas['version']}
 ## 使用顺序
 
 1. 先阅读 `HANDOFF_MANIFEST.json`，核对版本和 SHA-256。
-2. 阅读 `APPROVED_CONTEXT.md`、`PRD_APPROVED.md` 与 `TECHDOC_APPROVED.md`。
+2. 阅读 `{context_filename}`、`PRD_APPROVED.md` 与 `TECHDOC_APPROVED.md`。
 3. 阅读 `CLAIM_LEDGER.json`，不得把 unresolved 或 model_suggestion 当作批准需求。
 4. 按 `IMPLEMENTATION_TASKS.json` 执行，并用 `ACCEPTANCE_TESTS.md` 验收。
 5. 遵守 `AGENTS.md` 中的修改、测试和回报规则。
@@ -608,9 +609,36 @@ Canvas 版本：v{canvas['version']}
 """
 
     @staticmethod
-    def _approved_context(project: dict[str, Any], canvas: dict[str, Any]) -> str:
+    def _approved_context(
+        project: dict[str, Any],
+        canvas: dict[str, Any],
+        snapshot: dict[str, Any] | None = None,
+    ) -> str:
         def bullets(items: list[str]) -> str:
             return "\n".join(f"- {item}" for item in items) or "- 无"
+
+        selected = snapshot.get("solution", {}) if snapshot else {}
+        mvp = snapshot.get("mvp", {}) if snapshot else {}
+        selected_context = ""
+        if selected:
+            selected_context = f"""
+## Selected Solution
+
+- Identity: {selected.get('title', '')}
+- Core idea: {selected.get('summary', selected.get('core_idea', ''))}
+- User value: {selected.get('why_fit', selected.get('user_value', ''))}
+- Selection rationale: {selected.get('rationale', '')}
+
+## Selected MVP
+
+- Pages: {"; ".join(mvp.get('pages', [])) or '无'}
+- Features: {"; ".join(mvp.get('features', [])) or '无'}
+- Tradeoffs / risks: {"; ".join(mvp.get('risks', [])) or '无'}
+
+## Selected User Flow
+
+{bullets(snapshot.get('user_flow', []))}
+"""
 
         return f"""# Approved Context
 
@@ -644,6 +672,7 @@ Canvas 版本：v{canvas['version']}
 ## Constraints
 
 {bullets(canvas['constraints'])}
+{selected_context}
 """
 
     @staticmethod

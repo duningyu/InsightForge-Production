@@ -244,6 +244,16 @@ class LocalDocumentGenerator:
             "simulated": simulated,
         }
 
+    @staticmethod
+    def _selected_solution(canvas: dict[str, Any]) -> dict[str, Any] | None:
+        context = canvas.get("selected_solution_context")
+        solution = context.get("solution") if isinstance(context, dict) else None
+        return context if isinstance(context, dict) and isinstance(solution, dict) else None
+
+    @staticmethod
+    def _selected_list(value: Any) -> list[str]:
+        return [str(item) for item in value] if isinstance(value, list) else []
+
     def _generate_prd(
         self,
         project_title: str,
@@ -252,6 +262,13 @@ class LocalDocumentGenerator:
     ) -> tuple[str, list[dict[str, Any]]]:
         common = self._common_claims(canvas, evidence)
         claims: list[dict[str, Any]] = list(common.values())
+        selected = self._selected_solution(canvas)
+        selected_solution = selected.get("solution", {}) if selected else {}
+        selected_mvp = selected.get("mvp", {}) if selected else {}
+        selected_flow = self._selected_list(selected.get("user_flow")) if selected else []
+        selected_pages = self._selected_list(selected_mvp.get("pages"))
+        selected_features = self._selected_list(selected_mvp.get("features"))
+        selected_risks = self._selected_list(selected_mvp.get("risks"))
 
         goal_claims = [
             _claim(
@@ -278,8 +295,13 @@ class LocalDocumentGenerator:
         suggested_flow = _claim(
             section="核心用户流程",
             text=(
-                "【系统建议，待产品复核】采用“描述想法 → 分步澄清 → 补充证据 → "
-                "比较方案 → 确认 Canvas → 生成与审查文档 → AI Coding 交接”的主流程。"
+                (
+                    f"【当前 Snapshot 选中方案，待产品复核】{selected_solution.get('title', '')} 的用户流程："
+                    + " → ".join(selected_flow)
+                    if selected_flow else
+                    "【系统建议，待产品复核】采用“描述想法 → 分步澄清 → 补充证据 → "
+                    "比较方案 → 确认 Canvas → 生成与审查文档 → AI Coding 交接”的主流程。"
+                )
             ),
             claim_type="model_suggestion",
             support_status="proposal_requires_confirmation",
@@ -293,6 +315,21 @@ class LocalDocumentGenerator:
         metrics = "\n".join(f"- {_render_user_claim(item)}" for item in metric_claims) or "- 暂未确认"
         constraints = "\n".join(f"- {item}" for item in canvas.get("constraints", [])) or "- 暂未确认"
         evidence_index = "\n".join(_source_line(item) for item in evidence) or "- 当前无可引用来源。"
+        selected_section = (
+            "## 当前选中方案（来自当前 Project Snapshot）\n\n"
+            f"- 方案身份：{selected_solution.get('title', '')}\n"
+            f"- 核心想法：{selected_solution.get('summary', '')}\n"
+            f"- 用户价值：{selected_solution.get('why_fit', '')}\n"
+            f"- 选择理由：{selected_solution.get('rationale', '')}\n"
+            f"- MVP 页面：{'；'.join(selected_pages) or '无'}\n"
+            f"- MVP 功能：{'；'.join(selected_features) or '无'}\n"
+            f"- 主要取舍/风险：{'；'.join(selected_risks) or '无'}"
+            if selected else ""
+        )
+        selected_mvp_section = selected_section.replace(
+            "## 当前选中方案（来自当前 Project Snapshot）",
+            "### 当前选中方案（来自当前 Project Snapshot）",
+        )
 
         content = f"""# {project_title} 产品需求文档（PRD）
 
@@ -316,6 +353,8 @@ class LocalDocumentGenerator:
 
 {goals}
 
+{selected_section}
+
 ## 5. 非目标
 
 {non_goals}
@@ -325,6 +364,10 @@ class LocalDocumentGenerator:
 {suggested_flow['claim_text']}
 
 ## 7. 功能需求
+
+### 7.0 当前选中方案 MVP
+
+{selected_mvp_section or '- 当前文档未绑定选中方案。'}
 
 ### 7.1 新手引导
 
@@ -379,6 +422,21 @@ class LocalDocumentGenerator:
     ) -> tuple[str, list[dict[str, Any]]]:
         common = self._common_claims(canvas, evidence)
         claims: list[dict[str, Any]] = list(common.values())
+        selected = self._selected_solution(canvas)
+        selected_solution = selected.get("solution", {}) if selected else {}
+        selected_mvp = selected.get("mvp", {}) if selected else {}
+        selected_flow = self._selected_list(selected.get("user_flow")) if selected else []
+        selected_features = self._selected_list(selected_mvp.get("features"))
+        selected_inputs = self._selected_list(selected.get("inputs")) if selected else []
+        selected_outputs = self._selected_list(selected.get("outputs")) if selected else []
+        selected_risks = self._selected_list(selected_mvp.get("risks"))
+        selected_context = (
+            f"- 方案身份：{selected_solution.get('title', '')}\n"
+            f"- 核心想法：{selected_solution.get('summary', '')}\n"
+            f"- 用户价值：{selected_solution.get('why_fit', '')}\n"
+            f"- 选择理由：{selected_solution.get('rationale', '')}"
+            if selected else "- 当前 TechDoc 未绑定选中方案。"
+        )
         architecture = _claim(
             section="总体架构",
             text=(
@@ -402,6 +460,10 @@ class LocalDocumentGenerator:
 目标用户：{_render_user_claim(common['target'])}
 
 本 TechDoc 区分已实现状态、拟议架构与待验证项；引用存在不等于语义充分支持。
+
+### 当前选中方案（来自当前 Project Snapshot）
+
+{selected_context}
 
 ## 2. 总体架构
 
@@ -428,6 +490,10 @@ Guided UI / Advanced Workspace
 
 核心实体包括项目、Canvas 版本、来源与切片、引导会话与消息、检索运行与命中、文档版本、主张与证据链接、审批和交接运行。已批准文档保持不可变，新修改创建新版本。
 
+当前方案输入：{'；'.join(selected_inputs) or '未绑定'}
+
+当前方案输出：{'；'.join(selected_outputs) or '未绑定'}
+
 ## 4. 文档摄取
 
 支持文本、Markdown、JSON、DOCX 和 PDF 的本地摄取。来源应保存 URL、发布者、发布时间、抓取时间、SHA-256、类型、权威性依据和状态；缺失元数据必须显式显示，而不是自动补造。
@@ -451,6 +517,12 @@ Guided UI / Advanced Workspace
 4. Validator 检查章节、引用作用域、来源披露、Claim-Evidence 类型匹配和未解决主张。
 5. 最多执行受控修复轮次；仍失败则 `needs_human_review`。
 6. 保存检索运行 ID、文档版本、主张链接、验证问题和审计日志。
+
+当前选中方案流程：{' → '.join(selected_flow) or '未绑定'}
+
+当前选中方案 MVP 功能：{'；'.join(selected_features) or '未绑定'}
+
+当前选中方案主要取舍/风险：{'；'.join(selected_risks) or '未绑定'}
 
 ## 7. Function Calling 与权限
 

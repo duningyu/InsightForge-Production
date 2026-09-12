@@ -5,6 +5,7 @@ instances (including model_copy/model_construct) before anything is persisted.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Awaitable, Callable, TypeVar
 
@@ -47,6 +48,12 @@ SOLUTION_BOOL_FIELDS = ("requires_llm_runtime", "requires_rag_runtime", "require
 DIVERSITY_FIELDS = (
     "mechanism", "required_data_class", "automation_level", "human_role",
     "core_decision_logic", "major_dependency",
+)
+MATERIAL_DIFFERENCE_FIELDS = (
+    "mechanism", "summary", "why_fit", "user_flow", "mvp_pages", "features",
+    "inputs", "outputs", "decision_logic", "data_requirements",
+    "technical_components", "implementation_plan", "acceptance_cases", "risks",
+    "unknowns",
 )
 
 
@@ -100,6 +107,22 @@ def _text(value: Any) -> bool:
 
 def _items(value: Any, *, required: bool = True) -> bool:
     return isinstance(value, list) and (bool(value) or not required) and all(_text(item) for item in value)
+
+
+def _material_difference_value(value: Any) -> str:
+    normalized = _plain(value)
+    if isinstance(normalized, (list, dict)):
+        return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return " ".join(str(normalized or "").split()).casefold()
+
+
+def _material_difference_count(left: Any, right: Any) -> int:
+    """Count differences in user-visible solution substance, not implementation knobs."""
+    return sum(
+        _material_difference_value(getattr(left, field, None))
+        != _material_difference_value(getattr(right, field, None))
+        for field in MATERIAL_DIFFERENCE_FIELDS
+    )
 
 
 def _project_fields(data: dict[str, Any], *, text: tuple[str, ...] = (), lists: tuple[str, ...] = (), flags: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -158,7 +181,7 @@ def validate_solutions(candidates: Any, *, llm_core_required: bool) -> list[Solu
         raise GenerationContractError("SOLUTION_DIVERSITY_FAILED")
     for index, left in enumerate(parsed):
         for right in parsed[index + 1:]:
-            if sum(normalize(getattr(left, key)) != normalize(getattr(right, key)) for key in DIVERSITY_FIELDS) < 2:
+            if _material_difference_count(left, right) < 2:
                 raise GenerationContractError("SOLUTION_DIVERSITY_FAILED")
     if not llm_core_required and not any(not any(getattr(item, key) for key in SOLUTION_BOOL_FIELDS) for item in parsed):
         raise GenerationContractError("OVERENGINEERED_SOLUTION_SET")

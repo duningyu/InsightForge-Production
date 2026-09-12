@@ -127,6 +127,21 @@ def test_stage_b_rejects_two_candidates_instead_of_padding_or_partial_success():
         validate_solution_set(candidates, llm_core_required=False)
 
 
+def test_stage_b_rejects_near_identical_visible_solutions_even_when_runtime_dimensions_differ():
+    from app.services.solution_design import validate_solution_set
+
+    # Keep the user-visible idea, value, flow, MVP, and tradeoff/risk the same.
+    # Only low-level runtime dimensions differ, which must not let a duplicate
+    # solution set pass as three materially different choices.
+    candidates = [
+        candidate("rule_based", "inventory", "low", "confirm", "threshold", "sqlite", title="库存提醒 A"),
+        candidate("rule_based", "inventory", "medium", "confirm", "threshold", "fastapi", title="库存提醒 B"),
+        candidate("rule_based", "history", "high", "approve", "threshold", "model", title="库存提醒 C"),
+    ]
+    with pytest.raises(ValueError, match="SOLUTION_DIVERSITY_FAILED"):
+        validate_solution_set(candidates, llm_core_required=False)
+
+
 def test_deterministic_runtime_uses_frozen_case_and_preserves_hypothesis_provenance():
     from app.services.ai_runtime import DeterministicDemoRuntime
 

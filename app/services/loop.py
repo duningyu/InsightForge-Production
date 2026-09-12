@@ -69,9 +69,10 @@ class DocumentLoop:
                 raise ValueError("competitor snapshot is not part of this project")
         if require_snapshot and not current_snapshot_id:
             raise ValueError("current confirmed Snapshot is required for 3.0 document generation")
+        snapshot = None
         if current_snapshot_id:
             snapshot = self.db.fetch_one(
-                "SELECT project_id, confirmed_at FROM project_snapshots WHERE id=?", (current_snapshot_id,)
+                "SELECT * FROM project_snapshots WHERE id=?", (current_snapshot_id,)
             )
             if not snapshot or snapshot["project_id"] != project_id or not snapshot["confirmed_at"]:
                 raise GenerationContractError("DOCUMENT_SNAPSHOT_BINDING_FAILED")
@@ -90,6 +91,7 @@ class DocumentLoop:
         canvas = self.db.get_canvas(project_id)
         if canvas is None:
             raise ValueError("project canvas is missing")
+        generation_canvas = self._canvas_with_snapshot_context(canvas, snapshot)
 
         if idempotency_key:
             existing = self.db.fetch_one(
@@ -155,7 +157,7 @@ class DocumentLoop:
         rounds = 0
         try:
             generated = validate_document_draft(call_generation(lambda: self.generator.generate(
-                doc_type, canvas, evidence, project_title=project["title"],
+                doc_type, generation_canvas, evidence, project_title=project["title"],
             )))
             content = generated["content"]
             citations = generated["citations"]
@@ -310,6 +312,25 @@ class DocumentLoop:
             }
         )
         return result
+
+    @staticmethod
+    def _canvas_with_snapshot_context(
+        canvas: dict[str, Any], snapshot: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if snapshot is None:
+            return canvas
+        inherited = dict(canvas)
+        context: dict[str, Any] = {}
+        for field in (
+            "target_user", "problem", "solution", "mvp", "user_flow", "inputs",
+            "outputs", "technical_plan", "unknowns", "next_action",
+        ):
+            raw = snapshot.get(f"{field}_json")
+            if raw is not None:
+                context[field] = json.loads(raw)
+        inherited["selected_solution_context"] = context
+        inherited["selected_snapshot_id"] = snapshot.get("id")
+        return inherited
 
     def _collect_evidence(
         self,

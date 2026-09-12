@@ -302,7 +302,7 @@ class OpenAIStructuredRuntime:
     def design_solutions(self, brief: IdeaBriefDraft) -> SolutionSetDraft:
         self.model_rounds_used = 1
         system = (
-            "Generate 2-3 materially different solutions to the user's business problem, not variants of this workspace. "
+            "Generate exactly 3 materially different solutions to the user's business problem, not variants of this workspace. "
             "Unless the problem inherently requires an LLM, include a non-LLM/non-RAG/non-Agent baseline. "
             "Every market statement remains a model_hypothesis. Return implementation-ready fields."
         )

@@ -452,7 +452,7 @@ const SOLUTION_OBJECT_LIST_FIELDS = {
   data_requirements: ["data_field", "purpose", "source"],
   risks: ["risk", "mitigation"],
 };
-const SOLUTION_TEXT_FIELDS = ["id", "title", "why_fit", "mechanism", "complexity"];
+const SOLUTION_TEXT_FIELDS = ["id", "title", "summary", "why_fit", "mechanism", "complexity"];
 const SOLUTION_DETAIL_TEXT_FIELDS = ["title", "target_user", "problem", "why_fit", "mechanism", "complexity"];
 const SOLUTION_DETAIL_LIST_FIELDS = ["scenarios", ...SOLUTION_LIST_FIELDS, "tradeoffs"];
 const SOLUTION_DIVERSITY_FIELDS = [
@@ -555,6 +555,7 @@ function toSolutionCandidateViewModel(value) {
     model[key] = viewSolutionList(value[key], key);
     if (!model[key] || !model[key].length) return null;
   }
+  model.tradeoffs = model.risks.slice();
   return model;
 }
 
@@ -584,11 +585,10 @@ function toSolutionDetailViewModel(value) {
 }
 
 function solutionsAreSufficientlyDifferent(candidates) {
-  const hasQualityFields = candidates.every((candidate) =>
-    SOLUTION_DIVERSITY_FIELDS.every((field) => viewString(candidate[field])),
-  );
-  const fields = hasQualityFields ? SOLUTION_DIVERSITY_FIELDS : [
-    "mechanism", "data_requirements", "user_flow", "features", "decision_logic", "technical_components",
+  const fields = [
+    "mechanism", "summary", "why_fit", "user_flow", "mvp_pages", "features",
+    "inputs", "outputs", "decision_logic", "data_requirements", "technical_components",
+    "implementation_plan", "acceptance_cases", "risks", "unknowns",
   ];
   for (let left = 0; left < candidates.length; left += 1) {
     for (let right = left + 1; right < candidates.length; right += 1) {
@@ -651,8 +651,19 @@ function documentMatchesSelectedSnapshot(content) {
   if (!isPlainRecord(snapshot)) return true;
   const solution = isPlainRecord(snapshot.solution) ? snapshot.solution : {};
   const selectedTitle = viewString(solution.title, {required: false, maxLength: 300});
+  const targetUser = isPlainRecord(snapshot.target_user) ? snapshot.target_user.primary : "";
+  const problem = isPlainRecord(snapshot.problem) ? snapshot.problem.statement : "";
+  const mvp = isPlainRecord(snapshot.mvp) ? snapshot.mvp : {};
+  const flowTerms = Array.isArray(snapshot.user_flow) ? snapshot.user_flow : [];
+  const pageTerms = Array.isArray(mvp.pages) ? mvp.pages : [];
+  const featureTerms = Array.isArray(mvp.features) ? mvp.features : [];
+  const inheritedTerms = [
+    solution.summary, solution.core_idea, solution.why_fit, solution.rationale,
+    targetUser, problem, ...flowTerms, ...pageTerms, ...featureTerms,
+  ].map((term) => viewString(term, {required: false, maxLength: 1000})).filter(Boolean);
   const forbiddenTerms = snapshotNonGoalTerms(snapshot);
   if (selectedTitle && !content.includes(selectedTitle)) return false;
+  if (inheritedTerms.some((term) => !content.includes(term))) return false;
   if (forbiddenTerms.some((term) => content.includes(term))) return false;
   return true;
 }
@@ -744,6 +755,8 @@ function toHandoffViewModel(value, snapshot) {
   const snap = isPlainRecord(snapshot) ? snapshot : {};
   const mvp = isPlainRecord(snap.mvp) ? snap.mvp : {};
   const solution = isPlainRecord(snap.solution) ? snap.solution : {};
+  const targetUser = isPlainRecord(snap.target_user) ? snap.target_user.primary : "";
+  const problem = isPlainRecord(snap.problem) ? snap.problem.statement : "";
   const missing = value.missing.map((item) => humanizeHandoffMessage(item?.message || item)).filter(Boolean);
   const unresolved = value.unresolved_items.map((item) => typeof item === "string" ? viewString(item) : humanizeUnresolvedItem(item)).filter(Boolean);
   return {
@@ -758,6 +771,15 @@ function toHandoffViewModel(value, snapshot) {
     implementation_tasks: arrayOfStrings(mvp.implementation_plan),
     acceptance_cases: arrayOfStrings(mvp.acceptance_criteria),
     risks: arrayOfStrings(snap.unknowns),
+    selected_solution: {
+      title: viewString(solution.title, {required: false, maxLength: 300}) || "",
+      summary: viewString(solution.summary || solution.core_idea, {required: false, maxLength: 1000}) || "",
+      why_fit: viewString(solution.why_fit || solution.user_value, {required: false, maxLength: 1000}) || "",
+      rationale: viewString(solution.rationale, {required: false, maxLength: 1000}) || "",
+      problem: viewString(problem, {required: false, maxLength: 1000}) || "",
+      target_user: viewString(targetUser, {required: false, maxLength: 1000}) || "",
+      flow: arrayOfStrings(snap.user_flow),
+    },
   };
 }
 
@@ -1548,7 +1570,7 @@ function renderSolutions() {
     const message = clarificationRequired
       ? "还需要补充一项信息，完成澄清后才能确认项目理解并生成方案。"
       : confirmed
-      ? "确认 Idea 理解后生成 2–3 个真正不同的解决路径。"
+      ? "确认 Idea 理解后生成恰好三个真正不同的解决路径。"
       : state.ideaBrief
         ? "项目定义已根据现有信息整理完成，确认后即可生成方案。"
         : "生成方案前还需要完善并确认项目定义。";
@@ -2201,6 +2223,7 @@ function renderHandoff() {
     ready: false, documents: {prd: null, techdoc: null}, missing: [], unresolved: [],
     acknowledgement_required: false, unresolved_acknowledgement: false,
     features: [], non_goals: [], implementation_tasks: [], acceptance_cases: [], risks: [],
+    selected_solution: {},
   };
   const mvp = {features: h.features};
   const nonGoals = h.non_goals;
@@ -2208,6 +2231,17 @@ function renderHandoff() {
   const acceptanceCases = h.acceptance_cases;
   const docSummary = h?.documents || {};
   const risks = h.risks;
+  const selectedSolution = h.selected_solution || {};
+  const selectedSolutionBlock = selectedSolution.title ? `
+    <section class="handoff-section"><h3>当前选中方案</h3>
+      <p><strong>${escapeHtml(selectedSolution.title)}</strong></p>
+      ${selectedSolution.summary ? `<p>${escapeHtml(selectedSolution.summary)}</p>` : ""}
+      ${selectedSolution.why_fit ? `<p>适配理由：${escapeHtml(selectedSolution.why_fit)}</p>` : ""}
+      ${selectedSolution.rationale ? `<p>选择依据：${escapeHtml(selectedSolution.rationale)}</p>` : ""}
+      ${selectedSolution.problem ? `<p>问题：${escapeHtml(selectedSolution.problem)}</p>` : ""}
+      ${selectedSolution.target_user ? `<p>目标用户：${escapeHtml(selectedSolution.target_user)}</p>` : ""}
+      ${selectedSolution.flow?.length ? productFlowList(selectedSolution.flow) : ""}
+    </section>` : "";
   const missing = h?.missing || [];
   const unresolved = h?.unresolved || [];
   const acknowledgement = h?.unresolved_acknowledgement;
@@ -2219,6 +2253,7 @@ function renderHandoff() {
     </div>` : (acknowledgement ? "<p class=\"status-note\">已记录你对待确认事项的了解；这不表示这些事项已经被事实验证。</p>" : "");
   qs("#handoff-content").innerHTML = `
     <div class="handoff-status ${h.ready ? "handoff-ready" : "handoff-blocked"}"><strong>${escapeHtml(h.ready ? "开发交接已具备正式上下文" : "当前还不能安全交接")}</strong><span>${escapeHtml(h.ready ? "当前项目成果、PRD 和 TechDoc 均满足交接条件。" : humanizeHandoffMessage(missing[0]))}</span></div>
+    ${selectedSolutionBlock}
     <section class="handoff-section"><h3>MVP 范围</h3>${detailList("本版包含", mvp.features || [])}</section>
     <section class="handoff-section"><h3>明确不做</h3>${detailList("本版暂不包含", nonGoals.length ? nonGoals : ["当前 Snapshot 暂未声明额外非目标；交接前不要擅自扩展范围。"])}</section>
     <section class="handoff-section"><h3>实施任务</h3>${detailList("实施顺序", implementationTasks)}</section>

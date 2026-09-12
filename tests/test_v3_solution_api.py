@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
+import zipfile
+
+from app.services.handoff import HandoffService
 
 
 def quick_project(client, *, confirm: bool = True) -> str:
@@ -96,3 +100,90 @@ def test_solution_list_returns_latest_run_and_persisted_validator_dimensions(cli
     assert len(body["candidates"]) == 3
     assert all(item["required_data_class"] for item in body["candidates"])
     assert all(item["major_dependency"] for item in body["candidates"])
+
+
+def test_selected_solution_b_is_inherited_by_prd_techdoc_and_handoff(client):
+    project_id = quick_project(client)
+    generated = client.post(f"/api/projects/{project_id}/solutions/generate")
+    assert generated.status_code == 201, generated.text
+    candidates = generated.json()["candidates"]
+    selected = candidates[1]
+    rejected = candidates[0]
+    rationale = "选择 B：先验证人工复核队列能否降低缺货判断遗漏。"
+    snapshot_response = client.post(
+        f"/api/projects/{project_id}/solutions/select",
+        json={
+            "strategy": "single",
+            "candidate_ids": [selected["id"]],
+            "rationale": rationale,
+            "human_confirmed": True,
+        },
+    )
+    assert snapshot_response.status_code == 201, snapshot_response.text
+    snapshot = snapshot_response.json()
+    assert snapshot["solution"]["title"] == selected["title"]
+
+    # Local project-owned sources keep this path deterministic; no search or
+    # provider call is needed to exercise document inheritance.
+    for title, source_type, content in (
+        ("公开资料", "public_source", "便利店补货需要查看库存和周转情况。"),
+        ("实现证据", "implementation_evidence", "库存 API 与 SQLite 规则查询已经验证可以运行。"),
+        ("模拟资料", "simulated_research", "人工构造的便利店访谈用于工作流测试。"),
+    ):
+        source = client.post(
+            f"/api/projects/{project_id}/sources",
+            json={"title": title, "source_type": source_type, "authority": 0.8, "content": content, "filename": f"{title}.txt"},
+        )
+        assert source.status_code == 201, source.text
+
+    expected = {
+        selected["title"],
+        selected["summary"],
+        selected["why_fit"],
+        snapshot["problem"]["statement"],
+        snapshot["target_user"]["primary"],
+        rationale,
+        selected["user_flow"][0],
+        selected["features"][0],
+    }
+    documents = {}
+    for doc_type in ("prd", "techdoc"):
+        response = client.post(
+            f"/api/projects/{project_id}/documents/generate",
+            json={"doc_type": doc_type, "use_competitor_snapshot": False},
+        )
+        assert response.status_code == 200, response.text
+        documents[doc_type] = response.json()
+        content = documents[doc_type]["content"]
+        assert content.strip()
+        assert all(value in content for value in expected)
+        assert rejected["title"] not in content
+
+    for document in documents.values():
+        version_id = document["version_id"]
+        client.app.state.db.execute(
+            "UPDATE document_versions SET validation_status='passed' WHERE id=?", (version_id,)
+        )
+        confirmed = client.post(
+            f"/api/document-versions/{version_id}/confirm",
+            json={"actor": "pm", "note": "确认选中方案 B", "human_confirmed": True},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+
+    readiness = HandoffService(client.app.state.db).readiness(project_id)
+    assert readiness["ready"] is True
+    data, _manifest = HandoffService(client.app.state.db).build_zip(
+        project_id, target_client="codex", actor="pm"
+    )
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        files = {
+            name: archive.read(name).decode("utf-8")
+            for name in ("PROJECT_SNAPSHOT.json", "MVP_SCOPE.md", "CONFIRMED_CONTEXT.md", "PRD_APPROVED.md", "TECHDOC_APPROVED.md")
+        }
+    assert selected["title"] in files["PROJECT_SNAPSHOT.json"]
+    assert selected["title"] in files["MVP_SCOPE.md"]
+    assert all(value.strip() for value in files.values())
+    for name, content in files.items():
+        assert rejected["title"] not in content, name
+    assert selected["user_flow"][0] in files["PRD_APPROVED.md"]
+    assert selected["user_flow"][0] in files["TECHDOC_APPROVED.md"]

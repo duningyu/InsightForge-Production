@@ -245,7 +245,26 @@ class SolutionDesignService:
         try:
             design_kwargs = ({"dispatch_control": dispatch_control}
                              if dispatch_control is not None else {})
-            raw_set = parse_generation(SolutionSetDraft, call_generation(lambda: runtime.design_solutions(brief, **design_kwargs)))
+            raw_output = call_generation(lambda: runtime.design_solutions(brief, **design_kwargs))
+            try:
+                raw_set = parse_generation(SolutionSetDraft, raw_output)
+            except GenerationContractError:
+                # Keep an explicitly empty model result on the persisted-run path
+                # so it is recorded as failed rather than as a recovery-only call.
+                empty_candidates = (
+                    raw_output.get("candidates") == []
+                    if isinstance(raw_output, dict)
+                    else getattr(raw_output, "candidates", None) == []
+                )
+                if not empty_candidates:
+                    raise
+                raw_set = (
+                    raw_output
+                    if isinstance(raw_output, SolutionSetDraft)
+                    else SolutionSetDraft.model_construct(
+                        candidates=[], llm_core_required=False
+                    )
+                )
         except StructuredRuntimeRecoveryError as exc:
             _release_runtime_reservation(runtime)
             self._audit_failure(
@@ -293,13 +312,7 @@ class SolutionDesignService:
             regenerated = list(regenerated_set.candidates)
             return regenerated
 
-        try:
-            candidates = validate_with_one_regeneration(
-                list(raw_set.candidates),
-                llm_core_required=raw_set.llm_core_required,
-                regenerate=None if dispatch_control is not None else regenerate,
-            )
-        except StructuredRuntimeRecoveryError as exc:
+        def recover_after_persisted_run(exc: StructuredRuntimeRecoveryError) -> dict[str, Any]:
             _release_runtime_reservation(runtime)
             self.db.execute(
                 "UPDATE solution_runs SET status = 'failed_runtime' WHERE id = ?", (run_id,)
@@ -317,7 +330,16 @@ class SolutionDesignService:
                 safe_diagnostic=exc.safe_diagnostic,
             )
             return exc.as_payload(preserved_input=brief)
+
+        try:
+            candidates = validate_with_one_regeneration(
+                list(raw_set.candidates),
+                llm_core_required=raw_set.llm_core_required,
+                regenerate=None if dispatch_control is not None else regenerate,
+            )
         except ValueError as exc:
+            if isinstance(exc, GenerationContractError) and raw_set.candidates:
+                return recover_after_persisted_run(exc)
             _release_runtime_reservation(runtime)
             message = str(exc)
             status = (
@@ -338,6 +360,8 @@ class SolutionDesignService:
                 error_code=message.split(":", 1)[0],
             )
             raise
+        except StructuredRuntimeRecoveryError as exc:
+            return recover_after_persisted_run(exc)
 
         final_set = SolutionSetDraft(
             candidates=candidates,

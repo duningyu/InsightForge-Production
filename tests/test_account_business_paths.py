@@ -18,6 +18,24 @@ from test_open_accounts import claim
 from test_normal_dispatch_control_integration import _solution_payload
 
 
+def _account_solution_payload():
+    payload = _solution_payload()
+    payload["candidates"][1].update(
+        human_role="synthetic author", core_decision_logic="manual checklist"
+    )
+    payload["candidates"].append({
+        **payload["candidates"][0],
+        "title": "Synthetic forecast",
+        "mechanism": "prediction_based",
+        "required_data_class": "historical metrics",
+        "automation_level": "medium",
+        "human_role": "validates forecast",
+        "core_decision_logic": "forecast threshold",
+        "major_dependency": "historical data",
+    })
+    return payload
+
+
 @pytest.mark.parametrize("outcome", ["failure", "shutdown_cancellation", "interrupted_snapshot", "user_cancellation"])
 def test_failed_transport_settles_and_reconstructed_worker_does_not_redispatch(tmp_path, monkeypatch, outcome):
     """Separate shutdown, user cancellation and uncertain interruption contracts."""
@@ -139,8 +157,8 @@ def test_running_task_keeps_workspace_after_logout_and_account_switch(tmp_path, 
     """Synchronize at real adapter transport; never seed a terminal task."""
     calls = []
     original = AsyncModelAdapter.__init__
-    payload = _solution_payload()
-    payload["candidates"][1].update(human_role="synthetic author", core_decision_logic="manual checklist")
+    payload = _account_solution_payload()
+    assert len(payload["candidates"]) == 3
     entered, release = threading.Event(), asyncio.Event()
     worker_loops = []
     at_commit, allow_commit = threading.Event(), threading.Event()
@@ -235,8 +253,8 @@ def test_running_task_keeps_workspace_after_logout_and_account_switch(tmp_path, 
 def test_four_generations_account_scope_replay_and_worker_reconstruction(tmp_path, monkeypatch):
     calls = []
     original = AsyncModelAdapter.__init__
-    payload = _solution_payload()
-    payload["candidates"][1].update(human_role="synthetic author", core_decision_logic="manual checklist")
+    payload = _account_solution_payload()
+    assert len(payload["candidates"]) == 3
 
     def injected(self, **kwargs):
         def transport(request):
@@ -289,7 +307,7 @@ def test_four_generations_account_scope_replay_and_worker_reconstruction(tmp_pat
                 assert client.post(path, headers=headers).status_code == 200
                 assert client.get(f"{path}/{run_id}").status_code == 200
                 assert len(calls) == before
-            assert db.fetch_one("SELECT COUNT(*) AS n FROM solution_candidates")["n"] == count * 2
+            assert db.fetch_one("SELECT COUNT(*) AS n FROM solution_candidates")["n"] == count * 3
             assert db.fetch_one("SELECT SUM(request_count) AS n FROM beta_daily_usage WHERE operation_type='solution_generation'")["n"] == count
             assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='COMMITTED'")["n"] == count
             assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='RESERVED'")["n"] == 0

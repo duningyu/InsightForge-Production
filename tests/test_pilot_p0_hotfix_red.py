@@ -135,8 +135,15 @@ def test_zero_candidate_recovery_is_not_reported_as_201_success(client, monkeypa
     response = client.post(f"/api/projects/{project_id}/solutions/generate")
 
     assert response.status_code == 503
-    assert response.json() == recovery
-    assert "candidates" not in response.json()
+    assert response.json() == {
+        "error_code": "MODEL_OUTPUT_SCHEMA_INVALID",
+        "message": "AI 返回的内容格式不符合要求，本次未生成可用内容；请检查输入和模型配置。",
+        "recovery_actions": ["检查输入和模型配置后重新生成"],
+        "content_written": False,
+        "retryable": False,
+    }
+    assert "preserved_input" not in response.json()
+    assert "模型暂时无法完成生成，你的输入已保留。" not in response.text
 
 
 def test_zero_candidate_solution_run_cannot_remain_successful(db):

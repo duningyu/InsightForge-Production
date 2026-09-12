@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from app.db import Database, utc_now
+from app.services.generation_contracts import reject_raw_generation_values
 
 
 class DocumentVersionService:
@@ -112,6 +113,7 @@ class DocumentVersionService:
         version = self.db.fetch_one("SELECT * FROM document_versions WHERE id = ?", (version_id,))
         if version is None:
             raise KeyError("document version not found")
+        reject_raw_generation_values([version["content"], json.loads(version["citations_json"] or "[]")])
         return version
 
     def _audit(self, actor: str, action: str, version: dict[str, Any]) -> None:

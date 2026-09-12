@@ -318,7 +318,10 @@ class LocalDocumentGenerator:
         selected_section = (
             "## 当前选中方案（来自当前 Project Snapshot）\n\n"
             f"- 方案身份：{selected_solution.get('title', '')}\n"
-            f"- 核心想法：{selected_solution.get('summary', '')}\n"
+            f"- 方案摘要：{selected_solution.get('summary', '')}\n"
+            f"- 核心想法：{selected_solution.get('core_idea', '')}\n"
+            f"- 目标用户：{selected.get('target_user', {}).get('primary', '')}\n"
+            f"- 用户问题：{selected.get('problem', {}).get('statement', '')}\n"
             f"- 用户价值：{selected_solution.get('why_fit', '')}\n"
             f"- 选择理由：{selected_solution.get('rationale', '')}\n"
             f"- MVP 页面：{'；'.join(selected_pages) or '无'}\n"
@@ -426,13 +429,17 @@ class LocalDocumentGenerator:
         selected_solution = selected.get("solution", {}) if selected else {}
         selected_mvp = selected.get("mvp", {}) if selected else {}
         selected_flow = self._selected_list(selected.get("user_flow")) if selected else []
+        selected_pages = self._selected_list(selected_mvp.get("pages"))
         selected_features = self._selected_list(selected_mvp.get("features"))
         selected_inputs = self._selected_list(selected.get("inputs")) if selected else []
         selected_outputs = self._selected_list(selected.get("outputs")) if selected else []
         selected_risks = self._selected_list(selected_mvp.get("risks"))
         selected_context = (
             f"- 方案身份：{selected_solution.get('title', '')}\n"
-            f"- 核心想法：{selected_solution.get('summary', '')}\n"
+            f"- 方案摘要：{selected_solution.get('summary', '')}\n"
+            f"- 核心想法：{selected_solution.get('core_idea', '')}\n"
+            f"- 目标用户：{selected.get('target_user', {}).get('primary', '')}\n"
+            f"- 用户问题：{selected.get('problem', {}).get('statement', '')}\n"
             f"- 用户价值：{selected_solution.get('why_fit', '')}\n"
             f"- 选择理由：{selected_solution.get('rationale', '')}"
             if selected else "- 当前 TechDoc 未绑定选中方案。"
@@ -519,6 +526,8 @@ Guided UI / Advanced Workspace
 6. 保存检索运行 ID、文档版本、主张链接、验证问题和审计日志。
 
 当前选中方案流程：{' → '.join(selected_flow) or '未绑定'}
+
+当前选中方案 MVP 页面：{'；'.join(selected_pages) or '未绑定'}
 
 当前选中方案 MVP 功能：{'；'.join(selected_features) or '未绑定'}
 

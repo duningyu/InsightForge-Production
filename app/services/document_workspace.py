@@ -7,6 +7,7 @@ from typing import Any
 
 from app.db import Database, utc_now
 from app.errors import ConflictError, DraftConflictError
+from app.services.generation_contracts import reject_raw_generation_values
 
 
 class DocumentWorkspaceService:
@@ -33,6 +34,7 @@ class DocumentWorkspaceService:
         if row is None:
             raise KeyError("document version not found")
         row["citations"] = json.loads(row.pop("citations_json") or "[]")
+        reject_raw_generation_values([row["content"], row["citations"]])
         row["artifact_health"] = self.db.fetch_one(
             "SELECT * FROM artifact_health WHERE artifact_type='document_version' AND artifact_id=?",
             (version_id,),
@@ -61,6 +63,7 @@ class DocumentWorkspaceService:
         )
         if row is None:
             raise KeyError("document edit draft not found")
+        reject_raw_generation_values(row["content"])
         return row
 
     def save_draft(
@@ -82,6 +85,7 @@ class DocumentWorkspaceService:
             raise ValueError("base version must be active")
         if not content.strip():
             raise ValueError("document draft content cannot be empty")
+        reject_raw_generation_values(content)
         clean_content = content
         now = utc_now()
         current = self.db.fetch_one(

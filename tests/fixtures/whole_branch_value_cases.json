@@ -1,0 +1,20 @@
+{
+  "rejected": [
+    "{\"choices\":[{\"message\":{\"content\":\"SYNTHETIC_PRIVATE\"}}]}",
+    "建议如下：{\"provider_payload\":\"SYNTHETIC_PRIVATE\"}",
+    "```json\n{\"system_prompt\":\"SYNTHETIC_PRIVATE\"}\n```",
+    "debug_prompt: SYNTHETIC_PRIVATE",
+    "raw_response = SYNTHETIC_PRIVATE",
+    "Authorization: Bearer synthetic-private-token",
+    "api_key=sk-synthetic-private-token",
+    "Traceback (most recent call last): synthetic failure",
+    "ValidationError: synthetic private input",
+    "{\"messages\":[{\"role\":\"system\",\"content\":\"SYNTHETIC_PRIVATE\"}]}"
+  ],
+  "ordinary": [
+    "让用户比较不同 choices，并说明选择理由。",
+    "The provider supports JSON imports and debug tools for developers.",
+    "记录 API key 的配置状态，不收集密钥。",
+    "支持 JSON 示例：{\"quantity\":3}，并显示校验提示。"
+  ]
+}

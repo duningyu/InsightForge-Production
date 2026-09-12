@@ -88,6 +88,7 @@ class EvidenceCoachService:
             result_json["fixture_disclosure"] = getattr(
                 runtime, "disclosure", "Stage A 演示结果 · 非真实 AI 生成"
             )
+        result_json = guidance_public(result_json)
         now = utc_now()
         result_id = f"evidence_guidance_{uuid.uuid4().hex}"
         content_sha256 = sha256_payload(result_json)

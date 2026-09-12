@@ -463,15 +463,32 @@ function isPlainRecord(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+// Keep marker semantics aligned with generation_contracts; ordinary JSON/prose
+// remains valid. Projection alone cannot stop a dump inside an allowed string.
+const RAW_GENERATION_MARKERS = /\b(?:choices|messages)\b["']?\s*:\s*[\[{]|\b(?:provider[_ -]?(?:payload|response)|raw[_ -]?(?:response|output|payload)|debug[_ -]?(?:prompt|payload|trace)|system[_ -]?prompt|api[_ -]?key)\b["']?\s*[:=]|\bAuthorization\s*:\s*Bearer\s+\S+|Traceback\s*\(most recent call last\)|\bValidationError\s*:/i;
+
+function hasRawGenerationValue(value) {
+  if (typeof value === "string") return RAW_GENERATION_MARKERS.test(value);
+  if (Array.isArray(value)) return value.some(hasRawGenerationValue);
+  if (isPlainRecord(value)) return Object.values(value).some(hasRawGenerationValue);
+  return false;
+}
+
+function hasRawViewFields(value, fields) {
+  return fields.some((key) => hasRawGenerationValue(value[key]));
+}
+
 function viewString(value, {required = true, maxLength = 4000} = {}) {
   if (typeof value !== "string") return required ? null : "";
+  if (hasRawGenerationValue(value)) return null;
   const normalized = value.trim();
   if (required && !normalized) return null;
   return normalized.slice(0, maxLength);
 }
 
 function viewStringList(value, {required = true, maxItems = 20, maxLength = 4000} = {}) {
-  if (!Array.isArray(value)) return required ? null : [];
+  if (value === undefined && !required) return [];
+  if (!Array.isArray(value)) return null;
   if (required && value.length === 0) return null;
   if (value.length > maxItems) return null;
   const result = value.map((item) => viewString(item, {maxLength}));
@@ -489,6 +506,7 @@ function viewSolutionList(value, field) {
   const result = value.map((item) => {
     if (typeof item === "string") return viewString(item);
     if (!isPlainRecord(item) || !keys.length) return null;
+    if (hasRawViewFields(item, keys)) return null;
     const parts = keys.map((key) => {
       const raw = item[key];
       if (typeof raw === "string") return viewString(raw, {required: false, maxLength: 1000});
@@ -502,9 +520,10 @@ function viewSolutionList(value, field) {
 
 function toAIReferenceViewModel(value) {
   if (!isPlainRecord(value)) return null;
+  if (hasRawViewFields(value, ["uncertainty_notice", "fixture_origin", "fixture_disclosure"])) return null;
   const model = {};
   for (const key of AI_REFERENCE_FIELDS) {
-    const items = viewStringList(value[key], {maxItems: 20});
+    const items = viewStringList(value[key], {required: false, maxItems: 20});
     if (!items) return null;
     model[key] = items;
   }
@@ -517,6 +536,7 @@ function toAIReferenceViewModel(value) {
 
 function toEvidenceGuidanceViewModel(value) {
   if (!isPlainRecord(value) || !Array.isArray(value.cards) || !value.cards.length || value.cards.length > 5) return null;
+  if (hasRawViewFields(value, ["disclosure", "fixture_origin", "fixture_disclosure"])) return null;
   const cards = value.cards.map((card) => {
     if (!isPlainRecord(card)) return null;
     const model = {};
@@ -561,6 +581,7 @@ function toSolutionCandidateViewModel(value) {
 
 function toSolutionDetailViewModel(value) {
   if (!isPlainRecord(value)) return null;
+  if (hasRawViewFields(value, SOLUTION_DETAIL_TEXT_FIELDS)) return null;
   const id = viewString(value.id, {maxLength: 200});
   if (!id) return null;
   const model = {id};
@@ -601,6 +622,7 @@ function solutionsAreSufficientlyDifferent(candidates) {
 
 function toSolutionsViewModel(value) {
   if (!isPlainRecord(value) || !Array.isArray(value.candidates) || value.candidates.length !== 3) return null;
+  if (hasRawViewFields(value, ["fixture_origin", "fixture_disclosure"])) return null;
   const candidates = value.candidates.map(toSolutionCandidateViewModel);
   if (candidates.some((candidate) => !candidate)) return null;
   if (new Set(candidates.map((candidate) => candidate.id)).size !== candidates.length) return null;
@@ -640,10 +662,40 @@ function toDocumentVersionViewModel(value, expectedDocType) {
 function snapshotNonGoalTerms(snapshot) {
   const nonGoals = viewStringList(snapshot?.solution?.explicit_non_goals, {required: false, maxItems: 20}) || [];
   return nonGoals.flatMap((item) => item
-    .replace(/^.*?(不做|不包含|暂不支持|禁止|不支持)/, "")
-    .split(/[、，,；;和以及]+/)
+    .replace(/^.*?(?:不做|不包含|暂不支持|禁止|不支持|will not implement|not include)\s*/i, "")
+    .split(/[、，,；;]+|以及|和|\s+and\s+/i)
     .map((term) => term.trim())
     .filter((term) => term.length >= 2));
+}
+
+function documentAddsNonGoal(content, terms) {
+  // A bounded prose check, not semantic proof. Scope exclusions apply only to
+  // their clause/section; a later positive commitment must still be rejected.
+  let exclusionSection = false;
+  const positive = /支持|实现|增加|加入|提供|引入|开发|集成|上线|implement|support|add|build|include/i;
+  for (const line of content.split(/\r?\n/)) {
+    const heading = line.match(/^\s*#{1,6}\s+(.+)$/);
+    if (heading) {
+      exclusionSection = /^(?:\d+[.、]\s*)?(?:非目标|明确不做|不做范围|non[- ]goals|out of scope)(?:\s|[：:]|$)/i.test(heading[1]);
+      if (exclusionSection && !positive.test(heading[1])) continue;
+    }
+    const clauses = line.split(/[。！？!?；;，,]|\b(?:but|however)\b|但是|但|(?:并且|并|同时)(?=支持|实现|增加|加入|提供|引入|开发|集成|上线)/i);
+    for (const clause of clauses) {
+      for (const term of terms) {
+        let offset = clause.indexOf(term);
+        while (offset !== -1) {
+          const before = clause.slice(0, offset);
+          const after = clause.slice(offset + term.length);
+          const negated = /(?:不做|不包含|暂不支持|不支持|不提供|不增加|不引入|不会实现|禁止|不得|will not implement|not include|not support)\s*([^：:]*)$/i.exec(before);
+          const excluded = negated && !positive.test(negated[1]);
+          const excludedAfter = /^\s*(?:不在本期范围内|不在范围内|不属于本期范围|is out of scope)/i.test(after);
+          if (!excluded && !excludedAfter && !(exclusionSection && !positive.test(clause))) return true;
+          offset = clause.indexOf(term, offset + term.length);
+        }
+      }
+    }
+  }
+  return false;
 }
 
 function documentMatchesSelectedSnapshot(content) {
@@ -664,7 +716,7 @@ function documentMatchesSelectedSnapshot(content) {
   const forbiddenTerms = snapshotNonGoalTerms(snapshot);
   if (selectedTitle && !content.includes(selectedTitle)) return false;
   if (inheritedTerms.some((term) => !content.includes(term))) return false;
-  if (forbiddenTerms.some((term) => content.includes(term))) return false;
+  if (documentAddsNonGoal(content, forbiddenTerms)) return false;
   return true;
 }
 

@@ -95,6 +95,7 @@ class AIReferenceService:
             result_json["fixture_disclosure"] = getattr(
                 runtime, "disclosure", "Stage A 演示结果 · 非真实 AI 生成"
             )
+        result_json = reference_public(result_json)
         now = utc_now()
         result_id = f"ai_reference_{uuid.uuid4().hex}"
         self.db.execute(

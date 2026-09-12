@@ -255,10 +255,15 @@ def test_document_replay_rejects_missing_snapshot_dependency(client):
 def test_public_success_fields_cannot_contain_diagnostic_objects():
     from app.services.generation_contracts import reference_public, guidance_public, solution_public
     private = {"raw_response": "PRIVATE_SENTINEL"}
-    values = [reference_public({"mvp_thoughts": [private]}),
-              guidance_public({"cards": [{**_card(), "title": private}]}),
-              solution_public({"run": {"id": private}, "candidates": [{"title": private}], "fixture_origin": private})]
-    assert "PRIVATE_SENTINEL" not in json.dumps(values)
+    # Reference/card public reads now reject incomplete historical rows instead
+    # of projecting them into empty, apparently usable results.
+    for project, value in [(reference_public, {"mvp_thoughts": [private]}),
+                           (guidance_public, {"cards": [{**_card(), "title": private}]})]:
+        with pytest.raises(StructuredOutputContractError) as caught:
+            project(value)
+        assert "PRIVATE_SENTINEL" not in json.dumps(caught.value.as_payload())
+    projected = solution_public({"run": {"id": private}, "candidates": [{"title": private}], "fixture_origin": private})
+    assert "PRIVATE_SENTINEL" not in json.dumps(projected)
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "stage_b_provider_outputs.json"

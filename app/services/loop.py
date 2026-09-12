@@ -12,6 +12,7 @@ from app.services.validation import DocumentValidator, PRD_HEADINGS, TECHDOC_HEA
 from app.services.artifact_health import ArtifactHealthService
 from app.services.generation_contracts import (
     GenerationContractError, validate_document_sections, validate_document_draft, call_generation,
+    reject_raw_generation_values,
 )
 
 
@@ -453,6 +454,8 @@ class DocumentLoop:
         terminal_state: str,
     ) -> dict[str, Any]:
         claim_payload = self.claims.list_for_version(row["id"])
+        citations = json.loads(row["citations_json"])
+        reject_raw_generation_values([row["content"], citations, claim_payload["items"]])
         generation = self.db.fetch_one(
             """
             SELECT id, retrieval_run_ids_json
@@ -480,7 +483,7 @@ class DocumentLoop:
             "status": row["status"],
             "validation_status": row["validation_status"],
             "content": row["content"],
-            "citations": json.loads(row["citations_json"]),
+            "citations": citations,
             "claims": claim_payload["items"],
             "retrieval_run_ids": retrieval_run_ids,
             "rounds": rounds,

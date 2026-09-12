@@ -13,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.errors import StructuredOutputContractError, public_recovery_payload
 from app.schemas import AIReferenceDraft, EvidenceGuidanceDraft, SolutionCandidateDraft
+from app.services.safe_fixture import SAFE_FIXTURE_DISCLOSURE
 
 
 class GenerationContractError(StructuredOutputContractError, ValueError):
@@ -67,7 +68,37 @@ def _plain(value: Any) -> Any:
     return value
 
 
+_RAW_GENERATION_MARKERS = re.compile(
+    r"\b(?:choices|messages)\b[\"']?\s*:\s*[\[{]"
+    r"|\b(?:provider[_ -]?(?:payload|response)|raw[_ -]?(?:response|output|payload)|"
+    r"debug[_ -]?(?:prompt|payload|trace)|system[_ -]?prompt|api[_ -]?key)\b[\"']?\s*[:=]"
+    r"|\bAuthorization\s*:\s*Bearer\s+\S+"
+    r"|Traceback\s*\(most recent call last\)"
+    r"|\bValidationError\s*:",
+    re.IGNORECASE,
+)
+
+
+def reject_raw_generation_values(value: Any) -> None:
+    """Reject recognizable transport/debug dumps, not ordinary JSON or prose.
+
+    This is a value gate in addition to schema/field projection, not a general
+    secret detector. Never include the rejected value in an exception.
+    """
+    if isinstance(value, str):
+        if _RAW_GENERATION_MARKERS.search(value):
+            raise GenerationContractError("RAW_GENERATION_VALUE")
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            reject_raw_generation_values(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            reject_raw_generation_values(item)
+
+
 def parse_generation(schema: type[T], value: Any) -> T:
+    value = _plain(value)
+    reject_raw_generation_values(value)
     parsed = None
     try:
         parsed = schema.model_validate(_plain(value))
@@ -126,6 +157,7 @@ def _material_difference_count(left: Any, right: Any) -> int:
 
 
 def _project_fields(data: dict[str, Any], *, text: tuple[str, ...] = (), lists: tuple[str, ...] = (), flags: tuple[str, ...] = ()) -> dict[str, Any]:
+    reject_raw_generation_values([data.get(key) for key in (*text, *lists)])
     result = {key: data[key] for key in text if isinstance(data.get(key), str) or (key in data and data[key] is None)}
     result.update({key: data[key] for key in lists if _items(data.get(key), required=False)})
     result.update({key: data[key] for key in flags if type(data.get(key)) in (bool, int) and data[key] in (0, 1)})
@@ -143,6 +175,7 @@ def validate_reference(value: Any) -> AIReferenceDraft:
 
 def reference_public(value: Any) -> dict[str, Any]:
     data = _plain(value)
+    validate_reference({key: data[key] for key in (*REFERENCE_FIELDS, "uncertainty_notice") if key in data})
     return _project_fields(data, lists=REFERENCE_FIELDS, text=("uncertainty_notice", "fixture_origin", "fixture_disclosure"))
 
 
@@ -159,6 +192,12 @@ def validate_guidance(value: Any) -> EvidenceGuidanceDraft:
 
 def guidance_public(value: Any) -> dict[str, Any]:
     data = _plain(value)
+    cards = data.get("cards")
+    validate_guidance({
+        "cards": [{key: card[key] for key in (*CARD_TEXT_FIELDS, *CARD_LIST_FIELDS) if key in card}
+                  if isinstance(card, dict) else card for card in cards] if isinstance(cards, list) else cards,
+        **({"disclosure": data["disclosure"]} if "disclosure" in data else {}),
+    })
     result = _project_fields(data, text=("disclosure", "fixture_origin", "fixture_disclosure"))
     result["cards"] = [
         _project_fields(card, text=CARD_TEXT_FIELDS, lists=CARD_LIST_FIELDS)
@@ -227,6 +266,7 @@ def validate_solution_response(data: Any) -> dict[str, Any]:
 
 def validate_document_draft(data: Any) -> dict[str, Any]:
     """Check the envelope before regex/claim consumers; evidence stays optional."""
+    reject_raw_generation_values(data)
     if not isinstance(data, dict) or not _text(data.get("content")) or not _items(data.get("citations"), required=False):
         raise GenerationContractError("DOCUMENT_SCHEMA_FAILED")
     claims = data.get("claims", [])
@@ -244,14 +284,23 @@ def validate_document_draft(data: Any) -> dict[str, Any]:
 
 def failure_public(data: dict[str, Any]) -> dict[str, Any]:
     # Persisted text is untrusted too: use the same typed copy as live errors.
-    result = {key: data[key] for key in (
-        "quota_status", "failure_stage", "fixture_origin", "fixture_disclosure",
-    ) if isinstance(data.get(key), str)}
+    result = {}
+    for key, allowed in (
+        ("quota_status", ("RESERVED", "RELEASED", "CHARGED")),
+        ("failure_stage", ("provider_transport", "provider_transport_connect", "provider_transport_read",
+                           "provider_transport_write", "provider_transport_pool", "provider_http_response",
+                           "application_overall_deadline")),
+    ):
+        if data.get(key) in allowed:
+            result[key] = data[key]
+    if data.get("fixture_origin") == "STAGE_A_SYNTHETIC":
+        result.update(fixture_origin="STAGE_A_SYNTHETIC", fixture_disclosure=SAFE_FIXTURE_DISCLOSURE)
     result.update(public_recovery_payload(data.get("error_code"), retryable=data.get("retryable")))
     return result
 
 
 def validate_document_sections(content: Any, headings: list[str]) -> None:
+    reject_raw_generation_values(content)
     if not _text(content):
         raise GenerationContractError("DOCUMENT_INCOMPLETE")
     sections = list(re.finditer(r"^##[ \t]+[^\r\n]+", content, re.MULTILINE))

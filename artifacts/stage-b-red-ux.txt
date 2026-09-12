@@ -11,5 +11,32 @@ FAIL duplicate solutions are rejected before three cards are shown: duplicate so
 
 FAIL wrong-solution PRD is rejected instead of becoming the selected handoff: wrong-solution PRD does not show unsafe document content
 FAIL TechDoc scope drift is rejected instead of being shown as current: TechDoc scope drift does not show unsafe document content
-FAIL retry clears stale solution content before the request resolves: retry must not keep showing stale solution cards while loading
-SUMMARY total=11 passed=7 failed=4
+PASS real AI reference generation renders the mocked API result
+PASS real Evidence Action Card generation renders every required field
+PASS real solution generation renders exactly three visible cards
+PASS real document and handoff loaders preserve selected references
+FAIL real retry click clears stale content before the mocked response resolves: The input was expected to not match the regular expression /过时方案/. Input:
+
+' \n' +
+  '     \n' +
+  '        方案 A    \n' +
+  '       过时方案 \n' +
+  '        \n' +
+  '         MVP 难度      数据要求  待确认    最大风险  待验证   \n' +
+  '        查看完整实施方案 \n' +
+  '          用户流程   暂无流程，待确认。   \n' +
+  '          MVP 页面   暂无   \n' +
+  '          核心功能   暂无   \n' +
+  '           输入   暂无     输出   暂无    \n' +
+  '          核心判断逻辑   暂无   \n' +
+  '          数据来源   暂无   \n' +
+  '          技术组成   暂无   \n' +
+  '          两周实施   暂无   \n' +
+  '          验收案例   暂无   \n' +
+  '          当前未知项   暂无   \n' +
+  '       \n' +
+  '       查看详情 \n' +
+  '       选择这个方案 \n' +
+  '      '
+
+SUMMARY total=15 passed=11 failed=4

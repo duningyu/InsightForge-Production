@@ -28,6 +28,7 @@ from app.schemas import (
 from app.services.capability_probe import CapabilityProbe, CapabilityReport, CapabilityStatus
 from app.services.model_providers import ProviderConfigurationError, ProviderRegistry
 from app.services.dispatch_control import DispatchControlContext
+from app.services.generation_contracts import safe_reference_shape
 
 
 class ProviderCallError(RuntimeError):
@@ -156,6 +157,8 @@ class ModelAdapter:
         self._owns_client = client is None
         self._client = client or httpx.Client(timeout=self._timeout)
         self.last_safe_diagnostic: dict[str, Any] = {}
+        self._last_attempt_id: str | None = None
+        self._last_attempt_record_args: dict[str, Any] | None = None
 
     def _before_network(self) -> None:
         if self._dispatch_control is None:
@@ -350,7 +353,9 @@ class ModelAdapter:
         live: bool = False, output_model: type[_Model] | None = None,
     ) -> dict[str, Any]:
         used_response_format = False
+        self.last_safe_diagnostic = {}
         attempt_id = str(uuid.uuid4())
+        self._last_attempt_id = attempt_id
         started_at = datetime.now(timezone.utc)
         started_clock = perf_counter()
         if self.protocol == "openai_chat_completions":
@@ -514,7 +519,15 @@ class ModelAdapter:
                 "content_present": isinstance(content, str) and bool(content),
                 "content_length": len(content) if isinstance(content, str) else 0,
             })
+        if structured:
+            self.last_safe_diagnostic["safe_response_shape"] = safe_reference_shape(body)
+            self._refresh_attempt_shape()
         return body
+
+    def _refresh_attempt_shape(self) -> None:
+        """Update the durable attempt row without exposing response content."""
+        if self._last_attempt_record_args is not None:
+            self._emit_attempt(**self._last_attempt_record_args)
 
     def _emit_attempt(
         self, *, attempt_id: str, started_at: datetime, started_clock: float,
@@ -523,6 +536,19 @@ class ModelAdapter:
         response_headers_observed: bool, exception_class: str | None,
         failure_stage: str | None,
     ) -> None:
+        self._last_attempt_record_args = {
+            "attempt_id": attempt_id,
+            "started_at": started_at,
+            "started_clock": started_clock,
+            "request_bytes": request_bytes,
+            "message_count": message_count,
+            "schema_bytes": schema_bytes,
+            "structured_output_mode": structured_output_mode,
+            "exception_at": exception_at,
+            "response_headers_observed": response_headers_observed,
+            "exception_class": exception_class,
+            "failure_stage": failure_stage,
+        }
         record = {
             "generation_intent_id": self._generation_intent_id,
             "generation_run_id": self._generation_run_id,
@@ -542,6 +568,7 @@ class ModelAdapter:
             "response_headers_observed": response_headers_observed,
             "exception_class": exception_class,
             "failure_stage": failure_stage,
+            "safe_response_shape": self.last_safe_diagnostic.get("safe_response_shape", {}),
         }
         if self._attempt_observer is not None:
             try:
@@ -730,6 +757,10 @@ class ModelAdapter:
             validated = output_model.model_validate(parsed)
         except ValidationError:
             pass
+        self.last_safe_diagnostic["safe_response_shape"] = safe_reference_shape(
+            body, parsed, model=validated
+        )
+        self._refresh_attempt_shape()
         if validated is None:
             raise self._output_contract_failure(
                 content.encode("utf-8"), classification="schema_mismatch", code="invalid_content",
@@ -906,6 +937,7 @@ class AsyncModelAdapter(ModelAdapter):
                              output_model: type[_Model] | None = None) -> dict[str, Any]:
         if self.protocol != "openai_chat_completions":
             raise ProviderCallError("unsupported_protocol", "Configured provider protocol is unsupported.", False)
+        self.last_safe_diagnostic = {}
         endpoint = "/chat/completions"
         headers = {"Authorization": f"Bearer {self._api_key}"}
         payload: dict[str, Any] = {"model": self.model, "messages": ([{"role": "user", "content": user}] if not system.strip() else [{"role": "system", "content": system}, {"role": "user", "content": user}])}
@@ -921,6 +953,7 @@ class AsyncModelAdapter(ModelAdapter):
             else:
                 payload["response_format"] = {"type": "json_object"}
         attempt_id = str(uuid.uuid4())
+        self._last_attempt_id = attempt_id
         started_at = datetime.now(timezone.utc)
         started_clock = perf_counter()
         request_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -964,4 +997,7 @@ class AsyncModelAdapter(ModelAdapter):
             message = first.get("message") if isinstance(first, dict) else None
             content = message.get("content") if isinstance(message, dict) else None
             self.last_safe_diagnostic.update({"finish_reason": first.get("finish_reason") if isinstance(first, dict) else None, "choices_count": len(body["choices"]), "content_present": isinstance(content, str) and bool(content), "content_length": len(content) if isinstance(content, str) else 0})
+        if structured:
+            self.last_safe_diagnostic["safe_response_shape"] = safe_reference_shape(body)
+            self._refresh_attempt_shape()
         return body

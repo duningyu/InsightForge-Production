@@ -29,6 +29,131 @@ REFERENCE_FIELDS = (
     "possible_target_users", "possible_scenarios", "possible_user_problems",
     "missing_information", "mvp_thoughts", "questions_to_validate", "research_directions",
 )
+
+
+def _safe_shape_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, dict):
+        return "dict"
+    if isinstance(value, (int, float)):
+        return "number"
+    return type(value).__name__
+
+
+def _safe_shape_fields(value: dict[str, Any]) -> tuple[list[str], dict[str, str], dict[str, int]]:
+    keys = sorted(str(key) for key in value)
+    types = {key: _safe_shape_type(value[key]) for key in keys}
+    lengths = {
+        key: len(value[key])
+        for key in keys
+        if isinstance(value[key], (str, list, dict))
+    }
+    return keys, types, lengths
+
+
+def safe_reference_shape(
+    provider_response: Any,
+    parsed_payload: Any = None,
+    *,
+    model: AIReferenceDraft | None = None,
+) -> dict[str, Any]:
+    """Return structure-only AI Reference diagnostics; never retain field values."""
+    choices = provider_response.get("choices") if isinstance(provider_response, dict) else None
+    choices_count = len(choices) if isinstance(choices, list) else 0
+    message = None
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+    message_present = isinstance(message, dict)
+    content_present = message_present and "content" in message
+    content = message.get("content") if content_present else None
+    content_type = _safe_shape_type(content) if content_present else None
+    content_length = len(content) if isinstance(content, str) else None
+
+    parsed = parsed_payload
+    parse_attempted = False
+    parse_success = False
+    if parsed is None and isinstance(content, str) and content.strip():
+        parse_attempted = True
+        try:
+            candidate = json.loads(content.lstrip("\ufeff").strip())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            candidate = None
+        if isinstance(candidate, dict):
+            parsed = candidate
+            parse_success = True
+    elif isinstance(parsed, dict):
+        parse_attempted = True
+        parse_success = True
+    parsed_shape: dict[str, Any] = {
+        "json_parse_attempted": parse_attempted,
+        "json_parse_success": parse_success,
+        "parsed_top_level_type": _safe_shape_type(parsed) if parsed is not None else None,
+        "top_level_keys": [],
+        "field_types": {},
+        "field_lengths": {},
+        "recognized_reference_fields_present": [],
+        "recognized_reference_fields_nonempty": [],
+        "unknown_top_level_keys": [],
+    }
+    if isinstance(parsed, dict):
+        keys, types, lengths = _safe_shape_fields(parsed)
+        recognized = [key for key in keys if key in REFERENCE_FIELDS]
+        nonempty = [key for key in recognized if bool(parsed.get(key))]
+        parsed_shape.update(
+            top_level_keys=keys,
+            field_types=types,
+            field_lengths=lengths,
+            recognized_reference_fields_present=recognized,
+            recognized_reference_fields_nonempty=nonempty,
+            unknown_top_level_keys=[key for key in keys if key not in REFERENCE_FIELDS],
+        )
+
+    schema_attempted = parsed is not None
+    schema_pass = False
+    completeness_pass = False
+    normalized_shape: dict[str, Any] = {
+        "top_level_keys": [], "field_types": {}, "field_lengths": {},
+    }
+    if model is None and isinstance(parsed, dict):
+        try:
+            model = AIReferenceDraft.model_validate(parsed)
+        except (ValidationError, TypeError):
+            model = None
+    if isinstance(model, AIReferenceDraft):
+        schema_pass = True
+        normalized = {field: getattr(model, field, None) for field in AIReferenceDraft.model_fields}
+        keys, types, lengths = _safe_shape_fields(normalized)
+        normalized_shape = {"top_level_keys": keys, "field_types": types, "field_lengths": lengths}
+        completeness_pass = bool(any(getattr(model, key) for key in REFERENCE_FIELDS)) and all(
+            _items(getattr(model, key), required=False) for key in REFERENCE_FIELDS
+        )
+    return {
+        "provider_response_shape": {
+            "choices_count": choices_count,
+            "message_present": message_present,
+            "message_content_present": content_present,
+            "message_content_type": content_type,
+            "message_content_char_count": content_length,
+        },
+        "parsed_payload_shape": parsed_shape,
+        "normalized_ai_reference_shape": normalized_shape,
+        "schema_stage": {
+            "ai_reference_schema_attempted": schema_attempted,
+            "ai_reference_schema_pass": schema_pass,
+        },
+        "completeness_stage": {
+            "completeness_attempted": schema_pass,
+            "completeness_pass": completeness_pass,
+        },
+        "reference_fields": list(REFERENCE_FIELDS),
+    }
 CARD_TEXT_FIELDS = (
     "title", "question_to_validate", "why_it_matters", "decision_impact",
     "fallback_if_unavailable", "limitations",

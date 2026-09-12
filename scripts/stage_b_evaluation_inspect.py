@@ -41,6 +41,31 @@ def inspect_receipt(database: Database, evaluation_id: str) -> dict[str, object]
     return {key: row.get(key) for key in sorted(allowed)}
 
 
+def inspect_provider_attempt(database: Database, attempt_id: str) -> dict[str, object]:
+    """Return provider-attempt metadata, including shape only, never bodies."""
+    with database.connect() as connection:
+        row = connection.execute(
+            """
+            SELECT provider_attempt_id, model_id, elapsed_ms, response_headers_observed,
+                   exception_class, failure_stage, safe_response_shape_json
+            FROM provider_attempts
+            WHERE provider_attempt_id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+    if row is None:
+        raise KeyError(f"provider attempt not found: {attempt_id}")
+    return {
+        "provider_attempt_id": row["provider_attempt_id"],
+        "model_id": row["model_id"],
+        "elapsed_ms": row["elapsed_ms"],
+        "response_headers_observed": bool(row["response_headers_observed"]),
+        "exception_class": row["exception_class"],
+        "failure_stage": row["failure_stage"],
+        "safe_response_shape": json.loads(row["safe_response_shape_json"] or "{}"),
+    }
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -84,7 +109,7 @@ def _dry_create(database: Database, *, as_json: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    command = argv[0] if argv and argv[0] in {"inspect", "dry-create"} else "inspect"
+    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create"} else "inspect"
     if command == "dry-create":
         parser = argparse.ArgumentParser(description="Create a Stage-B dry observability receipt")
         parser.add_argument("dry-create", nargs="?")
@@ -94,6 +119,15 @@ def main(argv: list[str] | None = None) -> int:
         database = Database(args.database or _database_path())
         database.init_schema()
         return _dry_create(database, as_json=args.json)
+
+    if command == "inspect-provider-attempt":
+        parser = argparse.ArgumentParser(description="Inspect a provider attempt without payloads")
+        parser.add_argument("attempt_id")
+        parser.add_argument("--database", type=Path, default=None)
+        args = parser.parse_args(argv[1:])
+        database = Database(args.database or _database_path())
+        print(json.dumps(inspect_provider_attempt(database, args.attempt_id), ensure_ascii=False, indent=2))
+        return 0
 
     parser = argparse.ArgumentParser(description="Inspect a Stage B receipt without payloads")
     if command == "inspect":

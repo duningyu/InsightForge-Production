@@ -554,6 +554,7 @@ CREATE TABLE IF NOT EXISTS provider_attempts (
     response_headers_observed INTEGER NOT NULL CHECK(response_headers_observed IN (0,1)),
     exception_class TEXT,
     failure_stage TEXT,
+    safe_response_shape_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_provider_attempts_generation
@@ -1000,8 +1001,9 @@ class Database:
                     provider_attempt_id, generation_intent_id, generation_run_id, model_id,
                     request_body_bytes, message_count, schema_bytes, structured_output_mode,
                     effective_timeout_json, started_at, exception_at, elapsed_ms,
-                    response_headers_observed, exception_class, failure_stage, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    response_headers_observed, exception_class, failure_stage,
+                    safe_response_shape_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(provider_attempt_id) DO UPDATE SET
                     generation_intent_id=excluded.generation_intent_id,
                     generation_run_id=excluded.generation_run_id,
@@ -1016,7 +1018,8 @@ class Database:
                     elapsed_ms=excluded.elapsed_ms,
                     response_headers_observed=excluded.response_headers_observed,
                     exception_class=excluded.exception_class,
-                    failure_stage=excluded.failure_stage
+                    failure_stage=excluded.failure_stage,
+                    safe_response_shape_json=excluded.safe_response_shape_json
                 """,
                 (
                     attempt_id, record.get("generation_intent_id"), record.get("generation_run_id"),
@@ -1026,7 +1029,9 @@ class Database:
                     json.dumps(record["effective_timeout"], sort_keys=True, separators=(",", ":")),
                     str(record["started_at"]), record.get("exception_at"), int(record["elapsed_ms"]),
                     1 if bool(record["response_headers_observed"]) else 0,
-                    record.get("exception_class"), record.get("failure_stage"), utc_now(),
+                    record.get("exception_class"), record.get("failure_stage"),
+                    json.dumps(record.get("safe_response_shape", {}), sort_keys=True, separators=(",", ":")),
+                    utc_now(),
                 ),
             )
         return attempt_id
@@ -1048,6 +1053,7 @@ class Database:
 
     @classmethod
     def _migrate_schema(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "provider_attempts", "safe_response_shape_json", "TEXT NOT NULL DEFAULT '{}'")
         cls._ensure_column(connection, "stage_b_evaluation_receipts", "output_contract_attempted", "INTEGER NOT NULL DEFAULT 0")
         cls._ensure_column(connection, "stage_b_evaluation_receipts", "failure_stage", "TEXT")
         cls._ensure_column(connection, "document_edit_drafts", "revision", "INTEGER NOT NULL DEFAULT 1")

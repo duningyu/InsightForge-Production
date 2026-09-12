@@ -1,0 +1,60 @@
+{
+  "PLAIN_TEXT_GOOD": {
+    "content": "连接正常：这是纯文本响应，不应进入结构化 JSON 解析。"
+  },
+  "STRUCTURED_GOOD": {
+    "content": "{\"message\":\"结构化成功\",\"items\":[\"第一项\",\"第二项\"]}",
+    "expected": {
+      "message": "结构化成功",
+      "items": ["第一项", "第二项"]
+    }
+  },
+  "FENCED_JSON": {
+    "content": "```json\n{\"message\":\"代码围栏成功\",\"items\":[\"围栏\"]}\n```",
+    "expected": {
+      "message": "代码围栏成功",
+      "items": ["围栏"]
+    }
+  },
+  "LEADING_TRAILING_EXPLANATORY_TEXT": {
+    "content": "下面是结果 STAGE_B_RAW_SENTINEL：\n{\"message\":\"不应接受\",\"items\":[\"额外说明\"]}\n以上是结果。"
+  },
+  "MALFORMED_JSON": {
+    "content": "{\"message\":\"STAGE_B_RAW_SENTINEL\",\"items\":[\"缺少结尾\"]"
+  },
+  "EMPTY_OUTPUT": {
+    "content": "  \r\n\t  "
+  },
+  "PROVIDER_ERROR_JSON": {
+    "content": "{\"error\":{\"code\":\"upstream_busy\",\"message\":\"STAGE_B_RAW_SENTINEL\"}}"
+  },
+  "NESTED_JSON_STRING": {
+    "content": "\"{\\\"message\\\":\\\"STAGE_B_RAW_SENTINEL\\\",\\\"items\\\":[\\\"嵌套字符串\\\"]}\""
+  },
+  "ESCAPED_UNICODE": {
+    "content": "{\"message\":\"\\u4f60\\u597d\",\"items\":[\"\\u5de5\\u4e1a\\u9884\\u8b66\"]}",
+    "expected": {
+      "message": "你好",
+      "items": ["工业预警"]
+    }
+  },
+  "MARKDOWN_WRAPPED_JSON": {
+    "content": "\ufeff  ```\r\n{\"message\":\"Markdown 围栏成功\",\"items\":[\"无语言标签\"]}\r\n```  ",
+    "expected": {
+      "message": "Markdown 围栏成功",
+      "items": ["无语言标签"]
+    }
+  },
+  "MULTIPLE_OBJECTS": {
+    "content": "{\"message\":\"第一个 STAGE_B_RAW_SENTINEL\",\"items\":[\"一\"]}\n{\"message\":\"第二个\",\"items\":[\"二\"]}"
+  },
+  "MISSING_FIELDS": {
+    "content": "{\"message\":\"STAGE_B_RAW_SENTINEL\"}"
+  },
+  "WRONG_TYPES": {
+    "content": "{\"message\":7,\"items\":\"STAGE_B_RAW_SENTINEL\"}"
+  },
+  "WRONG_SCHEMA": {
+    "content": "{\"status\":\"ok\",\"payload\":\"STAGE_B_RAW_SENTINEL\"}"
+  }
+}

@@ -54,7 +54,7 @@ def test_ai_reference_dispatch_permit_is_durably_linked_to_evaluation(tmp_path: 
     )
 
     row = database.fetch_one(
-        "SELECT evaluation_id FROM provider_dispatch_permits WHERE permit_id=?", (permit,)
+        "SELECT evaluation_id FROM provider_dispatch_evaluation_links WHERE permit_id=?", (permit,)
     )
     assert row["evaluation_id"] == evaluation_id
 
@@ -74,6 +74,7 @@ def test_provider_503_keeps_dispatch_linkage_and_marks_transport_stage(tmp_path:
 
     receipt = StageBExecutionHarness(database=database).inspect(evaluation_id)
     assert receipt["dispatch_permit_id"] == permit
+    assert receipt["dispatch_evaluation_id"] == evaluation_id
     assert receipt["dispatch_count"] == 1
     assert receipt["transport_count"] == 1
     assert receipt["failure_classification"] == "PROVIDER_5XX"
@@ -113,12 +114,12 @@ def test_interleaved_evaluations_cannot_cross_link(tmp_path: Path) -> None:
         )
 
     rows = database.fetch_all(
-        "SELECT permit_id, evaluation_id FROM provider_dispatch_permits ORDER BY permit_id"
+        "SELECT permit_id, evaluation_id FROM provider_dispatch_evaluation_links ORDER BY permit_id"
     )
     assert {row["evaluation_id"] for row in rows} == {first, second}
     assert database.fetch_one(
-        "SELECT evaluation_id FROM provider_dispatch_permits WHERE permit_id=?", (first_permit,)
+        "SELECT evaluation_id FROM provider_dispatch_evaluation_links WHERE permit_id=?", (first_permit,)
     )["evaluation_id"] == first
     assert database.fetch_one(
-        "SELECT evaluation_id FROM provider_dispatch_permits WHERE permit_id=?", (second_permit,)
+        "SELECT evaluation_id FROM provider_dispatch_evaluation_links WHERE permit_id=?", (second_permit,)
     )["evaluation_id"] == second

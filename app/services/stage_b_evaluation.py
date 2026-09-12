@@ -396,6 +396,11 @@ class StageBEvaluationReceiptStore:
         row["artifact_exists"] = bool(artifact and artifact.is_file())
         row["artifact_hash_available"] = bool(row.get("artifact_sha256"))
         row["artifact_bytes"] = artifact.stat().st_size if artifact and artifact.is_file() else None
+        linked = self.database.fetch_one(
+            "SELECT evaluation_id FROM provider_dispatch_evaluation_links WHERE permit_id=?",
+            (row.get("dispatch_permit_id"),),
+        ) if row.get("dispatch_permit_id") else None
+        row["dispatch_evaluation_id"] = linked["evaluation_id"] if linked else None
         return row
 
     def consumed_count(self) -> int:

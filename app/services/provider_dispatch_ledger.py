@@ -47,17 +47,17 @@ class ProviderDispatchLedger:
     def acquire_permit(self, *, acceptance_execution_id: str, acceptance_window_id: str,
                        beta_instance: str, provider: str, model: str,
                        authorization_reference: str, quota_scope: str,
-                       evaluation_id: str | None = None) -> str | None:
+                       ) -> str | None:
         permit_id = str(uuid.uuid4())
         try:
             with self.database.connect() as cx:
                 cx.execute("BEGIN IMMEDIATE")
                 cx.execute(
                     """INSERT INTO provider_dispatch_permits
-                    (permit_id, acceptance_execution_id, evaluation_id, acceptance_window_id, beta_instance,
+                    (permit_id, acceptance_execution_id, acceptance_window_id, beta_instance,
                      provider, model, dispatch_ordinal, authorization_reference, quota_scope, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
-                    (permit_id, acceptance_execution_id, evaluation_id, acceptance_window_id, beta_instance,
+                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                    (permit_id, acceptance_execution_id, acceptance_window_id, beta_instance,
                      provider, model, authorization_reference, quota_scope, _now()),
                 )
                 self._insert_event(cx, permit_id, "PERMIT_ACQUIRED")
@@ -68,17 +68,22 @@ class ProviderDispatchLedger:
     def link_permit_to_evaluation(self, permit_id: str, evaluation_id: str) -> None:
         """Attach one pre-created permit to its explicit Stage B evaluation."""
         with self.database.connect() as cx:
-            row = cx.execute(
-                "SELECT evaluation_id FROM provider_dispatch_permits WHERE permit_id=?",
+            cx.execute("BEGIN IMMEDIATE")
+            permit = cx.execute(
+                "SELECT 1 FROM provider_dispatch_permits WHERE permit_id=?",
                 (permit_id,),
             ).fetchone()
-            if row is None:
+            if permit is None:
                 raise KeyError(permit_id)
-            if row[0] not in (None, evaluation_id):
+            row = cx.execute(
+                "SELECT evaluation_id FROM provider_dispatch_evaluation_links WHERE permit_id=?",
+                (permit_id,),
+            ).fetchone()
+            if row is not None and row[0] != evaluation_id:
                 raise ValueError("DISPATCH_EVALUATION_MISMATCH")
             cx.execute(
-                "UPDATE provider_dispatch_permits SET evaluation_id=? WHERE permit_id=?",
-                (evaluation_id, permit_id),
+                "INSERT OR IGNORE INTO provider_dispatch_evaluation_links(permit_id, evaluation_id, linked_at) VALUES (?, ?, ?)",
+                (permit_id, evaluation_id, _now()),
             )
 
     def record_event(self, permit_id: str, event_type: str, metadata: dict[str, Any] | None = None) -> str:

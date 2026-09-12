@@ -278,6 +278,17 @@ async function main() {
     assert.match(body, /AI建议，仍需你结合实际情况判断；这不是已验证资料/);
   });
 
+  await runCase("incomplete Action Cards fail closed without placeholder success", () => {
+    for (const field of ["who_or_where", "action_steps", "acceptable_artifacts", "fill_template"]) {
+      const incomplete = JSON.parse(JSON.stringify(fixtures.action_card_complete));
+      incomplete.cards[0][field] = [];
+      hooks.setTestEvidenceGuidance(incomplete);
+      assert.equal(getElement("#evidence-guidance-content").children.length, 0, `${field} must not render an Action Card`);
+      assert.match(getElement("#evidence-guidance-message").innerText, /没有生成可用的资料行动建议/);
+      assert.doesNotMatch(getElement("#evidence-guidance-content").innerText, /可按实际情况补充问题/);
+    }
+  });
+
   await runCase("solution success renders exactly three complete cards", () => {
     hooks.state.solutions = fixtures.solutions_complete;
     hooks.renderSolutions();

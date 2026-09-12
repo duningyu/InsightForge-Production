@@ -472,6 +472,7 @@ function viewString(value, {required = true, maxLength = 4000} = {}) {
 
 function viewStringList(value, {required = true, maxItems = 20, maxLength = 4000} = {}) {
   if (!Array.isArray(value)) return required ? null : [];
+  if (required && value.length === 0) return null;
   if (value.length > maxItems) return null;
   const result = value.map((item) => viewString(item, {maxLength}));
   return result.some((item) => item === null) ? null : result;

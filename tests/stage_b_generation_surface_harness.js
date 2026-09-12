@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const vm = require("node:vm");
 
@@ -125,6 +126,40 @@ function assertDocumentSafetyContract(version, {validMarker, forbiddenMarker, la
   assert.ok(validContinuation || typedFailClosed, `${label} either preserves a valid continuation or returns a typed fail-closed result`);
 }
 
+function inspectSolutionFixtureContract(solutionSet) {
+  const script = [
+    "import json, sys",
+    "from pydantic import ValidationError",
+    "from app.schemas import SolutionCandidateDraft",
+    "from app.services.generation_contracts import GenerationContractError, validate_solution_response",
+    "payload = json.loads(__import__('base64').b64decode(sys.stdin.read()).decode('utf-8'))",
+    "schema_valid = True",
+    "for candidate in payload.get('candidates', []):",
+    "    draft = {key: value for key, value in candidate.items() if key != 'id'}",
+    "    try:",
+    "        SolutionCandidateDraft.model_validate(draft)",
+    "    except (ValidationError, TypeError):",
+    "        schema_valid = False",
+    "        break",
+    "result = {'schema_valid': schema_valid}",
+    "if schema_valid:",
+    "    try:",
+    "        validate_solution_response(payload)",
+    "    except GenerationContractError as exc:",
+    "        result.update(response_valid=False, response_error=str(exc))",
+    "    else:",
+    "        result.update(response_valid=True, response_error=None)",
+    "print(json.dumps(result))",
+  ].join("\n");
+  const childResult = childProcess.spawnSync(
+    "py",
+    ["-3.12", "-c", script],
+    {cwd: process.cwd(), input: Buffer.from(JSON.stringify(solutionSet), "utf8").toString("base64"), encoding: "utf8"},
+  );
+  assert.equal(childResult.status, 0, `actual solution contract probe failed: ${childResult.stderr.trim()}`);
+  return JSON.parse(childResult.stdout);
+}
+
 async function main() {
   await runCase("AI reference success has indicator and visible body", () => {
     hooks.setTestAIReference(fixtures.ai_reference_complete);
@@ -185,7 +220,17 @@ async function main() {
 
   await runCase("duplicate solutions are rejected before three cards are shown", () => {
     const candidates = fixtures.duplicate_solutions.candidates;
+    const contract = inspectSolutionFixtureContract(fixtures.duplicate_solutions);
     assert.equal(candidates.length, 3, "duplicate fixture must contain exactly three candidates");
+    assert.equal(contract.schema_valid, true, "duplicate fixture candidates must pass the solution candidate schema before quality validation");
+    assert.equal(contract.response_valid, false, "duplicate fixture must fail quality validation");
+    assert.equal(contract.response_error, "SOLUTION_DIVERSITY_FAILED", "duplicate fixture must fail for differentiation, not schema validity");
+    const diversityFields = ["mechanism", "required_data_class", "automation_level", "human_role", "core_decision_logic", "major_dependency"];
+    const normalize = (value) => String(value).replace(/\s+/g, " ").trim().toLocaleLowerCase();
+    const differenceCount = (left, right) => diversityFields.filter((field) => normalize(left[field]) !== normalize(right[field])).length;
+    assert.equal(differenceCount(candidates[0], candidates[1]), 1, "near-identical pair must differ in only one quality dimension");
+    assert.ok(differenceCount(candidates[0], candidates[2]) >= 2, "third candidate must differ materially from the first");
+    assert.ok(differenceCount(candidates[1], candidates[2]) >= 2, "third candidate must differ materially from the near-identical pair");
     assert.notEqual(candidates[0].id, candidates[1].id, "near-identical candidates must have distinct identities");
     assert.notEqual(candidates[0].title, candidates[1].title, "near-identical candidates must have distinct titles");
     assert.deepEqual(candidates[0].user_flow, candidates[1].user_flow, "duplicate pair shares the same user flow");

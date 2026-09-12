@@ -6,7 +6,7 @@ from typing import Any
 
 from app.db import Database, utc_now
 from app.schemas import EvidenceGuidanceDraft
-from app.services.ai_reference import AIReferenceService
+from app.services.ai_reference import AIReferenceService, reject_unsupported_claims
 from app.services.ai_runtime import sha256_payload
 from app.services.generation_contracts import call_generation, validate_guidance, guidance_public
 
@@ -62,6 +62,24 @@ class EvidenceCoachService:
 
         context = self._context(project_id)
         parsed = validate_guidance(call_generation(lambda: runtime.generate_evidence_guidance(context)))
+        reject_unsupported_claims(
+            getattr(card, key)
+            for card in parsed.cards
+            for key in (
+                "title",
+                "question_to_validate",
+                "why_it_matters",
+                "who_or_where",
+                "action_steps",
+                "suggested_questions",
+                "acceptable_artifacts",
+                "fill_template",
+                "decision_impact",
+                "fallback_if_unavailable",
+                "limitations",
+            )
+            for item in (getattr(card, key) if isinstance(getattr(card, key), list) else [getattr(card, key)])
+        )
         result_json = guidance_public(parsed)
         result_json["disclosure"] = _DISCLOSURE
         fixture_origin = getattr(runtime, "fixture_origin", None)
@@ -107,10 +125,12 @@ class EvidenceCoachService:
         }
 
     def _row(self, row: dict[str, Any]) -> dict[str, Any]:
+        result = guidance_public(json.loads(row["result_json"]))
+        result["disclosure"] = _DISCLOSURE
         return {
             "id": row["id"],
             "project_id": row["project_id"],
-            "result": guidance_public(json.loads(row["result_json"])),
+            "result": result,
             "status": row["status"],
             "is_evidence": False,
             "source_created": False,

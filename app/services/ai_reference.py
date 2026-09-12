@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
-from typing import Any
+from typing import Any, Iterable
 
 from app.db import Database, utc_now
 from app.services.ai_runtime import sha256_payload
-from app.services.generation_contracts import call_generation, validate_reference, reference_public
+from app.services.generation_contracts import (
+    GenerationContractError,
+    call_generation,
+    reference_public,
+    validate_reference,
+)
 
 
 _CATEGORIES = (
@@ -19,6 +25,25 @@ _CATEGORIES = (
     "research_directions",
 )
 _DECISIONS = {"adopt", "modify", "ignore"}
+_PROVENANCE_NOTICE = (
+    "AI生成参考，尚未经外部资料核实。AI参考/待验证：以下内容只是模型建议，不是研究、市场或用户事实。"
+)
+_UNSUPPORTED_CLAIM_PATTERNS = (
+    re.compile(r"(?:研究|调研|市场研究).*(?:证明|表明|显示|发现|验证)"),
+    re.compile(r"(?:所有|全部|每个|任何).*(?:用户|客户|人).*(?:都|会|需要|喜欢|愿意|使用|购买)"),
+    re.compile(r"(?:用户|客户).*(?:都|普遍|一定会|必然).*(?:需要|喜欢|愿意|使用|购买)"),
+    re.compile(r"(?:市场|用户需求).*(?:已经|已|普遍|旺盛|巨大).*(?:验证|证明|存在|需要|喜欢|愿意)"),
+    re.compile(r"(?:research|market research).*(?:proves|shows|validated|discovered)", re.IGNORECASE),
+    re.compile(r"(?:all|every|any)\s+(?:users?|customers?).*(?:need|like|will use|will buy)", re.IGNORECASE),
+)
+
+
+def reject_unsupported_claims(values: Iterable[Any]) -> None:
+    """Reject assertive research/market/user claims without a source boundary."""
+    for value in values:
+        text = " ".join(str(value or "").split())
+        if any(pattern.search(text) for pattern in _UNSUPPORTED_CLAIM_PATTERNS):
+            raise GenerationContractError("UNSUPPORTED_UNVERIFIED_CLAIM")
 
 
 class AIReferenceService:
@@ -60,7 +85,10 @@ class AIReferenceService:
         context = self.build_context(project_id)
         parsed = validate_reference(call_generation(lambda: runtime.generate_ai_reference(context)))
         result_json = reference_public(parsed)
-        result_json["uncertainty_notice"] = "AI生成参考，尚未经外部资料核实。"
+        reject_unsupported_claims(
+            item for category in _CATEGORIES for item in getattr(parsed, category)
+        )
+        result_json["uncertainty_notice"] = _PROVENANCE_NOTICE
         fixture_origin = getattr(runtime, "fixture_origin", None)
         if fixture_origin:
             result_json["fixture_origin"] = fixture_origin
@@ -82,7 +110,9 @@ class AIReferenceService:
                 "is_evidence": False, "created_at": now, "content_sha256": sha256_payload(result_json)}
 
     def _row(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {"id": row["id"], "project_id": row["project_id"], "result": reference_public(json.loads(row["result_json"])),
+        result = reference_public(json.loads(row["result_json"]))
+        result["uncertainty_notice"] = _PROVENANCE_NOTICE
+        return {"id": row["id"], "project_id": row["project_id"], "result": result,
                 "status": row["status"], "is_evidence": False, "created_at": row["created_at"],
                 "content_sha256": row["content_sha256"]}
 

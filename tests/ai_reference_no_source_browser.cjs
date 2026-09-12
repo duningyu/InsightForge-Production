@@ -147,7 +147,10 @@ function isExpectedHttpError(error) {
     await view(page, 'solutions');
     await page.locator('#ai-reference-generate').click();
     await waitForVisible(page, '#ai-reference-content .status-note');
-    assert.match(await page.locator('#ai-reference-content').innerText(), /AI生成参考，尚未经外部资料核实/);
+    const aiReferenceText = await page.locator('#ai-reference-content').innerText();
+    assert.match(aiReferenceText, /AI生成参考，尚未经外部资料核实/);
+    assert.match(aiReferenceText, /AI参考/);
+    assert.match(aiReferenceText, /待验证/);
     assert.ok(await page.locator('#ai-reference-content .ai-reference-item-content').count() > 1, 'AI suggestions need visible content blocks');
     assert.match(await page.locator('#ai-reference-content').innerText(), /可能的目标用户|可能出现的场景|可能需要解决的问题/);
     assert.equal((await page.evaluate(async id => (await fetch(`/api/projects/${id}/sources`)).json(), input.aiProject)).length, 0);
@@ -174,9 +177,9 @@ function isExpectedHttpError(error) {
     await page.locator('#evidence-guidance-generate').click();
     await waitForVisible(page, '#evidence-guidance-content .evidence-coach-card');
     const guidanceText = await page.locator('#evidence-guidance-content').innerText();
-    assert.match(guidanceText, /要确认什么/);
-    assert.match(guidanceText, /拿到什么就可以填写/);
-    assert.match(guidanceText, /会影响哪个产品决定/);
+    for (const label of ['要确认什么', '为什么重要', '找谁 / 去哪里', '具体怎么做', '拿到什么就可以填写', '填写模板', '会影响哪个产品决定', '暂时拿不到怎么办', '这条材料的局限']) {
+      assert.match(guidanceText, new RegExp(label));
+    }
     assert.match(guidanceText, /AI建议/);
     assert.equal((await page.evaluate(async id => (await fetch(`/api/projects/${id}/sources`)).json(), input.aiProject)).length, 0);
     const guidance = await page.evaluate(async id => (await fetch(`/api/projects/${id}/evidence-guidance`)).json(), input.aiProject);

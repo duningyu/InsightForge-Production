@@ -51,6 +51,13 @@ class EmptyReferenceRuntime:
         return AIReferenceDraft()
 
 
+class UnsupportedClaimReferenceRuntime(FakeReferenceRuntime):
+    def generate_ai_reference(self, context):
+        result = super().generate_ai_reference(context)
+        result.possible_user_problems = ["研究证明所有用户都会持续使用这个功能"]
+        return result
+
+
 def test_ai_reference_is_bounded_and_not_a_source(tmp_path):
     db = Database(tmp_path / "reference.sqlite3")
     db.init_schema()
@@ -64,7 +71,9 @@ def test_ai_reference_is_bounded_and_not_a_source(tmp_path):
     assert len(runtime.calls) == 1
     assert result["status"] == "completed"
     assert result["is_evidence"] is False
-    assert result["result"]["uncertainty_notice"] == "AI生成参考，尚未经外部资料核实。"
+    assert result["result"]["uncertainty_notice"] == (
+        "AI生成参考，尚未经外部资料核实。AI参考/待验证：以下内容只是模型建议，不是研究、市场或用户事实。"
+    )
     assert db.fetch_one("SELECT COUNT(*) AS n FROM sources")["n"] == 0
 
     applied = service.apply(
@@ -78,6 +87,53 @@ def test_ai_reference_is_bounded_and_not_a_source(tmp_path):
     assert applied["status"] == "applied"
     assert applied["decisions"][0]["provenance"] == "AI_REFERENCE"
     assert service.get_context(project_id, actor="synthetic-user")["adopted"][0]["item"] == "第一次找实习的学生"
+
+
+def test_ai_reference_provenance_is_explicit_and_visible(tmp_path):
+    db = Database(tmp_path / "reference-provenance.sqlite3")
+    db.init_schema()
+    project_id = ProjectService(db).create_project(
+        title="待验证参考项目", summary="用于验证 AI 参考的显示边界。", actor="synthetic-user"
+    )["id"]
+
+    result = AIReferenceService(db).generate(
+        project_id, actor="synthetic-user", runtime=FakeReferenceRuntime()
+    )
+
+    notice = result["result"]["uncertainty_notice"]
+    assert "AI参考" in notice
+    assert "待验证" in notice
+    assert "不是研究、市场或用户事实" in notice
+    assert any(
+        result["result"][category]
+        for category in (
+            "possible_target_users",
+            "possible_scenarios",
+            "possible_user_problems",
+            "missing_information",
+            "mvp_thoughts",
+            "questions_to_validate",
+            "research_directions",
+        )
+    )
+
+
+def test_ai_reference_rejects_unsupported_assertive_claims_without_evidence(tmp_path):
+    db = Database(tmp_path / "unsupported-reference.sqlite3")
+    db.init_schema()
+    project_id = ProjectService(db).create_project(
+        title="无证据主张项目", summary="用于验证未支持主张不能混入 AI 参考。", actor="synthetic-user"
+    )["id"]
+
+    with pytest.raises(StructuredOutputContractError):
+        AIReferenceService(db).generate(
+            project_id, actor="synthetic-user", runtime=UnsupportedClaimReferenceRuntime()
+        )
+
+    assert db.fetch_one(
+        "SELECT COUNT(*) AS n FROM ai_reference_results WHERE project_id=?", (project_id,)
+    )["n"] == 0
+    assert db.fetch_one("SELECT COUNT(*) AS n FROM sources WHERE project_id=?", (project_id,))["n"] == 0
 
 
 def test_empty_ai_reference_is_not_saved_as_success(tmp_path):

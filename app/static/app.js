@@ -432,6 +432,7 @@ const AI_REFERENCE_FIELDS = [
   "possible_target_users", "possible_scenarios", "possible_user_problems",
   "missing_information", "mvp_thoughts", "questions_to_validate", "research_directions",
 ];
+const AI_REFERENCE_PROVENANCE_NOTICE = "AI生成参考，尚未经外部资料核实。AI参考/待验证：以下内容只是模型建议，不是研究、市场或用户事实。";
 const EVIDENCE_CARD_TEXT_FIELDS = [
   "title", "question_to_validate", "why_it_matters", "decision_impact",
   "fallback_if_unavailable", "limitations",
@@ -507,7 +508,7 @@ function toAIReferenceViewModel(value) {
     model[key] = items;
   }
   if (!AI_REFERENCE_FIELDS.some((key) => model[key].length)) return null;
-  model.uncertainty_notice = viewDisclosure(value.uncertainty_notice) || "AI生成参考，尚未经外部资料核实。";
+  model.uncertainty_notice = AI_REFERENCE_PROVENANCE_NOTICE;
   model.fixture_disclosure = viewDisclosure(value.fixture_disclosure)
     || (value.fixture_origin === "STAGE_A_SYNTHETIC" ? "Stage A 演示结果 · 非真实 AI 生成" : "");
   return model;
@@ -523,7 +524,7 @@ function toEvidenceGuidanceViewModel(value) {
       if (!model[key]) return null;
     }
     for (const key of EVIDENCE_CARD_LIST_FIELDS) {
-      model[key] = viewStringList(card[key], {maxItems: 20});
+      model[key] = viewStringList(card[key], {required: key !== "suggested_questions", maxItems: 20});
       if (!model[key]) return null;
     }
     return model;
@@ -1745,7 +1746,8 @@ function appendEvidenceGuidanceBlock(parent, label, value) {
   block.append(heading);
   if (Array.isArray(value)) {
     const list = document.createElement("ul");
-    value.forEach((item) => {
+    const items = value.length ? value : ["可按实际情况补充问题。"];
+    items.forEach((item) => {
       const li = document.createElement("li");
       li.textContent = String(item || "暂未确认");
       list.append(li);

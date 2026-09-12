@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app.db import Database
-from app.errors import StructuredRuntimeUnavailableError
+from app.errors import StructuredOutputContractError
 from app.schemas import AIReferenceDraft
 from app.services.ai_reference import AIReferenceService
 from app.services.document_versions import DocumentVersionService
@@ -87,7 +87,7 @@ def test_empty_ai_reference_is_not_saved_as_success(tmp_path):
         title="空结果项目", summary="用于验证空的 AI 参考不能伪装成功。", actor="synthetic-user"
     )["id"]
 
-    with pytest.raises(StructuredRuntimeUnavailableError, match="没有生成可用建议"):
+    with pytest.raises(StructuredOutputContractError):
         AIReferenceService(db).generate(
             project_id, actor="synthetic-user", runtime=EmptyReferenceRuntime()
         )

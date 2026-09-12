@@ -17,6 +17,9 @@ from uuid import uuid4
 
 from app.db import Database
 from app.services.dispatch_control import DispatchControlContext
+from app.services.generation_contracts import (
+    GenerationContractError, solution_public, failure_public, validate_solution_response,
+)
 
 
 def _now() -> str:
@@ -71,7 +74,7 @@ class AsyncRun:
         if self.status in {"SUCCEEDED", "FAILED"}:
             payload["status_code"] = self.status_code
             if self.response is not None:
-                payload.update(self.response)
+                payload.update(solution_public(self.response) if self.status == "SUCCEEDED" else failure_public(self.response))
         return payload
 
 
@@ -353,8 +356,16 @@ class AsyncGenerationRepository:
             connection.execute("UPDATE solution_generation_intents SET provider_call_count=1 WHERE generation_run_id=?", (run_id,))
 
     def finish(self, run_id: str, payload: dict[str, Any], *, status_code: int, solution_run_id: str | None = None) -> None:
-        safe = {k: v for k, v in payload.items() if k not in {"preserved_input"}}
+        if status_code < 400 and not payload.get("error_code"):
+            try:
+                validate_solution_response(payload)
+            except GenerationContractError as exc:
+                payload = {**exc.as_payload(), "quota_status": "RELEASED"}
+                status_code = 503
+        elif status_code < 400:
+            status_code = 503
         status = "SUCCEEDED" if status_code < 400 else "FAILED"
+        safe = solution_public(payload) if status == "SUCCEEDED" else failure_public(payload)
         quota_status = "CHARGED" if status == "SUCCEEDED" else "RELEASED"
         with self.db.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")

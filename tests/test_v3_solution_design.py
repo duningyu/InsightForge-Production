@@ -91,6 +91,7 @@ def test_pairwise_candidates_need_two_material_dimension_differences():
     candidates = [
         candidate("rule_based", "inventory", "low", "confirm", "threshold", "sqlite"),
         candidate("rule_based", "inventory", "low", "confirm", "threshold", "fastapi"),
+        candidate("prediction_based", "history", "medium", "approve", "forecast", "model"),
     ]
     with pytest.raises(ValueError, match="SOLUTION_DIVERSITY_FAILED"):
         validate_solution_set(candidates, llm_core_required=False)
@@ -108,20 +109,22 @@ def test_default_set_requires_non_llm_core_solution():
             "search_retrieval", "documents", "medium", "review", "rag_answer", "vector_db",
             requires_llm_runtime=True, requires_rag_runtime=True,
         ),
+        candidate("automation", "events", "low", "supervise", "agent", "tools", requires_agent_runtime=True),
     ]
     with pytest.raises(ValueError, match="OVERENGINEERED_SOLUTION_SET"):
         validate_solution_set(candidates, llm_core_required=False)
 
 
-def test_two_materially_different_candidates_are_allowed():
+def test_stage_b_rejects_two_candidates_instead_of_padding_or_partial_success():
     from app.services.solution_design import validate_solution_set
 
     candidates = [
         candidate("rule_based", "inventory", "low", "confirm", "threshold", "sqlite"),
         candidate("prediction_based", "sales_history", "medium", "approve", "forecast", "forecast_model"),
     ]
-    result = validate_solution_set(candidates, llm_core_required=False)
-    assert len(result) == 2
+    from app.errors import StructuredOutputContractError
+    with pytest.raises(StructuredOutputContractError):
+        validate_solution_set(candidates, llm_core_required=False)
 
 
 def test_deterministic_runtime_uses_frozen_case_and_preserves_hypothesis_provenance():

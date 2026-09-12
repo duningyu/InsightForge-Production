@@ -6,6 +6,7 @@ import threading
 
 from app.db import Database
 from app.services.async_generation import AsyncGenerationRepository, AsyncGenerationWorker
+from surface_fixtures import complete_solution_payload
 
 
 def repo(tmp_path):
@@ -56,7 +57,7 @@ def test_worker_executes_each_run_once_and_persists_success(tmp_path):
     _, repository = repo(tmp_path)
     run = repository.create_or_replay("beta001", "project-a", "intent-a")
     calls = []
-    worker = AsyncGenerationWorker(repository, lambda item: calls.append(item.generation_run_id) or {"candidates": [{"id": "c1"}]}, poll_seconds=0.01)
+    worker = AsyncGenerationWorker(repository, lambda item: calls.append(item.generation_run_id) or complete_solution_payload(), poll_seconds=0.01)
     worker.start()
     try:
         deadline = time.time() + 2
@@ -137,7 +138,7 @@ def test_finish_cannot_overwrite_terminal_intent_or_repeat_settlement(tmp_path):
     db, repository = repo(tmp_path)
     run = repository.create_or_replay("owner", "project", "race")
     repository.claim_next()
-    repository.finish(run.generation_run_id, {"candidates": [{"id": "kept"}]}, status_code=201)
+    repository.finish(run.generation_run_id, complete_solution_payload(), status_code=201)
     repository.finish(run.generation_run_id, {"error_code": "ASYNC_GENERATION_CANCELLED"}, status_code=503)
     assert repository.get("owner", "project", run.generation_run_id).status == "SUCCEEDED"
     assert db.fetch_one("SELECT status FROM solution_generation_intents")["status"] == "SUCCEEDED"
@@ -174,7 +175,7 @@ def test_controlled_completion_wins_over_late_cancel_without_second_terminal(tmp
         at_completion.set()
         # Matches the production postprocess/persist/commit section: no await.
         assert allow_completion.wait(5)
-        return {"candidates": [{"id": "synthetic"}]}
+        return complete_solution_payload()
 
     worker = AsyncGenerationWorker(repository, async_executor=executor)
     worker.start()

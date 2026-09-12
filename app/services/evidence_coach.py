@@ -4,13 +4,11 @@ import json
 import uuid
 from typing import Any
 
-from pydantic import ValidationError
-
 from app.db import Database, utc_now
-from app.errors import StructuredRuntimeUnavailableError
 from app.schemas import EvidenceGuidanceDraft
 from app.services.ai_reference import AIReferenceService
 from app.services.ai_runtime import sha256_payload
+from app.services.generation_contracts import call_generation, validate_guidance, guidance_public
 
 
 _DISCLOSURE = "AI建议你去补这些资料，尚未加入项目资料，也不代表已经核实。"
@@ -43,19 +41,7 @@ class EvidenceCoachService:
 
     @staticmethod
     def _validate_cards(parsed: EvidenceGuidanceDraft) -> None:
-        if not parsed.cards:
-            raise StructuredRuntimeUnavailableError(
-                "这次没有生成可用的资料行动建议，请重新尝试。"
-            )
-        for card in parsed.cards:
-            if not card.action_steps or not card.acceptable_artifacts or not card.fill_template:
-                raise StructuredRuntimeUnavailableError(
-                    "这次没有生成完整的资料行动建议，请重新尝试。"
-                )
-            if not card.decision_impact.strip() or not card.limitations.strip():
-                raise StructuredRuntimeUnavailableError(
-                    "这次没有生成完整的资料行动建议，请重新尝试。"
-                )
+        validate_guidance(parsed)
 
     def generate(
         self,
@@ -75,15 +61,8 @@ class EvidenceCoachService:
                 return self._row(existing)
 
         context = self._context(project_id)
-        try:
-            result = runtime.generate_evidence_guidance(context)
-            parsed = result if isinstance(result, EvidenceGuidanceDraft) else EvidenceGuidanceDraft.model_validate(result)
-        except ValidationError as exc:
-            raise StructuredRuntimeUnavailableError(
-                "这次没有生成可用的资料行动建议，请重新尝试。"
-            ) from exc
-        self._validate_cards(parsed)
-        result_json = parsed.model_dump(mode="json")
+        parsed = validate_guidance(call_generation(lambda: runtime.generate_evidence_guidance(context)))
+        result_json = guidance_public(parsed)
         result_json["disclosure"] = _DISCLOSURE
         fixture_origin = getattr(runtime, "fixture_origin", None)
         if fixture_origin:
@@ -131,7 +110,7 @@ class EvidenceCoachService:
         return {
             "id": row["id"],
             "project_id": row["project_id"],
-            "result": json.loads(row["result_json"]),
+            "result": guidance_public(json.loads(row["result_json"])),
             "status": row["status"],
             "is_evidence": False,
             "source_created": False,

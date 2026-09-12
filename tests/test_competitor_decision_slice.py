@@ -269,6 +269,7 @@ def test_solution_generation_passes_snapshot_decisions_into_model_context(db):
                 candidates=[
                     candidate("rule_based", "profile", "low", "confirm", "threshold", "sqlite", title="轻量方案"),
                     candidate("workflow_based", "profile", "medium", "review", "checklist", "web", title="流程方案"),
+                    candidate("prediction_based", "history", "high", "monitor", "forecast", "model", title="预测方案"),
                 ],
                 llm_core_required=False,
             )
@@ -276,7 +277,7 @@ def test_solution_generation_passes_snapshot_decisions_into_model_context(db):
     runtime = CaptureRuntime()
     result = SolutionDesignService(db, runtime).generate(project_id, actor="synthetic-owner")
 
-    assert result["run"]["status"] == "completed_two_candidates"
+    assert result["run"]["status"] == "completed"
     assert runtime.captured.competitor_context == {
         "snapshot_id": snapshot_id,
         "boundary": "AI分析参考，建议结合实际产品页面核对。",
@@ -377,6 +378,7 @@ def test_generation_and_document_chain_keeps_the_snapshot_bound_at_start(db):
                     candidates=[
                         candidate("rule_based", "profile", "low", "confirm", "threshold", "sqlite", title="链路方案"),
                         candidate("workflow_based", "profile", "medium", "review", "checklist", "web", title="备选方案"),
+                        candidate("prediction_based", "history", "high", "monitor", "forecast", "model", title="预测方案"),
                     ],
                 llm_core_required=False,
             )

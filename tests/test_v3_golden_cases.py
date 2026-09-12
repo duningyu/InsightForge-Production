@@ -133,6 +133,7 @@ def test_case_2_non_ai_workflow_rejects_all_ai_overengineering():
         requires_agent_runtime=False,
     )
     candidates = [SolutionCandidateDraft.model_validate(item) for item in raw]
+    candidates.append(candidates[0].model_copy(update={"title": "自动执行", "mechanism": "automation", "major_dependency": "agent_executor"}))
     with pytest.raises(ValueError, match=expected["error_code"]):
         validate_solution_set(candidates, llm_core_required=expected["llm_core_required"])
 
@@ -148,15 +149,16 @@ def test_case_3_real_ambiguity_requires_only_one_clarification():
     assert brief.clarification_question.count("？") <= expected["max_clarification_questions"]
 
 
-def test_case_4_two_valid_solutions_are_not_padded_to_three():
+def test_case_4_stage_b_rejects_two_solutions_without_padding():
     expected = _fixture()["_engineering_expectations"]["only_two_material_solutions"]
     runtime = DeterministicDemoRuntime(fixture_path=FIXTURE_PATH)
     brief = runtime.interpret_idea(
         QuickStartRequest(idea=expected["idea"], target_user=None, resources=[], priority="fast_mvp")
     )
     solution_set = runtime.design_solutions(brief)
-    validated = validate_solution_set(solution_set.candidates, llm_core_required=solution_set.llm_core_required)
-    assert len(validated) == expected["expected_solution_count"]
+    assert len(solution_set.candidates) == expected["expected_solution_count"]
+    with pytest.raises(ValueError, match="SOLUTION_SET_CARDINALITY_FAILED"):
+        validate_solution_set(solution_set.candidates, llm_core_required=solution_set.llm_core_required)
 
 
 def test_case_5_independent_real_user_support_and_contradiction_become_conflict(client):

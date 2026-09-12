@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from surface_fixtures import complete_solution_payload
 
 
 def _create_project(client: TestClient) -> str:
@@ -26,22 +27,7 @@ def _timeout_result():
 
 
 def _success_result():
-    return {
-        "candidates": [
-            {
-                "title": "Candidate one",
-                "mechanism": "retrieval",
-                "target_user": "researchers",
-                "problem": "literature discovery",
-            },
-            {
-                "title": "Candidate two",
-                "mechanism": "ranking",
-                "target_user": "researchers",
-                "problem": "literature discovery",
-            },
-        ]
-    }
+    return complete_solution_payload()
 
 
 def test_same_intent_after_timeout_across_app_restart_calls_provider_once(tmp_path):

@@ -1064,14 +1064,14 @@ def test_two_local_solution_calls_are_counted_monotonically_in_failure_audit(
     )
     service = SolutionDesignService(db, hybrid)
 
-    with pytest.raises(ValueError, match="SOLUTION_DIVERSITY_FAILED"):
-        service.generate(project_id, actor="tester")
+    result = service.generate(project_id, actor="tester")
+    assert result["error_code"] == "MODEL_OUTPUT_CONTRACT_FAILED"
 
     assert local_runtime.calls == 2
     row = db.fetch_one(
         """
         SELECT payload_json FROM audit_events
-        WHERE action='solution_generation_failed' AND entity_type='solution_run'
+        WHERE action='solution_generation_recovery_required' AND entity_type='solution_run'
         ORDER BY created_at DESC LIMIT 1
         """
     )

@@ -17,6 +17,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
 from app.db import Database
+from app.services.generation_contracts import (
+    GenerationContractError, solution_public, failure_public, validate_solution_response,
+)
 from app.exporters import ArtifactExporter
 from app.ingestion import MAX_UPLOAD_BYTES
 from app.schemas import (
@@ -1112,8 +1115,12 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         )
         if not claim.owner:
             if claim.error_code == "SOLUTION_GENERATION_ALREADY_COMPLETED":
-                return JSONResponse(status_code=claim.status_code or 201, content=claim.payload or {})
-            return JSONResponse(status_code=claim.status_code or 409, content=claim.payload or {})
+                replay = claim.payload or {}
+                if (claim.status_code or 201) < 400 and "error_code" not in replay:
+                    validate_solution_response(replay)
+                    return JSONResponse(status_code=claim.status_code or 201, content=solution_public(replay))
+                return JSONResponse(status_code=claim.status_code or 503, content=failure_public(replay))
+            return JSONResponse(status_code=claim.status_code or 409, content=failure_public(claim.payload or {}))
         try:
             if not getattr(application.state.structured_runtime.for_project(project_id), "fixture_origin", None):
                 application.state.solution_generation_guard.mark_provider_call(
@@ -1136,23 +1143,22 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                 result = {**result, "requested_model_preference": selection.preference.value,
                           "resolved_model_family": selection.family, "resolved_model_id": selection.model_id}
             candidates = result.get("candidates") or []
-            if "error_code" in result and not candidates:
+            if "error_code" in result:
+                result = failure_public(result)
                 response = JSONResponse(status_code=503, content=result)
                 application.state.solution_generation_guard.complete(
                     participant_id, project_id, attempt_id, result, status_code=503
                 )
                 return response
-            if not candidates:
-                result = {
-                    "error_code": "SOLUTION_GENERATION_NO_VALID_CANDIDATES",
-                    "message": "这次没有生成可用方案，你的项目内容已经保留，请重新生成。",
-                    "recovery_actions": ["重新生成"],
-                    "preserved_input": None,
-                }
+            try:
+                validate_solution_response(result)
+            except GenerationContractError as exc:
+                result = failure_public(exc.as_payload())
                 application.state.solution_generation_guard.complete(
                     participant_id, project_id, attempt_id, result, status_code=503
                 )
                 return JSONResponse(status_code=503, content=result)
+            result = solution_public(result)
             record_product_event(request, "solutions_generated", {"solution_count": len(candidates), "mechanisms": [item["mechanism"] for item in candidates]}, project_id=project_id)
             application.state.solution_generation_guard.complete(
                 participant_id, project_id, attempt_id, result
@@ -1186,7 +1192,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
 
     @application.get("/api/projects/{project_id}/solutions")
     def list_solutions(project_id: str) -> dict[str, Any]:
-        return application.state.solution_design.list_candidates(project_id)
+        return solution_public(application.state.solution_design.list_candidates(project_id))
 
     @application.post("/api/projects/{project_id}/solutions/select", status_code=201)
     def select_solution(

@@ -6,26 +6,10 @@ from typing import Any
 from app.schemas import SolutionCandidateDraft
 from app.services.dispatch_control import DispatchControlContext
 
-DIVERSITY_FIELDS = (
-    "mechanism",
-    "required_data_class",
-    "automation_level",
-    "human_role",
-    "core_decision_logic",
-    "major_dependency",
+from app.services.generation_contracts import (
+    GenerationContractError, validate_solutions, parse_generation, call_generation,
+    candidate_public, solution_public, await_generation,
 )
-
-
-def _material_difference_count(left: SolutionCandidateDraft, right: SolutionCandidateDraft) -> int:
-    return sum(getattr(left, field) != getattr(right, field) for field in DIVERSITY_FIELDS)
-
-
-def _has_non_llm_core(candidate: SolutionCandidateDraft) -> bool:
-    return not (
-        candidate.requires_llm_runtime
-        or candidate.requires_rag_runtime
-        or candidate.requires_agent_runtime
-    )
 
 
 def _commit_runtime_reservation(runtime: Any) -> None:
@@ -45,41 +29,7 @@ def validate_solution_set(
     *,
     llm_core_required: bool,
 ) -> list[SolutionCandidateDraft]:
-    if not 2 <= len(candidates) <= 3:
-        raise ValueError("SOLUTION_SET_CARDINALITY_FAILED: expected 2-3 candidates")
-    if len({item.title.strip().casefold() for item in candidates}) != len(candidates):
-        raise ValueError("SOLUTION_DIVERSITY_FAILED: duplicate candidate titles")
-    for index, left in enumerate(candidates):
-        for right in candidates[index + 1 :]:
-            if _material_difference_count(left, right) < 2:
-                raise ValueError(
-                    "SOLUTION_DIVERSITY_FAILED: every pair must differ on at least two material dimensions"
-                )
-    if not llm_core_required and not any(_has_non_llm_core(item) for item in candidates):
-        raise ValueError(
-            "OVERENGINEERED_SOLUTION_SET: at least one non-LLM/non-RAG/non-Agent core solution is required"
-        )
-    return candidates
-
-
-def _largest_valid_subset(
-    candidates: list[SolutionCandidateDraft], *, llm_core_required: bool
-) -> list[SolutionCandidateDraft]:
-    # P0 sets have at most three candidates, so explicit combinations keep this deterministic.
-    if len(candidates) >= 3:
-        triplet = candidates[:3]
-        try:
-            return validate_solution_set(triplet, llm_core_required=llm_core_required)
-        except ValueError:
-            pass
-    for i, left in enumerate(candidates):
-        for right in candidates[i + 1 :]:
-            pair = [left, right]
-            try:
-                return validate_solution_set(pair, llm_core_required=llm_core_required)
-            except ValueError:
-                continue
-    return []
+    return validate_solutions(candidates, llm_core_required=llm_core_required)
 
 
 def validate_with_one_regeneration(
@@ -90,19 +40,10 @@ def validate_with_one_regeneration(
 ) -> list[SolutionCandidateDraft]:
     try:
         return validate_solution_set(candidates, llm_core_required=llm_core_required)
-    except ValueError as first_error:
-        if regenerate is not None:
-            regenerated = regenerate()
-            try:
-                return validate_solution_set(regenerated, llm_core_required=llm_core_required)
-            except ValueError:
-                subset = _largest_valid_subset(regenerated, llm_core_required=llm_core_required)
-                if subset:
-                    return subset
-        subset = _largest_valid_subset(candidates, llm_core_required=llm_core_required)
-        if subset:
-            return subset
-        raise first_error
+    except GenerationContractError:
+        if regenerate is None:
+            raise
+    return validate_solution_set(regenerate(), llm_core_required=llm_core_required)
 
 
 # Persistence/service layer is kept here so solution semantics and their validators evolve together.
@@ -283,7 +224,7 @@ class SolutionDesignService:
             payload[field] = json.loads(payload.pop(f"{field}_json"))
         for field in ("requires_llm_runtime", "requires_rag_runtime", "requires_agent_runtime"):
             payload[field] = bool(payload[field])
-        return payload
+        return candidate_public(payload)
 
     def generate(self, project_id: str, *, actor: str, managed_selection: Any | None = None,
                  dispatch_control: DispatchControlContext | None = None,
@@ -304,8 +245,9 @@ class SolutionDesignService:
         try:
             design_kwargs = ({"dispatch_control": dispatch_control}
                              if dispatch_control is not None else {})
-            raw_set = runtime.design_solutions(brief, **design_kwargs)
+            raw_set = parse_generation(SolutionSetDraft, call_generation(lambda: runtime.design_solutions(brief, **design_kwargs)))
         except StructuredRuntimeRecoveryError as exc:
+            _release_runtime_reservation(runtime)
             self._audit_failure(
                 runtime=runtime,
                 brief=brief,
@@ -347,7 +289,7 @@ class SolutionDesignService:
             nonlocal regenerated
             regenerate_kwargs = ({"dispatch_control": dispatch_control}
                                   if dispatch_control is not None else {})
-            regenerated_set = runtime.design_solutions(brief, **regenerate_kwargs)
+            regenerated_set = parse_generation(SolutionSetDraft, call_generation(lambda: runtime.design_solutions(brief, **regenerate_kwargs)))
             regenerated = list(regenerated_set.candidates)
             return regenerated
 
@@ -358,6 +300,7 @@ class SolutionDesignService:
                 regenerate=None if dispatch_control is not None else regenerate,
             )
         except StructuredRuntimeRecoveryError as exc:
+            _release_runtime_reservation(runtime)
             self.db.execute(
                 "UPDATE solution_runs SET status = 'failed_runtime' WHERE id = ?", (run_id,)
             )
@@ -403,7 +346,7 @@ class SolutionDesignService:
             recommendation_rationale=raw_set.recommendation_rationale,
         )
         final_output_sha = sha256_payload(final_set)
-        status = "completed_two_candidates" if len(candidates) == 2 else "completed"
+        status = "completed"
         trace = build_ai_trace_payload(
             runtime=runtime,
             input_payload=brief,
@@ -486,7 +429,7 @@ class SolutionDesignService:
         if latest.get("provider") == "safe_fixture":
             result["fixture_origin"] = "STAGE_A_SYNTHETIC"
             result["fixture_disclosure"] = "Stage A 演示结果 · 非真实 AI 生成"
-        return result
+        return solution_public(result)
 
     async def generate_async(
         self,
@@ -524,8 +467,9 @@ class SolutionDesignService:
             }
             if dispatch_control is not None:
                 async_kwargs["dispatch_control"] = dispatch_control
-            raw_set = await runtime.async_design_solutions(brief, **async_kwargs)
+            raw_set = parse_generation(SolutionSetDraft, await await_generation(runtime.async_design_solutions(brief, **async_kwargs)))
         except StructuredRuntimeRecoveryError as exc:
+            _release_runtime_reservation(runtime)
             self._audit_failure(
                 runtime=runtime, brief=brief, started_at=started, actor=actor,
                 entity_type="project", entity_id=project_id,
@@ -533,6 +477,8 @@ class SolutionDesignService:
                 error_code=exc.error_code, safe_diagnostic=exc.safe_diagnostic,
             )
             payload = exc.as_payload(preserved_input=brief)
+            if isinstance(exc, GenerationContractError):
+                payload.update(quota_status="RELEASED", retryable=False)
             fixture_origin = getattr(runtime, "fixture_origin", None)
             if fixture_origin:
                 payload["fixture_origin"] = fixture_origin
@@ -545,7 +491,7 @@ class SolutionDesignService:
             candidates = validate_solution_set(
                 list(raw_set.candidates), llm_core_required=raw_set.llm_core_required
             )
-        except ValueError as exc:
+        except GenerationContractError as exc:
             _release_runtime_reservation(runtime)
             self._audit_failure(
                 runtime=runtime, brief=brief, started_at=started, actor=actor,
@@ -553,15 +499,7 @@ class SolutionDesignService:
                 action="solution_generation_failed", status="failed_validation",
                 error_code=str(exc).split(":", 1)[0],
             )
-            return {
-                "error_code": "APPLICATION_POSTPROCESS_FAILURE",
-                "failure_stage": "postprocess",
-                "validation_error": str(exc).split(":", 1)[0],
-                "message": "Provider 已返回结果，但应用校验未通过；本次生成额度已释放，未自动重试。若继续，请明确发起新的生成。",
-                "recovery_actions": ["发起新的生成"],
-                "quota_status": "RELEASED",
-                "retryable": False,
-            }
+            return {**exc.as_payload(), "quota_status": "RELEASED", "retryable": False}
 
         run_id = f"solution_run_{uuid.uuid4().hex}"
         final_set = SolutionSetDraft(
@@ -576,7 +514,7 @@ class SolutionDesignService:
         trace = build_ai_trace_payload(
             runtime=runtime, input_payload=brief, output_payload=final_set,
             started_at=started,
-            status="completed_two_candidates" if len(candidates) == 2 else "completed",
+            status="completed",
             component_version=self.GENERATOR_VERSION,
         )
         trace["generator_version"] = trace.pop("component_version")

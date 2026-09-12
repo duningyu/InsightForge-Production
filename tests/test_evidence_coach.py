@@ -79,7 +79,8 @@ def test_empty_evidence_guidance_is_not_saved_as_success(tmp_path):
     project_id = _project(db)
     runtime = FakeEvidenceCoachRuntime(EvidenceGuidanceDraft(cards=[]))
 
-    with pytest.raises(StructuredRuntimeUnavailableError, match="没有生成可用的资料行动建议"):
+    from app.errors import StructuredOutputContractError
+    with pytest.raises(StructuredOutputContractError):
         EvidenceCoachService(db).generate(
             project_id, actor="synthetic-user", runtime=runtime, idempotency_key="coach-empty"
         )

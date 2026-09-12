@@ -97,7 +97,7 @@ def test_provider_success_postprocess_failure_releases_user_quota(tmp_path):
         "SELECT request_count FROM beta_daily_usage WHERE participant_id=? AND operation_type=?",
         ("beta_003", "solution_generation"),
     )
-    assert result["error_code"] == "APPLICATION_POSTPROCESS_FAILURE"
+    assert result["error_code"] == "MODEL_OUTPUT_CONTRACT_FAILED"
     assert row is None or row["request_count"] == 0
 
 
@@ -165,7 +165,7 @@ def test_postprocess_failure_does_not_advertise_automatic_retry(tmp_path):
     result = __import__("asyncio").run(service.generate_async("project-1", actor="beta_003"))
 
     assert result["retryable"] is False
-    assert result["recovery_actions"] == ["发起新的生成"]
+    assert result["recovery_actions"] == ["重新生成"]
 
 
 def test_quota_limit_payload_is_operation_scoped():

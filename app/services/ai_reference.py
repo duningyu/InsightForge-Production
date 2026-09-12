@@ -4,12 +4,9 @@ import json
 import uuid
 from typing import Any
 
-from pydantic import ValidationError
-
 from app.db import Database, utc_now
-from app.errors import StructuredRuntimeUnavailableError
-from app.schemas import AIReferenceDraft
 from app.services.ai_runtime import sha256_payload
+from app.services.generation_contracts import call_generation, validate_reference, reference_public
 
 
 _CATEGORIES = (
@@ -61,16 +58,8 @@ class AIReferenceService:
             if existing:
                 return self._row(existing)
         context = self.build_context(project_id)
-        try:
-            result = runtime.generate_ai_reference(context)
-            parsed = result if isinstance(result, AIReferenceDraft) else AIReferenceDraft.model_validate(result)
-        except ValidationError as exc:
-            raise StructuredRuntimeUnavailableError(
-                "这次没有生成可用建议，请重新尝试。"
-            ) from exc
-        result_json = parsed.model_dump(mode="json")
-        if not any(result_json.get(category) for category in _CATEGORIES):
-            raise StructuredRuntimeUnavailableError("这次没有生成可用建议，请重新尝试。")
+        parsed = validate_reference(call_generation(lambda: runtime.generate_ai_reference(context)))
+        result_json = reference_public(parsed)
         result_json["uncertainty_notice"] = "AI生成参考，尚未经外部资料核实。"
         fixture_origin = getattr(runtime, "fixture_origin", None)
         if fixture_origin:
@@ -93,7 +82,7 @@ class AIReferenceService:
                 "is_evidence": False, "created_at": now, "content_sha256": sha256_payload(result_json)}
 
     def _row(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {"id": row["id"], "project_id": row["project_id"], "result": json.loads(row["result_json"]),
+        return {"id": row["id"], "project_id": row["project_id"], "result": reference_public(json.loads(row["result_json"])),
                 "status": row["status"], "is_evidence": False, "created_at": row["created_at"],
                 "content_sha256": row["content_sha256"]}
 

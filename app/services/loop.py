@@ -8,8 +8,9 @@ from app.db import Database, stable_id, utc_now
 from app.services.claims import ClaimService
 from app.services.generation import LocalDocumentGenerator, build_generator
 from app.services.retrieval_service import ProjectRetrievalService
-from app.services.validation import DocumentValidator
+from app.services.validation import DocumentValidator, PRD_HEADINGS, TECHDOC_HEADINGS
 from app.services.artifact_health import ArtifactHealthService
+from app.services.generation_contracts import GenerationContractError, validate_document_sections
 
 
 _UNSET_COMPETITOR_BINDING = object()
@@ -66,6 +67,20 @@ class DocumentLoop:
                 raise ValueError("competitor snapshot is not part of this project")
         if require_snapshot and not current_snapshot_id:
             raise ValueError("current confirmed Snapshot is required for 3.0 document generation")
+        if current_snapshot_id:
+            snapshot = self.db.fetch_one(
+                "SELECT project_id, confirmed_at FROM project_snapshots WHERE id=?", (current_snapshot_id,)
+            )
+            if not snapshot or snapshot["project_id"] != project_id or not snapshot["confirmed_at"]:
+                raise GenerationContractError("DOCUMENT_SNAPSHOT_BINDING_FAILED")
+        if use_competitor_snapshot and not explicit_competitor_binding:
+            effective_competitor_snapshot_id = current_competitor_snapshot_id
+            if effective_competitor_snapshot_id:
+                competitor = self.db.fetch_one(
+                    "SELECT project_id FROM competitor_decision_snapshots WHERE id=?", (effective_competitor_snapshot_id,)
+                )
+                if not competitor or competitor["project_id"] != project_id:
+                    raise GenerationContractError("DOCUMENT_SNAPSHOT_BINDING_FAILED")
         if require_snapshot and use_competitor_snapshot and not (
             current_competitor_snapshot_id or bound_competitor_snapshot_id
         ):
@@ -82,6 +97,16 @@ class DocumentLoop:
             if existing is not None:
                 if existing["project_id"] != project_id or existing["doc_type"] != doc_type:
                     raise ValueError("idempotency key is already bound to another request")
+                validate_document_sections(existing["content"], PRD_HEADINGS if doc_type == "prd" else TECHDOC_HEADINGS)
+                if current_snapshot_id:
+                    binding = self.db.fetch_one(
+                        "SELECT dependency_id FROM artifact_dependencies WHERE artifact_type='document_version' AND artifact_id=? AND dependency_type='project_snapshot'",
+                        (existing["id"],),
+                    )
+                    if not binding or binding["dependency_id"] != current_snapshot_id:
+                        raise GenerationContractError("DOCUMENT_SNAPSHOT_BINDING_FAILED")
+                if existing.get("competitor_snapshot_id") != effective_competitor_snapshot_id:
+                    raise GenerationContractError("DOCUMENT_SNAPSHOT_BINDING_FAILED")
                 terminal_state = (
                     "completed"
                     if existing["validation_status"] == "passed"
@@ -174,6 +199,20 @@ class DocumentLoop:
             if round_no < self.max_rounds:
                 content = self.generator.repair(content, issues, evidence)
 
+        try:
+            validate_document_sections(content, PRD_HEADINGS if doc_type == "prd" else TECHDOC_HEADINGS)
+            latest_project = self.db.fetch_one("SELECT * FROM projects WHERE id=?", (project_id,))
+            if not latest_project or latest_project.get("current_snapshot_id") != current_snapshot_id:
+                raise GenerationContractError("DOCUMENT_SNAPSHOT_BINDING_CHANGED")
+            if use_competitor_snapshot and not explicit_competitor_binding and latest_project.get("current_competitor_snapshot_id") != current_competitor_snapshot_id:
+                raise GenerationContractError("DOCUMENT_SNAPSHOT_BINDING_CHANGED")
+        except GenerationContractError:
+            self.db.execute(
+                "UPDATE generation_runs SET status='failed', terminal_state='failed', rounds=?, updated_at=? WHERE id=?",
+                (rounds, utc_now(), run_id),
+            )
+            raise
+
         document_id = stable_id("document", f"{project_id}:{doc_type}")
         title = f"{project['title']} {'PRD' if doc_type == 'prd' else 'TechDoc'}"
         self.db.execute(
@@ -188,15 +227,6 @@ class DocumentLoop:
         version = int(version_row["max_version"]) + 1
         version_id = f"version_{uuid.uuid4().hex}"
         validation_status = "passed" if terminal_state == "completed" else "needs_human_review"
-        if effective_competitor_snapshot_id is None and use_competitor_snapshot and not explicit_competitor_binding:
-            competitor_snapshot = self.db.fetch_one(
-                "SELECT current_competitor_snapshot_id FROM projects WHERE id=?",
-                (project_id,),
-            )
-            effective_competitor_snapshot_id = (
-                competitor_snapshot.get("current_competitor_snapshot_id")
-                if competitor_snapshot else None
-            )
         self.db.execute(
             """
             INSERT INTO document_versions(

@@ -73,8 +73,19 @@ class AsyncRun:
             payload["resolved_model_id"] = self.resolved_model_id
         if self.status in {"SUCCEEDED", "FAILED"}:
             payload["status_code"] = self.status_code
-            if self.response is not None:
-                payload.update(solution_public(self.response) if self.status == "SUCCEEDED" else failure_public(self.response))
+            if self.status == "SUCCEEDED":
+                try:
+                    response = validate_solution_response(self.response)
+                except GenerationContractError as exc:
+                    # Historical terminal rows must not bypass today's contract.
+                    # This read-only projection does not resettle historical quota.
+                    response = failure_public(exc.as_payload())
+                    payload.update(status="FAILED", status_code=503)
+                for key in ("requested_model_preference", "resolved_model_family", "resolved_model_id"):
+                    response.pop(key, None)
+                payload.update(response)
+            elif self.response is not None:
+                payload.update(failure_public(self.response))
         return payload
 
 
@@ -358,7 +369,7 @@ class AsyncGenerationRepository:
     def finish(self, run_id: str, payload: dict[str, Any], *, status_code: int, solution_run_id: str | None = None) -> None:
         if status_code < 400 and not payload.get("error_code"):
             try:
-                validate_solution_response(payload)
+                payload = validate_solution_response(payload)
             except GenerationContractError as exc:
                 payload = {**exc.as_payload(), "quota_status": "RELEASED"}
                 status_code = 503

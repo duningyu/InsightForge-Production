@@ -184,14 +184,39 @@ def solution_public(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def validate_solution_response(data: dict[str, Any]) -> None:
+def validate_solution_response(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise GenerationContractError("SURFACE_SCHEMA_FAILED")
     candidates = data.get("candidates")
     if not isinstance(candidates, list) or len(candidates) != 3 or not all(isinstance(row, dict) for row in candidates):
         raise GenerationContractError("SOLUTION_SET_CARDINALITY_FAILED")
     # Public rows carry IDs in addition to the domain fields; never parse raw extras.
     drafts = [{key: row[key] for key in (*SOLUTION_TEXT_FIELDS, *SOLUTION_LIST_FIELDS, *SOLUTION_BOOL_FIELDS) if key in row}
               for row in candidates if isinstance(row, dict)] if isinstance(candidates, list) else []
-    validate_solutions(drafts, llm_core_required=True)
+    normalized = validate_solutions(drafts, llm_core_required=True)
+    result = solution_public(data)
+    result["candidates"] = [
+        candidate_public({**row, **_plain(candidate)})
+        for row, candidate in zip(candidates, normalized)
+    ]
+    return result
+
+
+def validate_document_draft(data: Any) -> dict[str, Any]:
+    """Check the envelope before regex/claim consumers; evidence stays optional."""
+    if not isinstance(data, dict) or not _text(data.get("content")) or not _items(data.get("citations"), required=False):
+        raise GenerationContractError("DOCUMENT_SCHEMA_FAILED")
+    claims = data.get("claims", [])
+    if not isinstance(claims, list) or not all(isinstance(claim, dict) for claim in claims):
+        raise GenerationContractError("DOCUMENT_SCHEMA_FAILED")
+    for claim in claims:
+        evidence = claim.get("evidence", [])
+        metadata = claim.get("metadata", {})
+        if not isinstance(evidence, list) or not all(isinstance(link, dict) for link in evidence) or not isinstance(metadata, dict):
+            raise GenerationContractError("DOCUMENT_SCHEMA_FAILED")
+        if not _items(metadata.get("expected_source_types", []), required=False):
+            raise GenerationContractError("DOCUMENT_SCHEMA_FAILED")
+    return {"content": data["content"], "citations": data["citations"], "claims": claims}
 
 
 def failure_public(data: dict[str, Any]) -> dict[str, Any]:

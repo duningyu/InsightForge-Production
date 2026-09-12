@@ -1117,8 +1117,8 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             if claim.error_code == "SOLUTION_GENERATION_ALREADY_COMPLETED":
                 replay = claim.payload or {}
                 if (claim.status_code or 201) < 400 and "error_code" not in replay:
-                    validate_solution_response(replay)
-                    return JSONResponse(status_code=claim.status_code or 201, content=solution_public(replay))
+                    replay = validate_solution_response(replay)
+                    return JSONResponse(status_code=claim.status_code or 201, content=replay)
                 return JSONResponse(status_code=claim.status_code or 503, content=failure_public(replay))
             return JSONResponse(status_code=claim.status_code or 409, content=failure_public(claim.payload or {}))
         try:
@@ -1151,7 +1151,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                 )
                 return response
             try:
-                validate_solution_response(result)
+                result = validate_solution_response(result)
             except GenerationContractError as exc:
                 result = failure_public(exc.as_payload())
                 application.state.solution_generation_guard.complete(

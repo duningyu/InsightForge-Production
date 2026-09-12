@@ -10,7 +10,9 @@ from app.services.generation import LocalDocumentGenerator, build_generator
 from app.services.retrieval_service import ProjectRetrievalService
 from app.services.validation import DocumentValidator, PRD_HEADINGS, TECHDOC_HEADINGS
 from app.services.artifact_health import ArtifactHealthService
-from app.services.generation_contracts import GenerationContractError, validate_document_sections
+from app.services.generation_contracts import (
+    GenerationContractError, validate_document_sections, validate_document_draft, call_generation,
+)
 
 
 _UNSET_COMPETITOR_BINDING = object()
@@ -148,58 +150,56 @@ class DocumentLoop:
             "UPDATE generation_runs SET retrieval_run_ids_json = ?, updated_at = ? WHERE id = ?",
             (json.dumps(retrieval_run_ids, ensure_ascii=False), utc_now(), run_id),
         )
-        generated = self.generator.generate(
-            doc_type,
-            canvas,
-            evidence,
-            project_title=project["title"],
-        )
-        content = generated["content"]
-        citations = generated["citations"]
-        structured_claims = list(generated.get("claims") or [])
-        valid_citations = self.retrieval.valid_citations(project_id)
         terminal_state = "needs_human_review"
         final_issues: list[dict[str, Any]] = []
         rounds = 0
-
-        for round_no in range(1, self.max_rounds + 1):
-            rounds = round_no
-            issues = self.validator.validate(
-                content=content,
-                valid_citations=valid_citations,
-                canvas=canvas,
-                doc_type=doc_type,
-                claims=structured_claims,
-            )
-            final_issues = issues
-            for issue in issues:
-                self.db.execute(
-                    """
-                    INSERT INTO validation_issues(
-                        id, generation_run_id, version_id, round_no, code,
-                        severity, message, section, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        f"issue_{uuid.uuid4().hex}",
-                        run_id,
-                        None,
-                        round_no,
-                        issue["code"],
-                        issue["severity"],
-                        issue["message"],
-                        issue.get("section"),
-                        utc_now(),
-                    ),
-                )
-            blocking_issues = [issue for issue in issues if issue.get("severity") != "warning"]
-            if not blocking_issues:
-                terminal_state = "completed"
-                break
-            if round_no < self.max_rounds:
-                content = self.generator.repair(content, issues, evidence)
-
         try:
+            generated = validate_document_draft(call_generation(lambda: self.generator.generate(
+                doc_type, canvas, evidence, project_title=project["title"],
+            )))
+            content = generated["content"]
+            citations = generated["citations"]
+            structured_claims = generated["claims"]
+            valid_citations = self.retrieval.valid_citations(project_id)
+
+            for round_no in range(1, self.max_rounds + 1):
+                rounds = round_no
+                issues = self.validator.validate(
+                    content=content,
+                    valid_citations=valid_citations,
+                    canvas=canvas,
+                    doc_type=doc_type,
+                    claims=structured_claims,
+                )
+                final_issues = issues
+                for issue in issues:
+                    self.db.execute(
+                        """
+                        INSERT INTO validation_issues(
+                            id, generation_run_id, version_id, round_no, code,
+                            severity, message, section, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"issue_{uuid.uuid4().hex}",
+                            run_id,
+                            None,
+                            round_no,
+                            issue["code"],
+                            issue["severity"],
+                            issue["message"],
+                            issue.get("section"),
+                            utc_now(),
+                        ),
+                    )
+                blocking_issues = [issue for issue in issues if issue.get("severity") != "warning"]
+                if not blocking_issues:
+                    terminal_state = "completed"
+                    break
+                if round_no < self.max_rounds:
+                    content = call_generation(lambda: self.generator.repair(content, issues, evidence))
+                    validate_document_draft({"content": content, "citations": citations, "claims": structured_claims})
+
             validate_document_sections(content, PRD_HEADINGS if doc_type == "prd" else TECHDOC_HEADINGS)
             latest_project = self.db.fetch_one("SELECT * FROM projects WHERE id=?", (project_id,))
             if not latest_project or latest_project.get("current_snapshot_id") != current_snapshot_id:

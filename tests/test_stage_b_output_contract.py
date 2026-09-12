@@ -21,15 +21,15 @@ ACCEPTED_STRUCTURED_CASES = (
     "MARKDOWN_WRAPPED_JSON",
 )
 REJECTED_STRUCTURED_CASES = (
-    "LEADING_TRAILING_EXPLANATORY_TEXT",
-    "MALFORMED_JSON",
-    "EMPTY_OUTPUT",
-    "PROVIDER_ERROR_JSON",
-    "NESTED_JSON_STRING",
-    "MULTIPLE_OBJECTS",
-    "MISSING_FIELDS",
-    "WRONG_TYPES",
-    "WRONG_SCHEMA",
+    ("LEADING_TRAILING_EXPLANATORY_TEXT", "invalid_json"),
+    ("MALFORMED_JSON", "invalid_json"),
+    ("EMPTY_OUTPUT", "empty_output"),
+    ("PROVIDER_ERROR_JSON", "provider_error"),
+    ("NESTED_JSON_STRING", "non_object"),
+    ("MULTIPLE_OBJECTS", "invalid_json"),
+    ("MISSING_FIELDS", "schema_mismatch"),
+    ("WRONG_TYPES", "schema_mismatch"),
+    ("WRONG_SCHEMA", "schema_mismatch"),
 )
 
 
@@ -52,7 +52,7 @@ def _provider_response(content: str) -> httpx.Response:
     )
 
 
-def _generate_sync(content: str | httpx.Response) -> OutputContractDraft:
+def _generate_sync(content: str | httpx.Response, provider: str = "openai") -> OutputContractDraft:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -61,7 +61,9 @@ def _generate_sync(content: str | httpx.Response) -> OutputContractDraft:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         adapter = ModelAdapter(
-            provider="openai",
+            provider=provider,
+            protocol="anthropic_messages" if provider == "custom" else None,
+            base_url="https://anthropic.example/v1" if provider == "custom" else None,
             model="stage-b-test-model",
             api_key="stage-b-fake-key",
             client=client,
@@ -76,7 +78,7 @@ def _generate_sync(content: str | httpx.Response) -> OutputContractDraft:
             assert len(requests) == 1
 
 
-def _generate_async(content: str | httpx.Response) -> OutputContractDraft:
+def _generate_async(content: str | httpx.Response, provider: str = "openai") -> OutputContractDraft:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -86,7 +88,9 @@ def _generate_async(content: str | httpx.Response) -> OutputContractDraft:
     async def exercise() -> OutputContractDraft:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             adapter = AsyncModelAdapter(
-                provider="openai",
+                provider=provider,
+                protocol="anthropic_messages" if provider == "custom" else None,
+                base_url="https://anthropic.example/v1" if provider == "custom" else None,
                 model="stage-b-test-model",
                 api_key="stage-b-fake-key",
                 client=client,
@@ -103,10 +107,18 @@ def _generate_async(content: str | httpx.Response) -> OutputContractDraft:
     return asyncio.run(exercise())
 
 
-def _generate(kind: Literal["sync", "async"], content: str | httpx.Response) -> OutputContractDraft:
+def _generate(kind: Literal["sync", "async"], content: str | httpx.Response, provider: str = "openai") -> OutputContractDraft:
     if kind == "sync":
-        return _generate_sync(content)
-    return _generate_async(content)
+        return _generate_sync(content, provider)
+    return _generate_async(content, provider)
+
+
+def _assert_diagnostic_identity(error, raw: bytes, classification: str):
+    assert error.safe_diagnostic == {
+        "output_sha256": hashlib.sha256(raw).hexdigest(),
+        "output_byte_count": len(raw),
+        "output_classification": classification,
+    }
 
 
 def _exception_chain_text(error: BaseException) -> str:
@@ -155,9 +167,9 @@ def test_structured_output_accepts_one_supported_payload(
 
 
 @pytest.mark.parametrize("kind", ("sync", "async"))
-@pytest.mark.parametrize("case_name", REJECTED_STRUCTURED_CASES)
+@pytest.mark.parametrize("case_name,classification", REJECTED_STRUCTURED_CASES)
 def test_structured_output_rejects_invalid_or_ambiguous_payload(
-    provider_outputs, case_name: str, kind: Literal["sync", "async"]
+    provider_outputs, case_name: str, classification: str, kind: Literal["sync", "async"]
 ):
     content = str(provider_outputs[case_name]["content"])
 
@@ -171,11 +183,7 @@ def test_structured_output_rejects_invalid_or_ambiguous_payload(
     assert error.__cause__ is None
     assert error.__context__ is None
     assert "格式" in error.safe_message
-    assert set(error.safe_diagnostic) == {
-        "output_sha256", "output_byte_count", "output_classification"
-    }
-    assert error.safe_diagnostic["output_sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
-    assert error.safe_diagnostic["output_byte_count"] == len(content.encode("utf-8"))
+    _assert_diagnostic_identity(error, content.encode("utf-8"), classification)
 
 
 @pytest.mark.parametrize("kind", ("sync", "async"))
@@ -185,46 +193,74 @@ def test_bom_and_whitespace_are_removed_before_parsing(kind):
 
 
 @pytest.mark.parametrize("kind", ("sync", "async"))
-@pytest.mark.parametrize("content", (
-    "", '\ufeff  ',
-    '```json\n{"message":"ok","items":[]}\n```\nSTAGE_B_RAW_SENTINEL',
-    '```python\n{"message":"ok","items":[]}\n```',
-    '```json\n{"message":"ok","items":[]}\n```\n```json\n{}\n```',
-    '{"message":"ok","items":[],"error":{"message":"STAGE_B_RAW_SENTINEL"}}',
+@pytest.mark.parametrize("content,classification", (
+    ("", "empty_output"), ('\ufeff  ', "empty_output"),
+    ('```json\n{"message":"ok","items":[]}\n```\nSTAGE_B_RAW_SENTINEL', "invalid_json"),
+    ('```python\n{"message":"ok","items":[]}\n```', "invalid_json"),
+    ('```json\n{"message":"ok","items":[]}\n```\n```json\n{}\n```', "invalid_json"),
+    ('{"message":"ok","items":[],"error":{"message":"STAGE_B_RAW_SENTINEL"}}', "provider_error"),
 ))
-def test_unsupported_or_ambiguous_wrappers_and_embedded_errors_fail_closed(kind, content):
+def test_unsupported_or_ambiguous_wrappers_and_embedded_errors_fail_closed(kind, content, classification):
     with pytest.raises(ProviderCallError) as caught:
         _generate(kind, content)
     assert caught.value.retryable is False
     assert "STAGE_B_RAW_SENTINEL" not in _exception_chain_text(caught.value)
+    _assert_diagnostic_identity(caught.value, content.encode("utf-8"), classification)
 
 
 @pytest.mark.parametrize("kind", ("sync", "async"))
-@pytest.mark.parametrize("response", (
-    lambda: httpx.Response(200, content=b"STAGE_B_RAW_SENTINEL-not-json"),
-    lambda: httpx.Response(200, json={"error": {"message": "STAGE_B_RAW_SENTINEL"}}),
-    lambda: httpx.Response(200, json={"choices": [{"message": {"content": None}}]}),
+@pytest.mark.parametrize("raw,classification,provider", (
+    pytest.param(b"STAGE_B_RAW_SENTINEL-not-json", "invalid_envelope", "openai", id="invalid-json"),
+    pytest.param(b' [null, 123] \r\n', "invalid_envelope", "openai", id="non-object"),
+    pytest.param(
+        b' {\n "error" : {"message":"STAGE_B_RAW_SENTINEL \\u4f60\\u597d"}\n}\r\n',
+        "provider_error", "openai", id="escaped-error",
+    ),
+    pytest.param(
+        ' {"choices" : [{"message":{"content":null}}], "note":"原始字节"}\n'.encode("utf-8"),
+        "invalid_envelope", "openai", id="null-content-utf8",
+    ),
+    pytest.param(b'{ "choices": [] }\n', "invalid_envelope", "openai", id="missing-choice"),
+    pytest.param(
+        b'{"choices":[{"message":{"content":"{}"}}], "error":{"message":"STAGE_B_RAW_SENTINEL"}}',
+        "provider_error", "openai", id="error-with-content",
+    ),
 ))
-def test_invalid_transport_envelopes_are_safe_typed_failures(kind, response):
+def test_invalid_transport_envelopes_are_safe_typed_failures(kind, raw, classification, provider):
+    _assert_safe_envelope_failure(kind, raw, classification, provider)
+
+
+@pytest.mark.parametrize("raw,classification", (
+    pytest.param(
+        b'{ "type":"error", "error":{"message":"STAGE_B_RAW_SENTINEL"} }\n',
+        "provider_error", id="anthropic-error",
+    ),
+    pytest.param(b'{ "content": [{"type":"text", "text":null}] }\n',
+                 "invalid_envelope", id="anthropic-null-text"),
+))
+def test_anthropic_sync_envelope_failures_preserve_diagnostic_identity(raw, classification):
+    # Anthropic is supported only by the synchronous adapter.
+    _assert_safe_envelope_failure("sync", raw, classification, "custom")
+
+
+def _assert_safe_envelope_failure(kind, raw, classification, provider):
     with pytest.raises(ProviderCallError) as caught:
-        _generate(kind, response())
+        _generate(kind, httpx.Response(200, content=raw), provider)
     error = caught.value
     assert "格式" in error.safe_message
     assert error.retryable is False
     assert error.__cause__ is None
     assert error.__context__ is None
     assert "STAGE_B_RAW_SENTINEL" not in _exception_chain_text(error)
-    assert set(error.safe_diagnostic) == {
-        "output_sha256", "output_byte_count", "output_classification"
-    }
+    _assert_diagnostic_identity(error, raw, classification)
 
 
 @pytest.mark.parametrize("kind", ("sync", "async"))
-@pytest.mark.parametrize("content", (
-    '{"message":"STAGE_B_RAW_SENTINEL"',
-    '{"unexpected":"STAGE_B_RAW_SENTINEL"}',
+@pytest.mark.parametrize("content,classification", (
+    ('{"message":"STAGE_B_RAW_SENTINEL"', "invalid_json"),
+    ('{"unexpected":"STAGE_B_RAW_SENTINEL"}', "schema_mismatch"),
 ))
-def test_managed_runtime_exposes_actionable_output_failure_without_diagnostics(kind, content):
+def test_managed_runtime_exposes_actionable_output_failure_without_diagnostics(kind, content, classification):
     from app.errors import StructuredRuntimeRecoveryError
     from app.schemas import QuickStartRequest
     from app.services.ai_runtime import ManagedQwenStructuredRuntime
@@ -260,3 +296,4 @@ def test_managed_runtime_exposes_actionable_output_failure_without_diagnostics(k
     assert error.as_payload()["recovery_actions"]
     assert "safe_diagnostic" not in error.as_payload()
     assert "STAGE_B_RAW_SENTINEL" not in _exception_chain_text(error)
+    _assert_diagnostic_identity(error, content.encode("utf-8"), classification)

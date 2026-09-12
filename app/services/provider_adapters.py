@@ -676,6 +676,20 @@ class ModelAdapter:
             if structured:
                 raise self._output_contract_failure(response.content, classification="invalid_envelope")
             raise ProviderCallError("malformed_response", "Provider returned an invalid response shape.", False)
+        if structured:
+            # Validate the envelope while its original bytes are available, before
+            # transport metadata is added or JSON spelling/whitespace is lost.
+            content: str | None = None
+            if "error" not in body:
+                try:
+                    content = self._content_from_response(body)
+                except ProviderCallError:
+                    pass
+            if content is None:
+                raise self._output_contract_failure(
+                    response.content,
+                    classification="provider_error" if "error" in body else "invalid_envelope",
+                )
         return body
 
     def _normalize_structured_output(self, content: str) -> dict[str, Any]:
@@ -709,17 +723,7 @@ class ModelAdapter:
         return parsed
 
     def _validate_structured_response(self, body: dict[str, Any], output_model: type[_Model]) -> _Model:
-        content: str | None = None
-        if "error" not in body:
-            try:
-                content = self._content_from_response(body)
-            except ProviderCallError:
-                pass
-        if content is None:
-            raise self._output_contract_failure(
-                json.dumps(body, ensure_ascii=False).encode("utf-8"),
-                classification="provider_error" if "error" in body else "invalid_envelope",
-            )
+        content = self._content_from_response(body)
         parsed = self._normalize_structured_output(content)
         validated: _Model | None = None
         try:

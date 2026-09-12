@@ -676,20 +676,33 @@ function toDocumentWorkspaceViewModel(workspace) {
 function toHandoffViewModel(value, snapshot) {
   if (!isPlainRecord(value) || typeof value.project_id !== "string" || !value.project_id.trim()
     || typeof value.ready !== "boolean" || !isPlainRecord(value.documents)) return null;
+  const hasOwn = (key) => Object.prototype.hasOwnProperty.call(value, key);
+  const currentProjectId = viewString(state.currentProjectId, {maxLength: 200});
+  if (!currentProjectId || value.project_id !== currentProjectId
+    || !hasOwn("canvas_version") || !hasOwn("snapshot") || !hasOwn("unresolved_acknowledgement")) return null;
+  if (value.canvas_version !== null
+    && (!Number.isInteger(Number(value.canvas_version)) || Number(value.canvas_version) < 1)) return null;
   if (!Array.isArray(value.missing) || !Array.isArray(value.warnings) || !Array.isArray(value.unresolved_items)
     || !Array.isArray(value.expected_files) || !isPlainRecord(value.claim_boundary)
     || !Number.isInteger(Number(value.unresolved_claim_count)) || Number(value.unresolved_claim_count) < 0
     || !Number.isInteger(Number(value.draft_unresolved_claim_count)) || Number(value.draft_unresolved_claim_count) < 0
     || typeof value.acknowledgement_required !== "boolean") return null;
   const snapshotMetadata = value.snapshot;
-  if (snapshotMetadata !== null) {
+  if (snapshotMetadata === null) {
+    if (snapshot !== null && snapshot !== undefined) return null;
+  } else {
     if (!isPlainRecord(snapshotMetadata)
       || !viewString(snapshotMetadata.id, {maxLength: 200})
       || !Number.isInteger(Number(snapshotMetadata.version)) || Number(snapshotMetadata.version) < 1
       || viewString(snapshotMetadata.health_status, {maxLength: 40}) !== "current") return null;
+    if (!isPlainRecord(snapshot)
+      || viewString(snapshot.id, {maxLength: 200}) !== viewString(snapshotMetadata.id, {maxLength: 200})
+      || !Number.isInteger(Number(snapshot.version))
+      || Number(snapshot.version) !== Number(snapshotMetadata.version)) return null;
   }
   const documentSummary = {};
   for (const docType of ["prd", "techdoc"]) {
+    if (!Object.prototype.hasOwnProperty.call(value.documents, docType)) return null;
     const doc = value.documents[docType];
     if (doc && !isPlainRecord(doc)) return null;
     if (!doc) {
@@ -703,11 +716,11 @@ function toHandoffViewModel(value, snapshot) {
     const canvasVersion = Number(doc.canvas_version);
     const validationStatus = viewString(doc.validation_status, {maxLength: 40});
     const status = viewString(doc.status, {maxLength: 40});
-    const healthStatus = viewString(doc.health_status, {required: false, maxLength: 40});
+    const healthStatus = viewString(doc.health_status, {maxLength: 40});
     const confirmedAt = viewString(doc.confirmed_at || doc.approved_at, {required: false, maxLength: 80});
     if (!versionId || !documentId || actualDocType !== docType || !Number.isInteger(version) || version < 1
       || !Number.isInteger(canvasVersion) || canvasVersion < 1 || !validationStatus || !status
-      || !confirmedAt || (healthStatus && healthStatus !== "current")) return null;
+      || !confirmedAt || healthStatus !== "current") return null;
     documentSummary[docType] = {
       version_id: versionId,
       document_id: documentId,
@@ -717,7 +730,7 @@ function toHandoffViewModel(value, snapshot) {
       validation_status: validationStatus,
       status,
       confirmed_at: confirmedAt,
-      health_status: healthStatus || "current",
+      health_status: healthStatus,
     };
   }
   if (value.ready && (value.missing.length || snapshotMetadata === null
@@ -2333,21 +2346,24 @@ async function confirmIdeaBrief(event) {
 }
 
 function renderGenerationProgress(result = state.activeGeneration || {}) {
-  const running = ["PENDING", "RUNNING"].includes(result.status);
-  const failed = result.status === "FAILED";
-  const message = result.error_code === "ASYNC_GENERATION_CANCELLED"
+  const validatedResult = result?.status === "SUCCEEDED" && !toSolutionsViewModel(result)
+    ? {...result, status: "FAILED", error_code: "MODEL_OUTPUT_SCHEMA_INVALID"}
+    : result;
+  const running = ["PENDING", "RUNNING"].includes(validatedResult.status);
+  const failed = validatedResult.status === "FAILED";
+  const message = validatedResult.error_code === "ASYNC_GENERATION_CANCELLED"
     ? "任务已停止。已发生的模型调用记录仍保留，停止任务不代表远端费用已取消。"
-    : result.status === "SUCCEEDED" ? "方案已生成。"
-    : failed ? humanizeErrorMessage({code: result.error_code, message: result.message, payload: result}, "这次生成没有完成，你的项目内容已保留，请重新生成。")
-    : result.cancel_requested ? "正在停止任务……请等待服务端确认。" : "方案正在生成，请稍候……";
+    : validatedResult.status === "SUCCEEDED" ? "方案已生成。"
+    : failed ? humanizeErrorMessage({code: validatedResult.error_code, message: validatedResult.message, payload: validatedResult}, "这次生成没有完成，你的项目内容已保留，请重新生成。")
+    : validatedResult.cancel_requested ? "正在停止任务……请等待服务端确认。" : "方案正在生成，请稍候……";
   if (qs("#generation-progress-state")) qs("#generation-progress-state").textContent = message;
-  if (qs("#generation-stop")) qs("#generation-stop").disabled = !running || Boolean(result.cancel_requested);
+  if (qs("#generation-stop")) qs("#generation-stop").disabled = !running || Boolean(validatedResult.cancel_requested);
   if (qs("#generation-progress-retry")) {
     qs("#generation-progress-retry").hidden = !failed;
     qs("#generation-progress-retry").disabled = false;
   }
   if (qs("#generation-progress-open")) qs("#generation-progress-open").hidden = !state.activeGeneration;
-  if (result.status === "SUCCEEDED" && qs("#generation-progress-dialog")?.open) closeGenerationProgress();
+  if (validatedResult.status === "SUCCEEDED" && qs("#generation-progress-dialog")?.open) closeGenerationProgress();
 }
 function showGenerationProgress() {
   renderGenerationProgress();
@@ -2390,6 +2406,18 @@ async function restoreGenerationReference() {
     if (!saved || typeof saved.projectId !== "string" || typeof saved.runId !== "string") return;
     // Authoritative scoped GET must succeed before exposing or loading a saved project.
     const result = await api(`/api/projects/${encodeURIComponent(saved.projectId)}/solutions/generate/${encodeURIComponent(saved.runId)}`);
+    if (result?.status === "SUCCEEDED" && !toSolutionsViewModel(result)) {
+      state.activeGeneration = {...saved, ...result, status: "FAILED", error_code: "MODEL_OUTPUT_SCHEMA_INVALID"};
+      renderGenerationProgress(state.activeGeneration);
+      if (state.currentProjectId === saved.projectId) {
+        state.solutions = null;
+        state.generationTerminalFailure = true;
+        state.generationFailureCode = "MODEL_OUTPUT_SCHEMA_INVALID";
+        renderSolutions();
+        showRecoveryPayload({error_code: "MODEL_OUTPUT_SCHEMA_INVALID"}, "solution_generation");
+      }
+      return result;
+    }
     await loadProject(saved.projectId);
     state.activeGeneration = {...saved, ...result};
     renderGenerationProgress();
@@ -3147,6 +3175,7 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     renderGuidanceCard,
     openSolutionDetails,
     generateSolutions,
+    restoreGenerationReference,
     isRecoveryPayload,
     renderRuntimeDisclosure,
     loadDocumentWorkspace,

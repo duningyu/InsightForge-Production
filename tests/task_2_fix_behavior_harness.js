@@ -73,6 +73,13 @@ global.CSS = { escape: (value) => String(value) };
 global.setTimeout = (callback) => { callback(); return 0; };
 global.clearTimeout = () => {};
 global.fetch = async () => { throw new Error("unexpected fetch"); };
+const sessionStorageValues = new Map();
+global.sessionStorage = {
+  getItem(key) { return sessionStorageValues.has(key) ? sessionStorageValues.get(key) : null; },
+  setItem(key, value) { sessionStorageValues.set(key, String(value)); },
+  removeItem(key) { sessionStorageValues.delete(key); },
+  clear() { sessionStorageValues.clear(); },
+};
 
 vm.runInThisContext(appCode, {filename: appPath});
 const hooks = window.InsightForgeUi.__test;
@@ -87,6 +94,7 @@ function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
 function resetState() {
   hooks.state.currentProjectId = "project-1";
+  hooks.state.snapshot = {id: "snapshot-1", version: 3, health: {health_status: "current"}};
   hooks.state.solutions = null;
   hooks.state.activeGeneration = null;
   hooks.state.handoff = null;
@@ -103,6 +111,7 @@ function resetState() {
     element.showModalCalls = 0;
     element.classList = new FakeClassList();
   }
+  global.sessionStorage.clear();
   global.fetch = async () => { throw new Error("unexpected fetch"); };
 }
 
@@ -195,6 +204,30 @@ async function testValidTerminalSuccessStillCloses() {
   assert(hooks.state.solutions, "valid terminal success should be stored");
 }
 
+async function testRestoreRejectsMalformedInitialSuccessBeforeProgressClose() {
+  resetState();
+  const dialog = getElement("#generation-progress-dialog");
+  dialog.open = true;
+  const malformed = {...completeSolutionResult(), candidates: [partialSolution()]};
+  const fetchCalls = [];
+  global.sessionStorage.setItem("insightforge-generation:account-1", JSON.stringify({
+    projectId: "project-1", runId: "restore-run",
+  }));
+  global.fetch = async (url) => {
+    fetchCalls.push(url);
+    if (url === "/api/auth/me") return {ok: true, headers: {get: () => "application/json"}, json: async () => ({id: "account-1"})};
+    if (url === "/api/projects/project-1/solutions/generate/restore-run") {
+      return {ok: true, headers: {get: () => "application/json"}, json: async () => malformed};
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  await hooks.restoreGenerationReference();
+  assert.strictEqual(dialog.closeCalls, 0, "malformed restored success must not close the modal");
+  assert.notStrictEqual(getElement("#generation-progress-state").textContent, "方案已生成");
+  assert.strictEqual(hooks.state.activeGeneration.status, "FAILED", "malformed restored success must be downgraded before rendering");
+  assert(!fetchCalls.some((url) => url.includes("/idea-brief")), "malformed restored success must not load the project first");
+}
+
 function testDetailAdapterPreservesPartialCandidateAndListStaysStrict() {
   resetState();
   hooks.state.solutions = {candidates: [partialSolution()]};
@@ -228,6 +261,35 @@ function testHandoffRejectsMalformedReadyAndUnhealthyDocuments() {
   hooks.renderHandoff();
   assert(getElement("#handoff-content").innerHTML.includes("当前还不能安全交接"));
   assert(!getElement("#handoff-content").innerHTML.includes("技术文档：已确认"));
+
+  resetState();
+  const missingHealth = validHandoff();
+  delete missingHealth.documents.techdoc.health_status;
+  hooks.state.handoff = missingHealth;
+  hooks.renderHandoff();
+  assert(getElement("#handoff-content").innerHTML.includes("当前还不能安全交接"));
+  assert(!getElement("#handoff-content").innerHTML.includes("技术文档：已确认"));
+
+  resetState();
+  const missingContractField = validHandoff();
+  delete missingContractField.canvas_version;
+  hooks.state.handoff = missingContractField;
+  hooks.renderHandoff();
+  assert(getElement("#handoff-content").innerHTML.includes("当前还不能安全交接"));
+
+  for (const [name, mutate] of [
+    ["project mismatch", (handoff) => { handoff.project_id = "project-2"; }],
+    ["snapshot id mismatch", (handoff) => { handoff.snapshot.id = "snapshot-2"; }],
+    ["snapshot version mismatch", (handoff) => { handoff.snapshot.version = 4; }],
+  ]) {
+    resetState();
+    const mismatched = validHandoff();
+    mutate(mismatched);
+    hooks.state.handoff = mismatched;
+    hooks.renderHandoff();
+    assert(getElement("#handoff-content").innerHTML.includes("当前还不能安全交接"), `${name} must fail closed`);
+    assert(!getElement("#handoff-content").innerHTML.includes("开发交接已具备正式上下文"), `${name} must not render ready UI`);
+  }
 }
 
 async function testDocumentRequiresExplicitMatchingTypeAndContractFields() {
@@ -270,6 +332,7 @@ function testEvidenceIsOptionalButCardsAreComplete() {
 async function main() {
   await testTerminalSuccessIsValidatedBeforeSuccessUi();
   await testValidTerminalSuccessStillCloses();
+  await testRestoreRejectsMalformedInitialSuccessBeforeProgressClose();
   testDetailAdapterPreservesPartialCandidateAndListStaysStrict();
   testHandoffRejectsMalformedReadyAndUnhealthyDocuments();
   await testDocumentRequiresExplicitMatchingTypeAndContractFields();

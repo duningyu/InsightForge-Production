@@ -295,7 +295,8 @@ async function main() {
   });
 
   await runCase("handoff success references selected PRD and TechDoc", () => {
-    hooks.state.snapshot = fixtures.snapshot_selected_b;
+    hooks.state.currentProjectId = "surface-project";
+    hooks.state.snapshot = {...fixtures.snapshot_selected_b, id: "snapshot-surface", health: {health_status: "current"}};
     hooks.state.handoff = completeHandoffFixture();
     hooks.renderHandoff();
     const body = visibleBody("#handoff-content");
@@ -346,7 +347,7 @@ async function main() {
   });
 
   await runCase("wrong-solution PRD is rejected instead of becoming the selected handoff", () => {
-    hooks.state.snapshot = fixtures.snapshot_selected_b;
+    hooks.state.snapshot = {...fixtures.snapshot_selected_b, id: "snapshot-surface", health: {health_status: "current"}};
     assertDocumentSafetyContract(fixtures.documents.wrong_solution_prd, {
       validMarker: "方案：路径 B：人工复核队列",
       forbiddenMarker: /路径 A：规则检查台|自动补货/,
@@ -355,7 +356,7 @@ async function main() {
   });
 
   await runCase("TechDoc scope drift is rejected instead of being shown as current", () => {
-    hooks.state.snapshot = fixtures.snapshot_selected_b;
+    hooks.state.snapshot = {...fixtures.snapshot_selected_b, id: "snapshot-surface", health: {health_status: "current"}};
     assertDocumentSafetyContract(fixtures.documents.techdoc_scope_drift, {
       validMarker: "定义队列字段",
       forbiddenMarker: /自动全量部署|自动补货/,

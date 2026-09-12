@@ -22,7 +22,7 @@ class DispatchControlContext:
             raise ValueError("STRICT_DISPATCH_CONTROL_REQUIRED")
         if self.dispatch_ordinal != 1:
             raise ValueError("INVALID_DISPATCH_ORDINAL")
-        if self.beta_instance != "beta001":
+        if self.beta_instance not in {"beta001", "railway_stage_b"}:
             raise ValueError("INVALID_ACCEPTANCE_INSTANCE")
         if (self.expected_provider, self.expected_model) != ("bailian", "qwen3.7-flash"):
             raise ValueError("INVALID_ACCEPTANCE_TARGET")

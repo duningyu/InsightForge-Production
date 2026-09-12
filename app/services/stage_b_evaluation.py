@@ -12,12 +12,13 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 from app.db import Database
+from app.services.dispatch_control import DispatchControlContext
 from app.services.provider_dispatch_ledger import ProviderDispatchLedger
 
 STAGE_B_PROVIDER = "bailian"
@@ -59,6 +60,34 @@ class StageBGuardDecision:
     reason: str
 
 
+@dataclass(frozen=True)
+class StageBEvaluationContext:
+    """Explicit identity carried from an operator evaluation to dispatch."""
+
+    evaluation_id: str
+    evaluation_type: str
+    surface: str
+    participant: str
+    execution_mode: str
+    retry_ordinal: int = 0
+    acceptance_window_id: str = "stage-b-shape-diagnostic"
+    quota_scope: str = "stage-b-evaluation"
+    receipt_store: Any | None = field(default=None, repr=False, compare=False)
+
+    def to_dispatch_control(self, *, provider: str, model: str) -> DispatchControlContext:
+        return DispatchControlContext(
+            acceptance_execution_id=self.evaluation_id,
+            forward_ledger_epoch_id=self.acceptance_window_id,
+            beta_instance=self.participant,
+            expected_provider=provider,
+            expected_model=model,
+            dispatch_ordinal=1,
+            strict_at_most_once=True,
+            acceptance_window_id=self.acceptance_window_id,
+            quota_scope=self.quota_scope,
+        )
+
+
 def evaluate_stage_b_guard(
     *,
     real_provider_stage_b: bool,
@@ -90,6 +119,16 @@ def build_direct_baseline_prompt(raw_idea: str) -> str:
 
 
 def classify_provider_failure(error: Exception) -> str:
+    safe_diagnostic = getattr(error, "safe_diagnostic", None)
+    if isinstance(safe_diagnostic, Mapping):
+        status = safe_diagnostic.get("provider_http_status")
+        if isinstance(status, int):
+            if status >= 500:
+                return "PROVIDER_5XX"
+            if status == 429:
+                return "RATE_LIMIT"
+            if 400 <= status < 500:
+                return "PROVIDER_4XX"
     classification = getattr(error, "classification", None)
     if classification in _FAILURE_CLASSES:
         return str(classification)

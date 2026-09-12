@@ -193,7 +193,7 @@ class _LocalGuidanceRuntime:
                 preserved_input=preserved_input,
             ) from None
 
-    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
+    def generate_ai_reference(self, context: dict[str, Any], *, evaluation_context: Any | None = None) -> AIReferenceDraft:
         return self._call("generate_ai_reference", context)
 
     def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
@@ -404,7 +404,7 @@ class _ProfileStructuredRuntime:
             kwargs={"claim": claim, "chunks": chunks},
         )
 
-    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
+    def generate_ai_reference(self, context: dict[str, Any], *, evaluation_context: Any | None = None) -> AIReferenceDraft:
         return self._call(
             "generate_ai_reference", preserved_input=context, args=(context,)
         )
@@ -517,9 +517,11 @@ class HybridStructuredRuntime:
         runtime = self.for_project(claim.get("project_id"))
         return runtime.analyze_evidence(claim=claim, chunks=chunks)
 
-    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
+    def generate_ai_reference(self, context: dict[str, Any], *, evaluation_context: Any | None = None) -> AIReferenceDraft:
         runtime = self.for_project(context.get("project_id"))
-        return runtime.generate_ai_reference(context)
+        if evaluation_context is None:
+            return runtime.generate_ai_reference(context)
+        return runtime.generate_ai_reference(context, evaluation_context=evaluation_context)
 
     def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
         runtime = self.for_project(context.get("project_id"))

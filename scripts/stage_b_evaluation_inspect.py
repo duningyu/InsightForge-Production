@@ -1,21 +1,32 @@
-"""Read-only, sanitized Stage B evaluation receipt inspector.
+"""Sanitized Stage B operator for receipt inspection and diagnostics.
 
-This operator tool intentionally exposes metadata only.  It never prints the
-private prompt/response artifact and never performs a provider operation.
+Inspection and dry-check commands expose metadata only and never perform a
+provider operation.  The explicit AI Reference shape command is the sole
+operator entry point that invokes the existing product runtime; it still
+prints only sanitized receipt metadata.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
+from typing import Any, Callable
 
 from app.db import Database
 from app.services.stage_b_evaluation import (
     DEFAULT_STAGE_B_TRANSPORT_BUDGET,
+    CONTEXT_VERSION,
+    INSIGHTFORGE_PROMPT_VERSION,
+    STAGE_B_MODEL,
+    STAGE_B_PARTICIPANT,
+    STAGE_B_PROVIDER,
+    StageBEvaluationContext,
     StageBEvaluationReceiptStore,
     StageBGuardError,
     evaluate_stage_b_guard,
@@ -37,6 +48,9 @@ def inspect_receipt(database: Database, evaluation_id: str) -> dict[str, object]
         "failure_classification", "budget_before", "budget_consumed", "budget_after",
         "artifact_exists", "artifact_hash_available", "artifact_sha256",
         "artifact_bytes", "artifact_persistence_status",
+        "dispatch_permit_id", "dispatch_evaluation_id", "failure_stage",
+        "output_contract_attempted", "decode_status", "schema_validation",
+        "application_postprocess",
     }
     return {key: row.get(key) for key in sorted(allowed)}
 
@@ -107,9 +121,157 @@ def _dry_create(database: Database, *, as_json: bool) -> int:
     return 0
 
 
+def run_ai_reference_shape_canary(
+    *,
+    database: Database,
+    project_id: str,
+    actor: str,
+    runtime: object,
+    ai_reference_service: object | None = None,
+    participant: str = STAGE_B_PARTICIPANT,
+    real_provider_stage_b: bool = True,
+    safe_fixture_mode: bool = False,
+    accounts_enabled: bool = False,
+    receipt_store_factory: Callable[[Database], StageBEvaluationReceiptStore] | None = None,
+) -> dict[str, object]:
+    """Run the internal Stage-B AI Reference path with durable preflight.
+
+    This function is intentionally an operator primitive, not an HTTP handler.
+    The runtime and service are injected so tests can exercise the exact
+    coordination boundary without ever contacting a provider.
+    """
+    evaluate_stage_b_guard(
+        real_provider_stage_b=real_provider_stage_b,
+        safe_fixture_mode=safe_fixture_mode,
+        accounts_enabled=accounts_enabled,
+        participant_id=participant,
+    )
+    database.init_schema()
+    store_factory = receipt_store_factory or (lambda db: StageBEvaluationReceiptStore(database=db))
+    store = store_factory(database)
+    budget_before = DEFAULT_STAGE_B_TRANSPORT_BUDGET - store.consumed_count()
+    if budget_before < 0:
+        raise StageBGuardError("STAGE_B_TRANSPORT_BUDGET_EXHAUSTED")
+    evaluation_id = f"ai-reference-shape-{uuid.uuid4().hex}"
+    store.create(
+        evaluation_id=evaluation_id,
+        execution_id=evaluation_id,
+        idea_id=project_id,
+        evaluation_type="AI_REFERENCE_SHAPE_DIAGNOSTIC_CANARY",
+        execution_mode="INSIGHTFORGE",
+        participant=participant,
+        provider=STAGE_B_PROVIDER,
+        model=STAGE_B_MODEL,
+        operation="ai_reference",
+        prompt_version=INSIGHTFORGE_PROMPT_VERSION,
+        context_version=CONTEXT_VERSION,
+        retry_ordinal=0,
+        budget_before=budget_before,
+        prompt=None,
+    )
+
+    # A separate connection is deliberately used before any product call.
+    readback = store_factory(Database(database.path)).inspect(evaluation_id)
+    if not (
+        readback["status"] == "CREATED"
+        and readback["dispatch_count"] == 0
+        and readback["transport_count"] == 0
+        and not readback["transport_attempted"]
+    ):
+        raise StageBGuardError("AI_REFERENCE_EVALUATION_PRE_TRANSPORT_READBACK_FAILED")
+
+    store.artifact_root.mkdir(parents=True, exist_ok=True)
+    if not os.access(store.artifact_root, os.W_OK):
+        raise StageBGuardError("PRIVATE_ARTIFACT_TARGET_NOT_WRITABLE")
+    context = StageBEvaluationContext(
+        evaluation_id=evaluation_id,
+        evaluation_type="AI_REFERENCE_SHAPE_DIAGNOSTIC_CANARY",
+        surface="AI_REFERENCE",
+        participant=participant,
+        execution_mode="INSIGHTFORGE",
+        retry_ordinal=0,
+        receipt_store=store,
+    )
+    service = ai_reference_service
+    if service is None:
+        from app.services.ai_reference import AIReferenceService
+        service = AIReferenceService(database)
+    started_at = time.monotonic()
+    try:
+        service.generate(
+            project_id,
+            actor=actor,
+            runtime=runtime,
+            idempotency_key=None,
+            evaluation_context=context,
+        )
+        safe_shape = dict(getattr(runtime, "last_provider_diagnostic", {}) or {})
+        store.mark_success(
+            evaluation_id,
+            response={"content": True, "safe_shape": safe_shape},
+            started_at=started_at,
+            response_timestamp=time.monotonic(),
+        )
+        store.write_artifact(
+            evaluation_id,
+            prompt=None,
+            response={"kind": "AI_REFERENCE_SHAPE_DIAGNOSTIC_CANARY", "safe_shape": safe_shape},
+        )
+        return inspect_receipt(database, evaluation_id)
+    except Exception as exc:
+        try:
+            store.mark_failure(
+                evaluation_id,
+                error=exc,
+                started_at=started_at,
+                response_timestamp=time.monotonic(),
+            )
+            store.write_artifact(
+                evaluation_id,
+                prompt=None,
+                response={
+                    "kind": "AI_REFERENCE_SHAPE_DIAGNOSTIC_CANARY",
+                    "safe_shape": dict(getattr(runtime, "last_provider_diagnostic", {}) or {}),
+                },
+            )
+        except Exception:
+            store.mark_artifact_failure(evaluation_id)
+        raise
+
+
+def _run_ai_reference_shape_canary_cli(args: argparse.Namespace) -> int:
+    from app.main import create_app
+
+    async def run() -> dict[str, object]:
+        application = create_app(database_path=args.database, seed=False)
+        async with application.router.lifespan_context(application):
+            return run_ai_reference_shape_canary(
+                database=application.state.db,
+                project_id=args.project_id,
+                actor=args.actor,
+                runtime=application.state.structured_runtime,
+                ai_reference_service=application.state.ai_reference,
+                participant=os.environ.get("BETA_PARTICIPANT_ID", ""),
+                real_provider_stage_b=_env_bool("REAL_PROVIDER_STAGE_B"),
+                safe_fixture_mode=_env_bool("INSIGHTFORGE_SAFE_FIXTURE_MODE"),
+                accounts_enabled=_env_bool("INSIGHTFORGE_ACCOUNTS_ENABLED"),
+            )
+
+    output = asyncio.run(run())
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create"} else "inspect"
+    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary"} else "inspect"
+    if command == "ai-reference-shape-canary":
+        parser = argparse.ArgumentParser(description="Run the internal Stage-B AI Reference shape diagnostic")
+        parser.add_argument("ai-reference-shape-canary", nargs="?")
+        parser.add_argument("--database", type=Path, default=_database_path())
+        parser.add_argument("--project-id", required=True)
+        parser.add_argument("--actor", default="stage-b-operator")
+        return _run_ai_reference_shape_canary_cli(parser.parse_args(argv[1:]))
     if command == "dry-create":
         parser = argparse.ArgumentParser(description="Create a Stage-B dry observability receipt")
         parser.add_argument("dry-create", nargs="?")

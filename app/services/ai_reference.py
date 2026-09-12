@@ -13,6 +13,7 @@ from app.services.generation_contracts import (
     reference_public,
     validate_reference,
 )
+from app.services.stage_b_evaluation import StageBEvaluationContext
 
 
 _CATEGORIES = (
@@ -73,7 +74,15 @@ class AIReferenceService:
             "boundary": "AI参考，不是证据；具体判断仍需外部资料或用户确认。",
         }
 
-    def generate(self, project_id: str, *, actor: str, runtime: Any, idempotency_key: str | None = None) -> dict[str, Any]:
+    def generate(
+        self,
+        project_id: str,
+        *,
+        actor: str,
+        runtime: Any,
+        idempotency_key: str | None = None,
+        evaluation_context: StageBEvaluationContext | None = None,
+    ) -> dict[str, Any]:
         self._project(project_id)
         if idempotency_key:
             existing = self.db.fetch_one(
@@ -83,7 +92,12 @@ class AIReferenceService:
             if existing:
                 return self._row(existing)
         context = self.build_context(project_id)
-        parsed = validate_reference(call_generation(lambda: runtime.generate_ai_reference(context)))
+        def generate_reference() -> Any:
+            if evaluation_context is None:
+                return runtime.generate_ai_reference(context)
+            return runtime.generate_ai_reference(context, evaluation_context=evaluation_context)
+
+        parsed = validate_reference(call_generation(generate_reference))
         result_json = reference_public(parsed)
         reject_unsupported_claims(
             item for category in _CATEGORIES for item in getattr(parsed, category)

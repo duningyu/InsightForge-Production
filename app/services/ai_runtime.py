@@ -22,6 +22,7 @@ from app.schemas import (
 )
 from app.services.provider_adapters import AsyncModelAdapter, DEFAULT_PROVIDER_TIMEOUT, ModelAdapter, ProviderCallError
 from app.services.dispatch_control import DispatchControlContext
+from app.services.stage_b_evaluation import StageBEvaluationContext
 
 RuntimeMode = Literal["llm_structured", "deterministic_demo", "managed_qwen"]
 
@@ -49,7 +50,7 @@ class StructuredAIRuntime(Protocol):
         self, *, claim: dict[str, Any], chunks: list[dict[str, Any]]
     ) -> list[dict[str, Any]]: ...
 
-    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft: ...
+    def generate_ai_reference(self, context: dict[str, Any], *, evaluation_context: StageBEvaluationContext | None = None) -> AIReferenceDraft: ...
 
     def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft: ...
 
@@ -500,7 +501,11 @@ class ManagedQwenStructuredRuntime:
         if pending is not None:
             self._release_reservation(*pending)
 
-    def _dispatch_kwargs(self, control: DispatchControlContext | None) -> dict[str, Any]:
+    def _dispatch_kwargs(
+        self,
+        control: DispatchControlContext | None,
+        evaluation_context: StageBEvaluationContext | None = None,
+    ) -> dict[str, Any]:
         if control is None:
             return {}
         control.validate(provider=self.provider, model=self.model, base_url=self._base_url)
@@ -514,11 +519,25 @@ class ManagedQwenStructuredRuntime:
         )
         if permit_id is None:
             raise StructuredRuntimeUnavailableError("DISPATCH_PERMIT_UNAVAILABLE")
+        if evaluation_context is not None:
+            self._dispatch_ledger.link_permit_to_evaluation(permit_id, evaluation_context.evaluation_id)
+            if evaluation_context.receipt_store is not None:
+                evaluation_context.receipt_store.mark_dispatch_prepared(
+                    evaluation_context.evaluation_id, permit_id=permit_id
+                )
         return {"dispatch_ledger": self._dispatch_ledger, "dispatch_control": control, "dispatch_permit_id": permit_id}
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         self.model_rounds_used = 1
         dispatch_control = kwargs.pop("dispatch_control", None)
+        evaluation_context = kwargs.pop("evaluation_context", None)
+        if evaluation_context is not None:
+            derived_control = evaluation_context.to_dispatch_control(
+                provider="bailian", model=self.model
+            )
+            if dispatch_control is not None and dispatch_control != derived_control:
+                raise StructuredRuntimeUnavailableError("EVALUATION_DISPATCH_CONTEXT_MISMATCH")
+            dispatch_control = derived_control
         operation = {
             "design_solutions": "solution_generation",
             "analyze_evidence": "evidence_analysis",
@@ -540,13 +559,15 @@ class ManagedQwenStructuredRuntime:
             if self._attempt_observer is not None:
                 adapter_kwargs["attempt_observer"] = self._attempt_observer
             adapter_kwargs["timeout"] = self._timeout
-            adapter_kwargs.update(self._dispatch_kwargs(dispatch_control))
+            adapter_kwargs.update(self._dispatch_kwargs(dispatch_control, evaluation_context))
             adapter = self._adapter_factory(**adapter_kwargs)
         except Exception as exc:
             if operation is not None and self._after_provider_failure is not None:
                 self._release_reservation(operation, reservation)
             raise StructuredRuntimeUnavailableError("MANAGED_QWEN_CONFIGURATION_INVALID") from exc
         try:
+            if evaluation_context is not None and evaluation_context.receipt_store is not None:
+                evaluation_context.receipt_store.mark_transport_started(evaluation_context.evaluation_id)
             result = getattr(adapter, method)(*args, **kwargs)
             self.last_provider_diagnostic = dict(getattr(adapter, "last_safe_diagnostic", {}))
             return result
@@ -663,8 +684,10 @@ class ManagedQwenStructuredRuntime:
     ) -> list[dict[str, Any]]:
         return self._call("analyze_evidence", claim=claim, chunks=chunks)
 
-    def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
-        return self._call("generate_ai_reference", context)
+    def generate_ai_reference(
+        self, context: dict[str, Any], *, evaluation_context: StageBEvaluationContext | None = None
+    ) -> AIReferenceDraft:
+        return self._call("generate_ai_reference", context, evaluation_context=evaluation_context)
 
     def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
         return self._call("generate_evidence_guidance", context)

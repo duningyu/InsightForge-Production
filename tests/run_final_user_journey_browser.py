@@ -14,8 +14,8 @@ socket.socket.connect=loopback; socket.socket.connect_ex=loopback
 
 def install_fake_transport(counter):
     from app.services.provider_adapters import AsyncModelAdapter, ModelAdapter
-    from test_normal_dispatch_control_integration import _solution_payload
-    solution = _solution_payload()
+    from test_normal_dispatch_control_integration import _stage_b_solution_payload
+    solution = _stage_b_solution_payload()
     # The application validator requires materially different solution paths;
     # the shared smoke payload intentionally uses two near-identical examples,
     # so make the second synthetic path genuinely distinct for this journey.

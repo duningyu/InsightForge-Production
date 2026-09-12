@@ -109,7 +109,10 @@ function forbiddenText(text) {
 
       await capture('ai-reference-success', '#ai-reference-content');
       await page.evaluate(() => window.InsightForgeUi.__test.setTestAIReference({}));
-      await capture('ai-reference-empty', '#ai-reference-content');
+      // An empty result must not create a success body; capture the containing
+      // surface so the negative state remains screenshot evidence without
+      // asking Chromium to screenshot a zero-sized empty content node.
+      await capture('ai-reference-empty', '#solutions-view');
       await page.evaluate(() => window.InsightForgeUi.__test.activateView('evidence'));
       await page.evaluate(() => window.InsightForgeUi.__test.setEvidenceTab('sources'));
       await page.evaluate(() => window.InsightForgeUi.__test.setTestEvidenceGuidance({cards: []}));

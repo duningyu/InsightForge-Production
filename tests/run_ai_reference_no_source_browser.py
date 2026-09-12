@@ -14,8 +14,8 @@ socket.socket.connect=loopback; socket.socket.connect_ex=loopback
 
 def install_fake_transport(counter):
     from app.services.provider_adapters import AsyncModelAdapter, ModelAdapter
-    from test_normal_dispatch_control_integration import _solution_payload
-    solution=_solution_payload(); solution["candidates"][0].update({"mechanism":"workflow_based","summary":"synthetic guided workflow","user_flow":["collect","guide","review"],"complexity":"medium","automation_level":"medium","human_role":"reviews"})
+    from test_normal_dispatch_control_integration import _stage_b_solution_payload
+    solution=_stage_b_solution_payload(); solution["candidates"][0].update({"mechanism":"workflow_based","summary":"synthetic guided workflow","user_flow":["collect","guide","review"],"complexity":"medium","automation_level":"medium","human_role":"reviews"})
     def text(x): return x if isinstance(x,str) else "".join(y.get("text","") if isinstance(y,dict) else str(y) for y in x) if isinstance(x,list) else str(x)
     def bump(kind):
         data=json.loads(counter.read_text()); data[kind]=data.get(kind,0)+1; counter.write_text(json.dumps(data))

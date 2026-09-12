@@ -811,12 +811,12 @@ function toHandoffViewModel(value, snapshot) {
   const targetUser = isPlainRecord(snap.target_user) ? snap.target_user.primary : "";
   const problem = isPlainRecord(snap.problem) ? snap.problem.statement : "";
   const missing = value.missing.map((item) => humanizeHandoffMessage(item?.message || item)).filter(Boolean);
-  const unresolved = value.unresolved_items.map((item) => typeof item === "string" ? viewString(item) : humanizeUnresolvedItem(item)).filter(Boolean);
+  const unresolved = value.unresolved_items;
   return {
     ready: value.ready,
     documents: documentSummary,
     missing,
-    unresolved,
+    unresolved: unresolved.map(humanizeUnresolvedItem),
     acknowledgement_required: Boolean(value.acknowledgement_required),
     unresolved_acknowledgement: Boolean(value.unresolved_acknowledgement),
     features: arrayOfStrings(mvp.features),
@@ -2334,11 +2334,12 @@ function handoffDocumentLabel(documentSummary) {
 
 function humanizeUnresolvedItem(item) {
   const safeText = (value, fallback) => {
-    const text = String(value || "").trim();
+    const text = viewString(value);
     if (!text) return fallback;
     if (/traceback|exception|valueerror|keyerror|sql|stack trace|[A-Z][A-Z0-9_]{2,}|[a-z]+_[a-z_]+|(?:^|[\\/])(?:app|src|var|tmp)(?:[\\/]|$)/i.test(text)) return fallback;
     return text;
   };
+  if (typeof item === "string") return safeText(item, "还有一项内容需要确认");
   const subject = safeText(item?.item, "还有一项内容需要确认");
   const why = safeText(item?.why, "当前还没有足够依据");
   const how = safeText(item?.how_to_verify, "补充资料或进行一次实际验证");
@@ -2907,8 +2908,8 @@ function renderAIReference() {
     const heading = document.createElement("h3"); heading.textContent = label; section.append(heading);
     values.forEach((item) => {
       const row = document.createElement("div"); row.className = "ai-reference-item";
-      const itemText = item;
-      const itemKey = item;
+      const itemText = typeof item === "string" ? item : presentStructuredValue(item, "待确认");
+      const itemKey = typeof item === "string" ? item : JSON.stringify(item);
       const itemContent = document.createElement("div"); itemContent.className = "ai-reference-item-content";
       const itemLabel = document.createElement("strong"); itemLabel.textContent = "具体建议";
       const text = document.createElement("p"); text.textContent = itemText; itemContent.append(itemLabel, text);

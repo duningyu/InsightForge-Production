@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.db import Database
+from app.errors import StructuredRuntimeUnavailableError
 from app.schemas import QuickStartRequest, SolutionCandidateDraft
 from app.services.ai_runtime import DeterministicDemoRuntime
 from app.services.legacy_migration import LegacyMigrationService
@@ -133,7 +134,12 @@ def test_case_2_non_ai_workflow_rejects_all_ai_overengineering():
         requires_agent_runtime=False,
     )
     candidates = [SolutionCandidateDraft.model_validate(item) for item in raw]
-    candidates.append(candidates[0].model_copy(update={"title": "自动执行", "mechanism": "automation", "major_dependency": "agent_executor"}))
+    candidates.append(candidates[0].model_copy(update={
+        "title": "自动执行", "mechanism": "automation", "major_dependency": "agent_executor",
+        "summary": "代理根据审批规则自动提交报销申请。",
+        "user_flow": ["读取报销凭证", "代理核对规则", "自动提交申请"],
+    }))
+    assert len(validate_solution_set(candidates, llm_core_required=True)) == 3
     with pytest.raises(ValueError, match=expected["error_code"]):
         validate_solution_set(candidates, llm_core_required=expected["llm_core_required"])
 
@@ -155,10 +161,12 @@ def test_case_4_stage_b_rejects_two_solutions_without_padding():
     brief = runtime.interpret_idea(
         QuickStartRequest(idea=expected["idea"], target_user=None, resources=[], priority="fast_mvp")
     )
-    solution_set = runtime.design_solutions(brief)
-    assert len(solution_set.candidates) == expected["expected_solution_count"]
+    candidates = [SolutionCandidateDraft.model_validate(item) for item in _fixture()["two_solution_workflow"]["solutions"]]
+    assert len(candidates) == expected["expected_solution_count"] == 2
+    with pytest.raises(StructuredRuntimeUnavailableError, match="DETERMINISTIC_DEMO_UNSUPPORTED"):
+        runtime.design_solutions(brief)
     with pytest.raises(ValueError, match="SOLUTION_SET_CARDINALITY_FAILED"):
-        validate_solution_set(solution_set.candidates, llm_core_required=solution_set.llm_core_required)
+        validate_solution_set(candidates, llm_core_required=False)
 
 
 def test_case_5_independent_real_user_support_and_contradiction_become_conflict(client):

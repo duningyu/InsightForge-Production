@@ -15,25 +15,11 @@ from app.config import Settings
 from app.main import create_app
 from app.services.provider_adapters import AsyncModelAdapter, ModelAdapter
 from test_open_accounts import claim
-from test_normal_dispatch_control_integration import _solution_payload
+from test_normal_dispatch_control_integration import _stage_b_solution_payload
 
 
 def _account_solution_payload():
-    payload = _solution_payload()
-    payload["candidates"][1].update(
-        human_role="synthetic author", core_decision_logic="manual checklist"
-    )
-    payload["candidates"].append({
-        **payload["candidates"][0],
-        "title": "Synthetic forecast",
-        "mechanism": "prediction_based",
-        "required_data_class": "historical metrics",
-        "automation_level": "medium",
-        "human_role": "validates forecast",
-        "core_decision_logic": "forecast threshold",
-        "major_dependency": "historical data",
-    })
-    return payload
+    return _stage_b_solution_payload()
 
 
 @pytest.mark.parametrize("outcome", ["failure", "shutdown_cancellation", "interrupted_snapshot", "user_cancellation"])
@@ -238,6 +224,7 @@ def test_running_task_keeps_workspace_after_logout_and_account_switch(tmp_path, 
             assert time.monotonic() < deadline, terminal
             time.sleep(.02)  # terminal polling only; race is controlled by Event above
         assert terminal["status"] == "SUCCEEDED", terminal
+        assert len(terminal["candidates"]) == 3
         assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='COMMITTED'")["n"] == 1
         assert db.fetch_one("SELECT COUNT(*) AS n FROM beta_quota_reservations WHERE state='RESERVED'")["n"] == 0
         assert len(calls) == 1
@@ -299,6 +286,7 @@ def test_four_generations_account_scope_replay_and_worker_reconstruction(tmp_pat
                     time.sleep(.02)  # bounded terminal polling, not concurrency synchronization
                 assert terminal["status"] == "SUCCEEDED", terminal
                 assert terminal["status_code"] == 201, terminal
+                assert len(terminal["candidates"]) == 3
                 row = db.fetch_one("SELECT * FROM async_solution_generation_runs WHERE generation_run_id=?", (run_id,))
                 assert row["quota_status"] == "CHARGED"  # existing async terminal vocabulary
                 assert row["response_json"]

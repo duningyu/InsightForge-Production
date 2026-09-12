@@ -51,10 +51,42 @@ if (process.argv.includes("--document")) {
 } else {
   let failed = 0, passed = 0;
   async function check(name, callback) {
+    if (process.argv.includes("--regression-render") && !name.startsWith("regression ")) return;
     try { await callback(); passed++; console.log(`PASS ${name}`); }
     catch (error) { failed++; console.error(`FAIL ${name.replace(/\n/g, " / ")}: ${error.message.split("\n")[0]}`); }
   }
   async function main() {
+    await check("regression reference preserves safe text and decision identity", () => {
+      const item = '{"description":"核对库存字段"}';
+      hooks.setTestAIReference({possible_target_users: [item]});
+      assert.ok(element("#ai-reference-content").textContent.includes(item));
+      const descendants = node => [node, ...node.children.flatMap(descendants)];
+      const select = descendants(element("#ai-reference-content")).find(node => node.dataset.aiCategory);
+      assert.equal(select.dataset.aiItem, item);
+      assert.ok(!element("#ai-reference-content").textContent.includes("[object Object]"));
+      hooks.setTestAIReference({possible_target_users: [{description: "核对库存字段"}]});
+      assert.match(element("#ai-reference-content").textContent, /没有生成可用建议/);
+    });
+    await check("regression handoff humanizes string and object diagnostics before rendering", () => {
+      hooks.state.currentProjectId = "regression-project";
+      hooks.state.snapshot = null;
+      hooks.state.handoff = {
+        project_id: "regression-project", ready: false, documents: {prd: null, techdoc: null},
+        canvas_version: null, snapshot: null, missing: [], warnings: [], expected_files: [],
+        claim_boundary: {}, unresolved_claim_count: 4, draft_unresolved_claim_count: 0,
+        acknowledgement_required: true, unresolved_acknowledgement: null,
+        unresolved_items: ["SQL 错误 SYNTHETIC_PRIVATE", "请访谈一位店主", {
+          item: "库存字段尚待核对", why: "尚缺实际记录", how_to_verify: "请对照门店台账",
+        }, {item: {debug: "SYNTHETIC_PRIVATE"}, why: 'Authorization: Bearer 私密值', how_to_verify: "请对照门店台账"}],
+      };
+      hooks.renderHandoff();
+      const body = element("#handoff-content").textContent;
+      assert.match(body, /库存字段尚待核对/);
+      assert.match(body, /请访谈一位店主/);
+      assert.match(body, /请对照门店台账/);
+      assert.match(body, /还有一项内容需要确认/);
+      assert.ok(!/SQL|SYNTHETIC_PRIVATE|Authorization|私密值|\[object Object\]/.test(body));
+    });
     for (const [index, raw] of cases.rejected.entries()) {
       for (const [name, base, mutate] of [
         ["toAIReferenceViewModel", fixtures.ai_reference_complete, v => { v.possible_target_users = [raw]; }],

@@ -1040,7 +1040,9 @@ class InvalidLocalSolutionRuntime:
         fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
         first = dict(fixture["convenience_replenishment"]["solutions"][0])
         second = {**first, "title": f"{first['title']}副本"}
-        return SolutionSetDraft(candidates=[first, second], llm_core_required=False)
+        third = {**first, "title": f"{first['title']}另一副本"}
+        # Pass exact-three schema parsing, then fail material diversity on both rounds.
+        return SolutionSetDraft(candidates=[first, second, third], llm_core_required=False)
 
 
 def test_two_local_solution_calls_are_counted_monotonically_in_failure_audit(
@@ -1083,3 +1085,5 @@ def test_two_local_solution_calls_are_counted_monotonically_in_failure_audit(
     trace = json.loads(row["payload_json"])
     assert trace["model_rounds_used"] == 2
     assert trace["max_model_rounds"] == 2
+    assert trace["domain_reason"] == "SOLUTION_DIVERSITY_FAILED"
+    assert db.fetch_one("SELECT COUNT(*) AS n FROM solution_candidates WHERE project_id=?", (project_id,))["n"] == 0

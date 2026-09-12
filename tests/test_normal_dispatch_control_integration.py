@@ -41,6 +41,25 @@ def _solution_payload() -> dict[str, object]:
     return {"candidates": [{**item, "title": "Synthetic rules"}, {**item, "title": "Synthetic workflow"}]}
 
 
+def _stage_b_solution_payload() -> dict[str, object]:
+    """Exact-three transport fake; keep legacy browser fixtures independent."""
+    payload = _solution_payload()
+    payload["candidates"][1].update(
+        mechanism="workflow_based", summary="Collect a checklist for manual approval",
+        user_flow=["collect checklist", "review", "approve"],
+        human_role="synthetic author", core_decision_logic="manual checklist",
+    )
+    payload["candidates"].append({
+        **payload["candidates"][0], "title": "Synthetic forecast",
+        "mechanism": "prediction_based", "summary": "Forecast demand from historical metrics",
+        "user_flow": ["load history", "forecast demand", "validate forecast"],
+        "required_data_class": "historical metrics", "automation_level": "medium",
+        "human_role": "validates forecast", "core_decision_logic": "forecast threshold",
+        "major_dependency": "historical data",
+    })
+    return payload
+
+
 def _context(execution_id: str = "acceptance-integration-1") -> DispatchControlContext:
     return DispatchControlContext(
         acceptance_execution_id=execution_id,
@@ -76,12 +95,13 @@ def test_normal_async_managed_path_acquires_permit_and_records_dispatch(tmp_path
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(_solution_payload())}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(_stage_b_solution_payload())}}]})
 
     runtime = _runtime(db, handler, calls)
     result = asyncio.run(runtime.async_design_solutions(_brief(), dispatch_control=_context()))
 
-    assert len(result.candidates) == 2
+    assert len(result.candidates) == 3
+    assert {item.mechanism for item in result.candidates} == {"rule_based", "workflow_based", "prediction_based"}
     assert len(calls) == 1
     ledger = ProviderDispatchLedger(db)
     assert ledger.classify("acceptance-integration-1") is DispatchClassification.CONFIRMED_PROVIDER_DISPATCH
@@ -98,11 +118,12 @@ def test_same_acceptance_execution_replay_cannot_dispatch_twice(tmp_path):
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(_solution_payload())}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(_stage_b_solution_payload())}}]})
 
     runtime = _runtime(db, handler, calls)
     control = _context("acceptance-replay-1")
-    asyncio.run(runtime.async_design_solutions(_brief(), dispatch_control=control))
+    result = asyncio.run(runtime.async_design_solutions(_brief(), dispatch_control=control))
+    assert len(result.candidates) == 3
     with pytest.raises(Exception):
         asyncio.run(runtime.async_design_solutions(_brief(), dispatch_control=control))
     assert len(calls) == 1

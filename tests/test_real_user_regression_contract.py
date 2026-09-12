@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 
 STATIC = Path(__file__).resolve().parents[1] / "app" / "static"
@@ -74,3 +75,12 @@ def test_account_errors_do_not_echo_backend_exception_text():
     js = (STATIC / "account.js").read_text(encoding="utf-8")
     assert "message.textContent = error.message" not in js
     assert "账号操作未完成，请检查填写内容或稍后重试。" in js
+
+
+def test_reference_and_handoff_safe_render_behavior():
+    result = subprocess.run(
+        ["node", "tests/whole_branch_fix_harness.js", "--regression-render"],
+        cwd=STATIC.parents[1], capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "SUMMARY passed=2 failed=0" in result.stdout

@@ -452,6 +452,8 @@ const SOLUTION_OBJECT_LIST_FIELDS = {
   risks: ["risk", "mitigation"],
 };
 const SOLUTION_TEXT_FIELDS = ["id", "title", "why_fit", "mechanism", "complexity"];
+const SOLUTION_DETAIL_TEXT_FIELDS = ["title", "target_user", "problem", "why_fit", "mechanism", "complexity"];
+const SOLUTION_DETAIL_LIST_FIELDS = ["scenarios", ...SOLUTION_LIST_FIELDS, "tradeoffs"];
 const SOLUTION_DIVERSITY_FIELDS = [
   "mechanism", "required_data_class", "automation_level", "human_role", "core_decision_logic", "major_dependency",
 ];
@@ -521,7 +523,7 @@ function toEvidenceGuidanceViewModel(value) {
       if (!model[key]) return null;
     }
     for (const key of EVIDENCE_CARD_LIST_FIELDS) {
-      model[key] = viewStringList(card[key], {required: false, maxItems: 20});
+      model[key] = viewStringList(card[key], {maxItems: 20});
       if (!model[key]) return null;
     }
     return model;
@@ -550,6 +552,31 @@ function toSolutionCandidateViewModel(value) {
   for (const key of SOLUTION_LIST_FIELDS) {
     model[key] = viewSolutionList(value[key], key);
     if (!model[key] || !model[key].length) return null;
+  }
+  return model;
+}
+
+function toSolutionDetailViewModel(value) {
+  if (!isPlainRecord(value)) return null;
+  const id = viewString(value.id, {maxLength: 200});
+  if (!id) return null;
+  const model = {id};
+  for (const key of SOLUTION_DETAIL_TEXT_FIELDS) {
+    if (!(key in value)) continue;
+    if (value[key] === null || value[key] === undefined) continue;
+    if (typeof value[key] !== "string") return null;
+    const text = viewString(value[key], {required: false});
+    if (text) model[key] = text;
+  }
+  for (const key of SOLUTION_DETAIL_LIST_FIELDS) {
+    if (!(key in value)) continue;
+    if (value[key] === null || value[key] === undefined) continue;
+    const raw = Array.isArray(value[key]) ? value[key] : [value[key]];
+    const list = SOLUTION_OBJECT_LIST_FIELDS[key]
+      ? viewSolutionList(raw, key)
+      : viewStringList(raw, {maxItems: 20});
+    if (!list) return null;
+    model[key] = list;
   }
   return model;
 }
@@ -586,21 +613,25 @@ function toSolutionsViewModel(value) {
 function toDocumentVersionViewModel(value, expectedDocType) {
   if (!isPlainRecord(value)) return null;
   const id = viewString(value.version_id || value.id, {maxLength: 200});
-  const docType = viewString(value.doc_type, {required: false, maxLength: 20}) || expectedDocType;
+  const docType = viewString(value.doc_type, {maxLength: 20});
   const version = Number(value.version);
   const content = viewString(value.content, {maxLength: 2000000});
-  if (!id || !docType || docType !== expectedDocType || !Number.isInteger(version) || version < 1 || !content) return null;
+  const status = viewString(value.status, {maxLength: 40});
+  const validationStatus = viewString(value.validation_status, {maxLength: 40});
+  const health = isPlainRecord(value.artifact_health)
+    ? viewString(value.artifact_health.health_status, {maxLength: 40})
+    : null;
+  if (!id || !docType || docType !== expectedDocType || !Number.isInteger(version) || version < 1 || !content
+    || !status || !validationStatus || !health) return null;
   return {
     id,
     version,
     doc_type: docType,
     content,
-    status: viewString(value.status, {required: false, maxLength: 40}) || "draft",
-    validation_status: viewString(value.validation_status, {required: false, maxLength: 40}) || "not_run",
+    status,
+    validation_status: validationStatus,
     created_at: viewString(value.created_at, {required: false, maxLength: 80}) || "",
-    artifact_health: isPlainRecord(value.artifact_health)
-      ? {health_status: viewString(value.artifact_health.health_status, {required: false, maxLength: 40}) || "unknown"}
-      : {health_status: "unknown"},
+    artifact_health: {health_status: health},
   };
 }
 
@@ -643,27 +674,63 @@ function toDocumentWorkspaceViewModel(workspace) {
 }
 
 function toHandoffViewModel(value, snapshot) {
-  if (!isPlainRecord(value) || typeof value.ready !== "boolean" || !isPlainRecord(value.documents)) return null;
+  if (!isPlainRecord(value) || typeof value.project_id !== "string" || !value.project_id.trim()
+    || typeof value.ready !== "boolean" || !isPlainRecord(value.documents)) return null;
+  if (!Array.isArray(value.missing) || !Array.isArray(value.warnings) || !Array.isArray(value.unresolved_items)
+    || !Array.isArray(value.expected_files) || !isPlainRecord(value.claim_boundary)
+    || !Number.isInteger(Number(value.unresolved_claim_count)) || Number(value.unresolved_claim_count) < 0
+    || !Number.isInteger(Number(value.draft_unresolved_claim_count)) || Number(value.draft_unresolved_claim_count) < 0
+    || typeof value.acknowledgement_required !== "boolean") return null;
+  const snapshotMetadata = value.snapshot;
+  if (snapshotMetadata !== null) {
+    if (!isPlainRecord(snapshotMetadata)
+      || !viewString(snapshotMetadata.id, {maxLength: 200})
+      || !Number.isInteger(Number(snapshotMetadata.version)) || Number(snapshotMetadata.version) < 1
+      || viewString(snapshotMetadata.health_status, {maxLength: 40}) !== "current") return null;
+  }
   const documentSummary = {};
   for (const docType of ["prd", "techdoc"]) {
     const doc = value.documents[docType];
     if (doc && !isPlainRecord(doc)) return null;
-    documentSummary[docType] = doc ? {
-      version_id: viewString(doc.version_id || doc.id, {maxLength: 200}),
-      version: Number.isInteger(Number(doc.version)) ? Number(doc.version) : null,
-    } : null;
+    if (!doc) {
+      documentSummary[docType] = null;
+      continue;
+    }
+    const versionId = viewString(doc.version_id, {maxLength: 200});
+    const documentId = viewString(doc.document_id, {maxLength: 200});
+    const actualDocType = viewString(doc.doc_type, {maxLength: 20});
+    const version = Number(doc.version);
+    const canvasVersion = Number(doc.canvas_version);
+    const validationStatus = viewString(doc.validation_status, {maxLength: 40});
+    const status = viewString(doc.status, {maxLength: 40});
+    const healthStatus = viewString(doc.health_status, {required: false, maxLength: 40});
+    const confirmedAt = viewString(doc.confirmed_at || doc.approved_at, {required: false, maxLength: 80});
+    if (!versionId || !documentId || actualDocType !== docType || !Number.isInteger(version) || version < 1
+      || !Number.isInteger(canvasVersion) || canvasVersion < 1 || !validationStatus || !status
+      || !confirmedAt || (healthStatus && healthStatus !== "current")) return null;
+    documentSummary[docType] = {
+      version_id: versionId,
+      document_id: documentId,
+      doc_type: actualDocType,
+      version,
+      canvas_version: canvasVersion,
+      validation_status: validationStatus,
+      status,
+      confirmed_at: confirmedAt,
+      health_status: healthStatus || "current",
+    };
   }
-  if (value.ready && (!documentSummary.prd?.version_id || !documentSummary.techdoc?.version_id)) return null;
+  if (value.ready && (value.missing.length || snapshotMetadata === null
+    || !documentSummary.prd?.version_id || !documentSummary.techdoc?.version_id
+    || documentSummary.prd.validation_status !== "passed" || documentSummary.techdoc.validation_status !== "passed"
+    || documentSummary.prd.status !== "approved" || documentSummary.techdoc.status !== "approved"
+    || documentSummary.prd.health_status !== "current" || documentSummary.techdoc.health_status !== "current")) return null;
   const arrayOfStrings = (items) => viewStringList(items, {required: false, maxItems: 30}) || [];
   const snap = isPlainRecord(snapshot) ? snapshot : {};
   const mvp = isPlainRecord(snap.mvp) ? snap.mvp : {};
   const solution = isPlainRecord(snap.solution) ? snap.solution : {};
-  const missing = Array.isArray(value.missing)
-    ? value.missing.map((item) => humanizeHandoffMessage(item?.message || item)).filter(Boolean)
-    : [];
-  const unresolved = Array.isArray(value.unresolved_items)
-    ? value.unresolved_items.map((item) => typeof item === "string" ? viewString(item) : humanizeUnresolvedItem(item)).filter(Boolean)
-    : [];
+  const missing = value.missing.map((item) => humanizeHandoffMessage(item?.message || item)).filter(Boolean);
+  const unresolved = value.unresolved_items.map((item) => typeof item === "string" ? viewString(item) : humanizeUnresolvedItem(item)).filter(Boolean);
   return {
     ready: value.ready,
     documents: documentSummary,
@@ -1409,7 +1476,10 @@ function inputOutputBlocks(inputs = [], outputs = []) {
 }
 
 function openSolutionDetails(candidateId, trigger) {
-  const solution = toSolutionsViewModel(state.solutions)?.candidates.find((item) => item.id === candidateId);
+  const rawSolution = isPlainRecord(state.solutions) && Array.isArray(state.solutions.candidates)
+    ? state.solutions.candidates.find((item) => isPlainRecord(item) && item.id === candidateId)
+    : null;
+  const solution = toSolutionDetailViewModel(rawSolution);
   if (!solution) { toast("该方案已不可用，请重新打开方案列表。"); return; }
   const dialog = qs("#solution-detail-dialog");
   dialog.returnFocus = trigger;
@@ -2150,7 +2220,10 @@ function renderHandoff() {
 }
 
 function handoffDocumentLabel(documentSummary) {
-  if (!documentSummary || !(documentSummary.version_id || documentSummary.id)) return "未确认";
+  if (!documentSummary || !documentSummary.version_id
+    || documentSummary.status !== "approved"
+    || documentSummary.validation_status !== "passed"
+    || documentSummary.health_status !== "current") return "未确认";
   const version = documentSummary.version ? ` v${documentSummary.version}` : "";
   return `已确认${version}`;
 }
@@ -2410,6 +2483,20 @@ async function generateSolutions({newIntent = false} = {}) {
 async function pollSolutionGeneration(runId, projectId = state.currentProjectId) {
   while (true) {
     const result = await api(`/api/projects/${encodeURIComponent(projectId)}/solutions/generate/${encodeURIComponent(runId)}`);
+    const validatedSolutions = result?.status === "SUCCEEDED" ? toSolutionsViewModel(result) : null;
+    if (result?.status === "SUCCEEDED" && !validatedSolutions) {
+      if (state.activeGeneration?.runId === runId) {
+        Object.assign(state.activeGeneration, result, {status: "FAILED", error_code: "MODEL_OUTPUT_SCHEMA_INVALID"});
+        renderGenerationProgress(state.activeGeneration);
+      }
+      if (state.currentProjectId !== projectId) return result;
+      state.solutions = null;
+      state.generationTerminalFailure = true;
+      state.generationFailureCode = "MODEL_OUTPUT_SCHEMA_INVALID";
+      renderSolutions();
+      showRecoveryPayload({error_code: "MODEL_OUTPUT_SCHEMA_INVALID"}, "solution_generation");
+      return result;
+    }
     if (state.activeGeneration?.runId === runId) {
       Object.assign(state.activeGeneration, result);
       renderGenerationProgress(result);
@@ -2427,7 +2514,7 @@ async function pollSolutionGeneration(runId, projectId = state.currentProjectId)
       showRecoveryPayload(result, "solution_generation");
       return result;
     }
-    if (!toSolutionsViewModel(result)) {
+    if (!validatedSolutions && !toSolutionsViewModel(result)) {
       state.solutions = null;
       state.generationTerminalFailure = true;
       state.generationFailureCode = "MODEL_OUTPUT_SCHEMA_INVALID";
@@ -2435,7 +2522,7 @@ async function pollSolutionGeneration(runId, projectId = state.currentProjectId)
       showRecoveryPayload({error_code: "MODEL_OUTPUT_SCHEMA_INVALID"}, "solution_generation");
       return result;
     }
-    state.solutions = result;
+    state.solutions = validatedSolutions || result;
     state.generationIntentId = null;
     state.generationTerminalFailure = false;
     state.generationFailureCode = null;

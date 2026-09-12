@@ -107,16 +107,50 @@ async function runCase(name, fn) {
 }
 
 function setDocument(version) {
+  const completeVersion = {
+    ...version,
+    status: version.status || "draft",
+    validation_status: version.validation_status || "not_run",
+    artifact_health: version.artifact_health || {health_status: "current"},
+  };
   hooks.state.documentWorkspace = {
-    docType: version.doc_type,
-    versions: [version],
-    selectedVersionId: version.id,
+    docType: completeVersion.doc_type,
+    versions: [completeVersion],
+    selectedVersionId: completeVersion.id,
     compareVersionId: null,
     draft: null,
     dirty: false,
     error: null,
   };
   hooks.renderDocumentWorkspace();
+}
+
+function completeHandoffFixture(projectId = "surface-project") {
+  const handoff = JSON.parse(JSON.stringify(fixtures.handoff_ready));
+  handoff.project_id = projectId;
+  handoff.missing = [];
+  handoff.warnings = [];
+  handoff.canvas_version = 2;
+  handoff.snapshot = {id: "snapshot-surface", version: 2, health_status: "current"};
+  handoff.unresolved_claim_count = 0;
+  handoff.acknowledgement_required = false;
+  handoff.unresolved_acknowledgement = null;
+  handoff.draft_unresolved_claim_count = 0;
+  handoff.expected_files = ["README_FIRST.md"];
+  handoff.claim_boundary = {scope: "project"};
+  for (const [docType, doc] of Object.entries(handoff.documents)) {
+    handoff.documents[docType] = {
+      ...doc,
+      document_id: `${docType}-document`,
+      doc_type: docType,
+      canvas_version: 2,
+      validation_status: "passed",
+      status: "approved",
+      confirmed_at: "2026-09-12T00:00:00Z",
+      health_status: "current",
+    };
+  }
+  return handoff;
 }
 
 function jsonResponse(payload, status = 200) {
@@ -262,7 +296,7 @@ async function main() {
 
   await runCase("handoff success references selected PRD and TechDoc", () => {
     hooks.state.snapshot = fixtures.snapshot_selected_b;
-    hooks.state.handoff = fixtures.handoff_ready;
+    hooks.state.handoff = completeHandoffFixture();
     hooks.renderHandoff();
     const body = visibleBody("#handoff-content");
     assert.match(body, /PRD：已确认 v1/);
@@ -379,9 +413,9 @@ async function main() {
   await runCase("real document and handoff loaders preserve selected references", async () => {
     hooks.state.currentProjectId = "surface-project";
     installSurfaceFetch({
-      "/api/projects/surface-project/documents/prd/versions": jsonResponse([fixtures.documents.prd], 200),
+      "/api/projects/surface-project/documents/prd/versions": jsonResponse([{...fixtures.documents.prd, status: "draft", validation_status: "not_run", artifact_health: {health_status: "current"}}], 200),
       "/api/projects/surface-project/documents/prd/draft": jsonResponse(null, 404),
-      "/api/projects/surface-project/handoff/readiness": jsonResponse(fixtures.handoff_ready, 200),
+      "/api/projects/surface-project/handoff/readiness": jsonResponse(completeHandoffFixture(), 200),
     });
     await hooks.loadDocumentWorkspace("prd");
     assert.match(getElement("#document-editor").value, /方案：路径 B：人工复核队列/);

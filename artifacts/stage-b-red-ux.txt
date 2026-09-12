@@ -1,0 +1,15 @@
+PASS AI reference success has indicator and visible body
+PASS Action Card success exposes an actual complete card
+PASS solution success renders exactly three complete cards
+PASS document success shows a non-empty PRD body
+PASS handoff success references selected PRD and TechDoc
+PASS empty and malformed AI outputs remain non-success surfaces
+PASS provider failure exposes safe recovery copy
+FAIL duplicate solutions are rejected before three cards are shown: duplicate solution set must not render cards
+
+3 !== 0
+
+FAIL wrong-solution PRD is rejected instead of becoming the selected handoff: wrong-solution PRD does not show unsafe document content
+FAIL TechDoc scope drift is rejected instead of being shown as current: TechDoc scope drift does not show unsafe document content
+FAIL retry clears stale solution content before the request resolves: retry must not keep showing stale solution cards while loading
+SUMMARY total=11 passed=7 failed=4

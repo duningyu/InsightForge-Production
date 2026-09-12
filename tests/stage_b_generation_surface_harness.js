@@ -104,6 +104,27 @@ function setDocument(version) {
   hooks.renderDocumentWorkspace();
 }
 
+function assertDocumentSafetyContract(version, {validMarker, forbiddenMarker, label}) {
+  setDocument(version);
+  const editor = getElement("#document-editor");
+  const errorNode = getElement("#document-workspace-error");
+  const editorBody = editor.value;
+  const errorBody = errorNode.innerText.trim();
+  const validContinuation = editorBody.includes(validMarker) && !forbiddenMarker.test(editorBody);
+  const typedFailClosed = Boolean(
+    hooks.state.documentWorkspace.error
+      && typeof hooks.state.documentWorkspace.error.code === "string"
+      && hooks.state.documentWorkspace.error.code.trim()
+      && editor.disabled
+      && !errorNode.classList.contains("hidden")
+      && errorBody,
+  );
+
+  assert.doesNotMatch(editorBody, forbiddenMarker, `${label} does not show unsafe document content`);
+  assert.doesNotMatch(errorBody, forbiddenMarker, `${label} error does not echo unsafe document content`);
+  assert.ok(validContinuation || typedFailClosed, `${label} either preserves a valid continuation or returns a typed fail-closed result`);
+}
+
 async function main() {
   await runCase("AI reference success has indicator and visible body", () => {
     hooks.setTestAIReference(fixtures.ai_reference_complete);
@@ -163,29 +184,41 @@ async function main() {
   });
 
   await runCase("duplicate solutions are rejected before three cards are shown", () => {
+    const candidates = fixtures.duplicate_solutions.candidates;
+    assert.equal(candidates.length, 3, "duplicate fixture must contain exactly three candidates");
+    assert.notEqual(candidates[0].id, candidates[1].id, "near-identical candidates must have distinct identities");
+    assert.notEqual(candidates[0].title, candidates[1].title, "near-identical candidates must have distinct titles");
+    assert.deepEqual(candidates[0].user_flow, candidates[1].user_flow, "duplicate pair shares the same user flow");
+    assert.deepEqual(candidates[0].features, candidates[1].features, "duplicate pair shares the same feature set");
+    assert.notDeepEqual(candidates[0].user_flow, candidates[2].user_flow, "third candidate is materially distinct");
     hooks.state.solutions = fixtures.duplicate_solutions;
     hooks.renderSolutions();
     const body = visibleBody("#solutions-content");
-    assert.equal((body.match(/重复的解决路径/g) || []).length, 0, "duplicate solution cards must not be visible");
+    assert.equal((getElement("#solutions-content").innerHTML.match(/class=\"solution-card\"/g) || []).length, 0, "duplicate solution set must not render cards");
+    assert.doesNotMatch(body, /路径 A：规则检查台|路径 B：规则检查台增强版|班次提醒摘要/, "rejected duplicate candidates must not be visible");
+    assert.match(body, /没有方案|重新生成|没有生成可用|进一步收敛/, "duplicate rejection must leave an actionable safe state");
   });
 
   await runCase("wrong-solution PRD is rejected instead of becoming the selected handoff", () => {
     hooks.state.snapshot = fixtures.snapshot_selected_b;
-    setDocument(fixtures.documents.wrong_solution_prd);
-    const body = getElement("#document-editor").value;
-    assert.match(body, /路径 B：人工复核队列/);
-    assert.doesNotMatch(body, /路径 A：规则检查台/);
+    assertDocumentSafetyContract(fixtures.documents.wrong_solution_prd, {
+      validMarker: "方案：路径 B：人工复核队列",
+      forbiddenMarker: /路径 A：规则检查台|自动补货/,
+      label: "wrong-solution PRD",
+    });
   });
 
   await runCase("TechDoc scope drift is rejected instead of being shown as current", () => {
     hooks.state.snapshot = fixtures.snapshot_selected_b;
-    setDocument(fixtures.documents.techdoc_scope_drift);
-    const body = getElement("#document-editor").value;
-    assert.match(body, /定义队列字段|优先级队列/);
-    assert.doesNotMatch(body, /自动全量部署|自动补货/);
+    assertDocumentSafetyContract(fixtures.documents.techdoc_scope_drift, {
+      validMarker: "定义队列字段",
+      forbiddenMarker: /自动全量部署|自动补货/,
+      label: "TechDoc scope drift",
+    });
   });
 
   await runCase("retry clears stale solution content before the request resolves", async () => {
+    const originalFetch = global.fetch;
     let release;
     global.fetch = async (path, options = {}) => {
       if (options.method === "POST" && path.endsWith("/solutions/generate")) {
@@ -193,17 +226,23 @@ async function main() {
       }
       return {ok: true, status: 200, headers: {get: () => "application/json"}, json: async () => ({})};
     };
-    hooks.state.currentProjectId = "stale-project";
-    hooks.state.generationInFlight = null;
-    hooks.state.generationIntentId = null;
-    hooks.state.solutions = {candidates: [{id: "stale", title: "过时方案"}]};
-    hooks.renderSolutions();
-    const generation = hooks.generateSolutions({newIntent: true});
-    await Promise.resolve();
-    assert.equal(typeof release, "function", "fake POST must be pending so the pre-response state is observable");
-    assert.doesNotMatch(getElement("#solutions-content").innerText, /过时方案/, "retry must not keep showing stale solution cards while loading");
-    release();
-    await generation;
+    try {
+      hooks.state.currentProjectId = "stale-project";
+      hooks.state.generationInFlight = null;
+      hooks.state.generationIntentId = null;
+      hooks.state.generationTerminalFailure = true;
+      hooks.state.generationFailureCode = "PROVIDER_FAILURE";
+      hooks.state.solutions = {candidates: [{id: "stale", title: "过时方案"}]};
+      hooks.renderSolutions();
+      const generation = hooks.retryFailedGeneration();
+      await Promise.resolve();
+      assert.equal(typeof release, "function", "fake POST must be pending so the pre-response state is observable");
+      assert.doesNotMatch(getElement("#solutions-content").innerText, /过时方案/, "retry must not keep showing stale solution cards while loading");
+      release();
+      await generation;
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 
   const passed = results.filter((result) => result.status === "PASS").length;

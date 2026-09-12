@@ -44,10 +44,11 @@ class ProviderDispatchLedger:
                  historical_authorized_dispatches, historical_unresolved_intents, _now()),
             )
 
-    def acquire_permit(self, *, acceptance_execution_id: str, acceptance_window_id: str,
-                       beta_instance: str, provider: str, model: str,
-                       authorization_reference: str, quota_scope: str,
-                       ) -> str | None:
+    def acquire_permit(
+        self, *, acceptance_execution_id: str, acceptance_window_id: str,
+        beta_instance: str, provider: str, model: str,
+        authorization_reference: str, quota_scope: str,
+    ) -> str | None:
         permit_id = str(uuid.uuid4())
         try:
             with self.database.connect() as cx:

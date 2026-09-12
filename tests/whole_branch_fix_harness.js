@@ -34,6 +34,7 @@ const hooks = window.InsightForgeUi.__test;
 const evaluate = code => vm.runInThisContext(code);
 const fixtures = JSON.parse(fs.readFileSync("tests/fixtures/stage_b_generation_ux_cases.json", "utf8"));
 const cases = JSON.parse(fs.readFileSync("tests/fixtures/whole_branch_value_cases.json", "utf8"));
+cases.rejected.push(...Object.values(cases.rereview_rejected));
 const clone = value => JSON.parse(JSON.stringify(value));
 function adapter(name, value) { global.testValue = value; return evaluate(`${name}(global.testValue)`); }
 function workspace(content, docType = "prd") {
@@ -72,6 +73,12 @@ if (process.argv.includes("--document")) {
         assert.ok(!element("#ai-reference-content").textContent.includes(raw));
         assert.match(element("#ai-reference-content").textContent, /没有生成可用建议/);
       });
+      await check(`R1 document editor excludes marker ${index}`, () => {
+        hooks.state.documentWorkspace = workspace(`# 文档\n${raw}`);
+        hooks.renderDocumentWorkspace();
+        assert.equal(element("#document-editor").value, "");
+        assert.equal(element("#document-editor").disabled, true);
+      });
     }
     for (const prose of cases.ordinary) {
       await check("R1 ordinary prose preserved", () => {
@@ -79,6 +86,16 @@ if (process.argv.includes("--document")) {
         assert.equal(adapter("toAIReferenceViewModel", value).possible_target_users[0], prose);
         hooks.setTestAIReference(value);
         assert.ok(element("#ai-reference-content").textContent.includes(prose));
+      });
+      await check("R1 ordinary JSON/prose survives all other adapters", () => {
+        const guidance = clone(fixtures.action_card_complete); guidance.cards[0].title = prose;
+        assert.equal(adapter("toEvidenceGuidanceViewModel", guidance).cards[0].title, prose);
+        const solutions = clone(fixtures.solutions_complete); solutions.candidates[0].summary = prose;
+        assert.equal(adapter("toSolutionsViewModel", solutions).candidates[0].summary, prose);
+        hooks.state.documentWorkspace = workspace(prose);
+        assert.ok(adapter("toDocumentWorkspaceViewModel", hooks.state.documentWorkspace));
+        hooks.renderDocumentWorkspace();
+        assert.equal(element("#document-editor").value, prose);
       });
     }
     await check("R2 partial reference generate, persisted load, retry", async () => {
@@ -132,6 +149,33 @@ if (process.argv.includes("--document")) {
     await check("R4 non-goal heading cannot conceal a positive commitment", () => {
       assert.equal(adapter("toDocumentWorkspaceViewModel", workspace(`${baseContent}\n## 非目标 支持支付`)), null);
     });
+    for (const [label, narrative, accepted] of [
+      ["honest future exclusion", "本期不会支持支付。", true],
+      ["honest integration exclusion", "本期不集成支付。", true],
+      ["negative under non-goal heading", "## 非目标\n- 本期不会支持支付。\n- 本期不集成支付。", true],
+      ["positive completion under non-goal heading", "## 非目标\n- 支付功能将在本期完成。", false],
+      ["positive commitment in heading", "## 非目标 支付功能将在本期完成", false],
+      ["positive support control", "本期支持支付。", false],
+      ["negative followed by positive", "本期不集成支付，但支付功能将在本期完成。", false],
+      ["positive after negative in non-goals", "## 非目标\n- 本期不会支持支付。\n- 支付功能将在本期完成。", false],
+    ]) {
+      for (const source of ["version", "draft"]) {
+        await check(`F2 ${source}: ${label}`, () => {
+          const content = `${baseContent}\n${narrative}`;
+          const value = workspace(source === "version" ? content : baseContent);
+          if (source === "draft") value.draft = {content, base_version_id: "doc-b"};
+          assert.equal(Boolean(adapter("toDocumentWorkspaceViewModel", value)), accepted);
+        });
+        await check(`F2 ${source} editor: ${label}`, () => {
+          const content = `${baseContent}\n${narrative}`;
+          const value = workspace(source === "version" ? content : baseContent);
+          if (source === "draft") value.draft = {content, base_version_id: "doc-b"};
+          hooks.state.documentWorkspace = value; hooks.renderDocumentWorkspace();
+          assert.equal(element("#document-editor").value, accepted ? content : "");
+          assert.equal(element("#document-editor").disabled, !accepted);
+        });
+      }
+    }
     console.log(`SUMMARY passed=${passed} failed=${failed}`);
     if (failed) process.exitCode = 1;
   }

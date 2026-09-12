@@ -20,6 +20,7 @@ from surface_fixtures import complete_solution_payload
 from test_stage_b_output_contract import _card
 
 CASES = json.loads((Path(__file__).parent / "fixtures/whole_branch_value_cases.json").read_text(encoding="utf-8"))
+CASES["rejected"] += list(CASES["rereview_rejected"].values())
 PROJECT = "project_insightforge_demo"
 
 

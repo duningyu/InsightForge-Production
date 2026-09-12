@@ -11,10 +11,19 @@
     "ValidationError: synthetic private input",
     "{\"messages\":[{\"role\":\"system\",\"content\":\"SYNTHETIC_PRIVATE\"}]}"
   ],
+  "rereview_rejected": {
+    "json_authorization": "{\"Authorization\": \"Bearer SYNTHETIC_REREVIEW_TOKEN\"}",
+    "provider_raw": "{\"provider_raw\": \"SYNTHETIC_REREVIEW_PRIVATE\"}",
+    "message_envelope": "{\"id\": \"msg_fake\", \"type\": \"message\", \"role\": \"assistant\", \"content\": [{\"type\": \"text\", \"text\": \"SYNTHETIC_REREVIEW_PRIVATE\"}], \"stop_reason\": \"end_turn\", \"usage\": {\"input_tokens\": 1, \"output_tokens\": 1}}"
+  },
   "ordinary": [
     "让用户比较不同 choices，并说明选择理由。",
     "The provider supports JSON imports and debug tools for developers.",
     "记录 API key 的配置状态，不收集密钥。",
-    "支持 JSON 示例：{\"quantity\":3}，并显示校验提示。"
+    "支持 JSON 示例：{\"quantity\":3}，并显示校验提示。",
+    "{\"type\":\"message\",\"content\":\"欢迎使用\"}",
+    "{\"role\":\"assistant\",\"content\":\"帮助用户编辑文档\"}",
+    "{\"Authorization\":\"由管理员配置\"}",
+    "文档介绍 provider_raw 字段与 message envelope 的用途。"
   ]
 }

@@ -70,9 +70,11 @@ def _plain(value: Any) -> Any:
 
 _RAW_GENERATION_MARKERS = re.compile(
     r"\b(?:choices|messages)\b[\"']?\s*:\s*[\[{]"
-    r"|\b(?:provider[_ -]?(?:payload|response)|raw[_ -]?(?:response|output|payload)|"
+    r"|\b(?:provider[_ -]?(?:payload|response|raw)|raw[_ -]?(?:response|output|payload)|"
     r"debug[_ -]?(?:prompt|payload|trace)|system[_ -]?prompt|api[_ -]?key)\b[\"']?\s*[:=]"
-    r"|\bAuthorization\s*:\s*Bearer\s+\S+"
+    r"|\bAuthorization[\"']?\s*:\s*[\"']?Bearer\s+\S+"
+    r"|\{(?=[^{}]*[\"']type[\"']\s*:\s*[\"']message[\"'])"
+    r"(?=[^{}]*[\"']role[\"']\s*:\s*[\"']assistant[\"'])"
     r"|Traceback\s*\(most recent call last\)"
     r"|\bValidationError\s*:",
     re.IGNORECASE,

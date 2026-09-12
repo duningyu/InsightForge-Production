@@ -465,7 +465,7 @@ function isPlainRecord(value) {
 
 // Keep marker semantics aligned with generation_contracts; ordinary JSON/prose
 // remains valid. Projection alone cannot stop a dump inside an allowed string.
-const RAW_GENERATION_MARKERS = /\b(?:choices|messages)\b["']?\s*:\s*[\[{]|\b(?:provider[_ -]?(?:payload|response)|raw[_ -]?(?:response|output|payload)|debug[_ -]?(?:prompt|payload|trace)|system[_ -]?prompt|api[_ -]?key)\b["']?\s*[:=]|\bAuthorization\s*:\s*Bearer\s+\S+|Traceback\s*\(most recent call last\)|\bValidationError\s*:/i;
+const RAW_GENERATION_MARKERS = /\b(?:choices|messages)\b["']?\s*:\s*[\[{]|\b(?:provider[_ -]?(?:payload|response|raw)|raw[_ -]?(?:response|output|payload)|debug[_ -]?(?:prompt|payload|trace)|system[_ -]?prompt|api[_ -]?key)\b["']?\s*[:=]|\bAuthorization["']?\s*:\s*["']?Bearer\s+\S+|\{(?=[^{}]*["']type["']\s*:\s*["']message["'])(?=[^{}]*["']role["']\s*:\s*["']assistant["'])|Traceback\s*\(most recent call last\)|\bValidationError\s*:/i;
 
 function hasRawGenerationValue(value) {
   if (typeof value === "string") return RAW_GENERATION_MARKERS.test(value);
@@ -670,26 +670,27 @@ function snapshotNonGoalTerms(snapshot) {
 
 function documentAddsNonGoal(content, terms) {
   // A bounded prose check, not semantic proof. Scope exclusions apply only to
-  // their clause/section; a later positive commitment must still be rejected.
+  // their clause; a non-goal section permits bare excluded items, not promises.
   let exclusionSection = false;
   const positive = /支持|实现|增加|加入|提供|引入|开发|集成|上线|implement|support|add|build|include/i;
   for (const line of content.split(/\r?\n/)) {
     const heading = line.match(/^\s*#{1,6}\s+(.+)$/);
     if (heading) {
       exclusionSection = /^(?:\d+[.、]\s*)?(?:非目标|明确不做|不做范围|non[- ]goals|out of scope)(?:\s|[：:]|$)/i.test(heading[1]);
-      if (exclusionSection && !positive.test(heading[1])) continue;
     }
     const clauses = line.split(/[。！？!?；;，,]|\b(?:but|however)\b|但是|但|(?:并且|并|同时)(?=支持|实现|增加|加入|提供|引入|开发|集成|上线)/i);
     for (const clause of clauses) {
+      const listedTerms = clause.replace(/^\s*(?:[-*+]|\d+[.)、])\s*/, "").trim().split(/、|以及|和|\s+and\s+/i);
+      const bareExclusion = exclusionSection && listedTerms.every((item) => terms.includes(item.trim()));
       for (const term of terms) {
         let offset = clause.indexOf(term);
         while (offset !== -1) {
           const before = clause.slice(0, offset);
           const after = clause.slice(offset + term.length);
-          const negated = /(?:不做|不包含|暂不支持|不支持|不提供|不增加|不引入|不会实现|禁止|不得|will not implement|not include|not support)\s*([^：:]*)$/i.exec(before);
+          const negated = /(?:不做|不包含|暂不支持|不会支持|不支持|不集成|不提供|不增加|不引入|不会实现|禁止|不得|will not implement|not include|not support)\s*([^：:]*)$/i.exec(before);
           const excluded = negated && !positive.test(negated[1]);
           const excludedAfter = /^\s*(?:不在本期范围内|不在范围内|不属于本期范围|is out of scope)/i.test(after);
-          if (!excluded && !excludedAfter && !(exclusionSection && !positive.test(clause))) return true;
+          if (!excluded && !excludedAfter && !bareExclusion) return true;
           offset = clause.indexOf(term, offset + term.length);
         }
       }

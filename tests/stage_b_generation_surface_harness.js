@@ -331,9 +331,9 @@ function parseCssRules(source) {
 }
 
 const cssRules = parseCssRules(styles);
-function cssValue(selector, property, cssWidth) {
+function cssValue(selector, property, cssWidth, rules = cssRules) {
   let value = null;
-  for (const rule of cssRules) {
+  for (const rule of rules) {
     if (rule.selector !== selector) continue;
     if (rule.media.max !== null && cssWidth > rule.media.max) continue;
     if (rule.media.min !== null && cssWidth < rule.media.min) continue;
@@ -347,6 +347,51 @@ function gridColumnCount(template) {
   const repeat = template.match(/^repeat\((\d+),/);
   if (repeat) return Number(repeat[1]);
   return template.startsWith("1fr") ? 1 : 2;
+}
+
+function splitCssTokens(value) {
+  const tokens = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < String(value || "").length; index += 1) {
+    const character = String(value)[index];
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (/\s/.test(character) && depth === 0) {
+      if (index > start) tokens.push(String(value).slice(start, index));
+      start = index + 1;
+    }
+  }
+  if (start < String(value || "").length) tokens.push(String(value).slice(start));
+  return tokens.filter(Boolean);
+}
+
+function gridTrackDefinitions(template) {
+  if (!template) return ["1fr"];
+  const repeat = String(template).match(/^repeat\((\d+),\s*(.+)\)$/);
+  if (repeat) return Array.from({length: Number(repeat[1])}, () => repeat[2].trim());
+  return splitCssTokens(template);
+}
+
+function gridTrack(track) {
+  const minmax = String(track).match(/^minmax\(\s*(\d+(?:\.\d+)?)(?:px)?\s*,\s*(\d+(?:\.\d+)?)fr\s*\)$/);
+  if (minmax) return {min: Number(minmax[1]), fr: Number(minmax[2])};
+  const fraction = String(track).match(/^(\d+(?:\.\d+)?)fr$/);
+  if (fraction) return {min: 0, fr: Number(fraction[1])};
+  const pixels = String(track).match(/^(\d+(?:\.\d+)?)px$/);
+  if (pixels) return {min: Number(pixels[1]), fixed: Number(pixels[1]), fr: 0};
+  return {min: 0, fr: 1};
+}
+
+function gridTrackWidths(template, containerWidth, gap = 0) {
+  const tracks = gridTrackDefinitions(template).map(gridTrack);
+  const available = Math.max(0, containerWidth - Math.max(0, tracks.length - 1) * gap);
+  const minimum = tracks.reduce((sum, track) => sum + track.min, 0);
+  const free = Math.max(0, available - minimum);
+  const totalFr = tracks.reduce((sum, track) => sum + (track.fixed === undefined ? track.fr : 0), 0);
+  return tracks.map((track) => track.fixed === undefined
+    ? track.min + (totalFr ? free * track.fr / totalFr : 0)
+    : track.fixed);
 }
 
 function cssPixels(value, fallback = 0) {
@@ -366,28 +411,36 @@ function measuredBox(className, width, {intrinsicWidth = width, overflowX = "hid
   return node;
 }
 
-function measureResponsiveFixture(fixture) {
+function measureResponsiveFixture(fixture, styleSource = styles) {
+  const rules = styleSource === styles ? cssRules : parseCssRules(styleSource);
+  const value = (selector, property) => cssValue(selector, property, fixture.cssWidth, rules);
   const width = Math.min(1180, fixture.cssWidth);
-  const gap = cssPixels(cssValue(".solution-grid", "gap", fixture.cssWidth), 14);
+  const gap = cssPixels(value(".solution-grid", "gap"), 14);
   const surface = (className, options = {}) => measuredBox(className, width, {...options, label: options.label || className});
-  const solutionColumns = gridColumnCount(cssValue(".solution-grid", "grid-template-columns", fixture.cssWidth));
+  const solutionColumns = gridColumnCount(value(".solution-grid", "grid-template-columns"));
   const solutionGrid = surface("solution-grid", {intrinsicWidth: solutionColumns * 240 + (solutionColumns - 1) * gap, height: 260, label: "solution cards"});
   for (let index = 0; index < solutionColumns; index += 1) {
     solutionGrid.append(measuredBox("solution-card", (width - (solutionColumns - 1) * gap) / solutionColumns, {intrinsicWidth: 220, height: 220, label: `solution card ${index + 1}`}));
   }
 
   const referenceItem = surface("ai-reference-item", {height: 220, label: "AI reference"});
-  const controlTemplate = cssValue(".ai-reference-item-controls", "grid-template-columns", fixture.cssWidth);
-  const controlColumns = gridColumnCount(controlTemplate);
-  const controlWidth = controlColumns === 1 ? width : (width - gap) / 2;
+  const controlTemplate = value(".ai-reference-item-controls", "grid-template-columns");
+  const controlGap = cssPixels(value(".ai-reference-item-controls", "gap"), 10);
+  const controlWidths = gridTrackWidths(controlTemplate, width, controlGap);
+  const controlColumns = controlWidths.length;
+  const controlMinWidths = [
+    cssPixels(value(".ai-reference-item-controls select", "min-width")),
+    cssPixels(value(".ai-reference-item-explanation", "min-width")),
+  ];
+  const measuredControlWidths = controlWidths.map((trackWidth, index) => Math.max(trackWidth, controlMinWidths[index] || 0));
   const controls = measuredBox("ai-reference-item-controls", width, {
-    intrinsicWidth: controlColumns === 1 ? 220 : 180 + 220 + gap,
+    intrinsicWidth: measuredControlWidths.reduce((sum, childWidth) => sum + childWidth, 0) + Math.max(0, controlColumns - 1) * controlGap,
     height: 64,
     label: "AI reference controls",
   });
   for (let index = 0; index < controlColumns; index += 1) {
-    controls.append(measuredBox(index === 0 ? "ai-reference-decision" : "ai-reference-explanation", controlWidth, {
-      intrinsicWidth: index === 0 ? 180 : 220,
+    controls.append(measuredBox(index === 0 ? "ai-reference-decision" : "ai-reference-explanation", measuredControlWidths[index], {
+      intrinsicWidth: Math.max(index === 0 ? 180 : 220, controlMinWidths[index] || 0),
       height: 48,
       label: `AI reference control ${index + 1}`,
     }));
@@ -397,11 +450,11 @@ function measureResponsiveFixture(fixture) {
   const actionCard = surface("evidence-coach-card", {intrinsicWidth: width, height: 360, label: "Action Cards"});
   actionCard.append(measuredBox("evidence-coach-block", width, {intrinsicWidth: 320, height: 80, label: "Action Card body"}));
 
-  const progressWrap = cssValue(".generation-progress-actions", "flex-wrap", fixture.cssWidth);
+  const progressWrap = value(".generation-progress-actions", "flex-wrap");
   const progress = surface("generation-progress-actions", {intrinsicWidth: progressWrap === "wrap" ? width : 600, height: 64, label: "generation progress"});
   progress.append(measuredBox("generation-progress-action", 180, {height: 40, label: "generation progress action"}));
 
-  const documentTemplate = cssValue(".document-editor-grid", "grid-template-columns", fixture.cssWidth);
+  const documentTemplate = value(".document-editor-grid", "grid-template-columns");
   const documentColumns = gridColumnCount(documentTemplate);
   const documentGrid = surface("document-editor-grid", {height: 520, label: "PRD and TechDoc"});
   const documentWidths = documentColumns === 1
@@ -412,7 +465,7 @@ function measureResponsiveFixture(fixture) {
   documentWidths.forEach((columnWidth, index) => documentGrid.append(measuredBox(index === 0 ? "document-editor-main" : "document-version-panel", columnWidth, {intrinsicWidth: index === 0 ? 360 : 220, height: 500, label: index === 0 ? "PRD/TechDoc editor" : "document versions"})));
 
   const handoff = surface("handoff-section", {intrinsicWidth: width, height: 180, label: "Handoff"});
-  const handoffActionsWrap = cssValue(".handoff-actions", "flex-wrap", fixture.cssWidth);
+  const handoffActionsWrap = value(".handoff-actions", "flex-wrap");
   handoff.append(measuredBox("handoff-actions", width, {intrinsicWidth: handoffActionsWrap === "wrap" ? width : 620, height: 56, label: "Handoff actions"}));
   return {width, surfaces: [solutionGrid, referenceItem, actionCard, progress, documentGrid, handoff]};
 }
@@ -463,6 +516,21 @@ async function main() {
       assert.equal(cssValue(".generation-progress-actions", "flex-wrap", fixture.cssWidth), "wrap", `${fixture.viewport}px at ${fixture.zoom * 100}% keeps generation actions explicitly wrap-safe`);
       assert.equal(cssValue(".handoff-actions", "flex-wrap", fixture.cssWidth), "wrap", `${fixture.viewport}px at ${fixture.zoom * 100}% keeps Handoff actions explicitly wrap-safe`);
     }
+  });
+
+  await runCase("in-memory min-width mutation is rejected by measured geometry", () => {
+    const mutatedStyles = styles.replace(
+      ".ai-reference-item-controls select, .ai-reference-item-explanation { width: 100%; min-width: 0; }",
+      ".ai-reference-item-controls select, .ai-reference-item-explanation { width: 100%; min-width: 1000px; }",
+    );
+    assert.notEqual(mutatedStyles, styles, "the regression mutation must change the in-memory stylesheet");
+    const measured = measureResponsiveFixture({viewport: 1440, zoom: 1, cssWidth: 1440}, mutatedStyles);
+    const reference = measured.surfaces.find((surface) => surface.dataset.layoutLabel === "AI reference");
+    assert.throws(
+      () => assertMeasuredSurface(reference),
+      /horizontal overflow|not clipped/,
+      "the geometry harness must reject the widened AI reference control",
+    );
   });
 
   await runCase("AI reference success has indicator and visible body", () => {

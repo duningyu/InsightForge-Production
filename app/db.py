@@ -863,6 +863,7 @@ CREATE TABLE IF NOT EXISTS provider_dispatch_epochs (
 CREATE TABLE IF NOT EXISTS provider_dispatch_permits (
     permit_id TEXT PRIMARY KEY,
     acceptance_execution_id TEXT NOT NULL,
+    evaluation_id TEXT,
     acceptance_window_id TEXT NOT NULL,
     beta_instance TEXT NOT NULL,
     provider TEXT NOT NULL,
@@ -914,6 +915,8 @@ CREATE TABLE IF NOT EXISTS stage_b_evaluation_receipts (
     decode_status TEXT,
     schema_validation TEXT,
     application_postprocess TEXT,
+    output_contract_attempted INTEGER NOT NULL DEFAULT 0,
+    failure_stage TEXT,
     failure_classification TEXT,
     failure_reason TEXT,
     latency_ms REAL,
@@ -1041,6 +1044,9 @@ class Database:
 
     @classmethod
     def _migrate_schema(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "provider_dispatch_permits", "evaluation_id", "TEXT")
+        cls._ensure_column(connection, "stage_b_evaluation_receipts", "output_contract_attempted", "INTEGER NOT NULL DEFAULT 0")
+        cls._ensure_column(connection, "stage_b_evaluation_receipts", "failure_stage", "TEXT")
         cls._ensure_column(connection, "document_edit_drafts", "revision", "INTEGER NOT NULL DEFAULT 1")
         async_dispatch_columns = {
             "cancel_requested_at": "TEXT",

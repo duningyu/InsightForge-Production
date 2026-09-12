@@ -96,6 +96,14 @@ def classify_provider_failure(error: Exception) -> str:
     return "UNKNOWN"
 
 
+def classify_failure_stage(classification: str) -> str:
+    if classification in {"AUTH", "RATE_LIMIT", "TIMEOUT", "PROVIDER_4XX", "PROVIDER_5XX", "NETWORK"}:
+        return "PROVIDER_TRANSPORT"
+    if classification == "INVALID_RESPONSE":
+        return "OUTPUT_NORMALIZATION"
+    return "APPLICATION"
+
+
 def _sha256(value: Any) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -297,6 +305,8 @@ class StageBEvaluationReceiptStore:
             decode_status="PASS",
             schema_validation=schema_validation,
             application_postprocess=application_postprocess,
+            output_contract_attempted=True,
+            failure_stage=None,
             failure_classification=None,
             failure_reason=None,
             response_timestamp=response_timestamp,
@@ -315,6 +325,7 @@ class StageBEvaluationReceiptStore:
         started_at: float,
         response_timestamp: float,
     ) -> None:
+        classification = classify_provider_failure(error)
         self._update_result(
             evaluation_id,
             status="FAILED",
@@ -322,7 +333,9 @@ class StageBEvaluationReceiptStore:
             decode_status="NOT_APPLICABLE",
             schema_validation="NOT_APPLICABLE",
             application_postprocess="NOT_APPLICABLE",
-            failure_classification=classify_provider_failure(error),
+            output_contract_attempted=False,
+            failure_stage=classify_failure_stage(classification),
+            failure_classification=classification,
             failure_reason=str(error)[:240],
             response_timestamp=response_timestamp,
             started_at=started_at,
@@ -393,7 +406,8 @@ class StageBEvaluationReceiptStore:
 
     def _update_result(self, evaluation_id: str, *, status: str, response_non_empty: bool,
                        decode_status: str, schema_validation: str,
-                       application_postprocess: str, failure_classification: str | None,
+                       application_postprocess: str, output_contract_attempted: bool = False,
+                       failure_stage: str | None = None, failure_classification: str | None,
                        failure_reason: str | None, response_timestamp: float,
                        started_at: float, response_sha256: str | None,
                        input_token_count: int | None, output_token_count: int | None,
@@ -403,13 +417,15 @@ class StageBEvaluationReceiptStore:
                 """
                 UPDATE stage_b_evaluation_receipts
                 SET status=?, response_non_empty=?, decode_status=?, schema_validation=?,
-                    application_postprocess=?, failure_classification=?, failure_reason=?,
+                    application_postprocess=?, output_contract_attempted=?, failure_stage=?,
+                    failure_classification=?, failure_reason=?,
                     transport_completed_at=?, latency_ms=?, response_sha256=?,
                     input_token_count=?, output_token_count=?, total_token_count=?
                 WHERE evaluation_id=?
                 """,
                 (status, int(response_non_empty), decode_status, schema_validation,
-                 application_postprocess, failure_classification, failure_reason,
+                 application_postprocess, int(output_contract_attempted), failure_stage,
+                 failure_classification, failure_reason,
                  datetime.fromtimestamp(response_timestamp, timezone.utc).isoformat(),
                  round((response_timestamp - started_at) * 1000, 3), response_sha256,
                  input_token_count, output_token_count, total_token_count, evaluation_id),
@@ -515,6 +531,8 @@ class StageBExecutionHarness:
                 budget_before=self.max_transports - self.transport_count,
                 prompt=prompt,
             )
+            if dispatch_permit_id and self.dispatch_ledger is not None:
+                self.dispatch_ledger.link_permit_to_evaluation(dispatch_permit_id, evaluation_id)
             self.receipt_store.mark_dispatch_prepared(
                 evaluation_id, permit_id=dispatch_permit_id
             )

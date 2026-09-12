@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 const fixtures = JSON.parse(fs.readFileSync("tests/fixtures/stage_b_generation_ux_cases.json", "utf8"));
+let domReadyHandler;
 
 class ClassList {
   constructor() { this.values = new Set(); }
@@ -41,14 +42,25 @@ class Element {
   get innerText() { return this.textContent; }
   append(...nodes) { this._innerHTML = ""; nodes.forEach((node) => { if (node && typeof node === "object") this.children.push(node); }); }
   replaceChildren(...nodes) { this._innerHTML = ""; this._textContent = ""; this.children = []; this.append(...nodes); }
-  addEventListener(name, callback) { this.listeners.set(name, callback); }
+  addEventListener(name, callback) {
+    const callbacks = this.listeners.get(name) || [];
+    callbacks.push(callback);
+    this.listeners.set(name, callbacks);
+  }
+  dispatchEvent(event = {}) {
+    const type = typeof event === "string" ? event : event.type;
+    const payload = typeof event === "string" ? {type, target: this} : {...event, target: event.target || this};
+    for (const callback of this.listeners.get(type) || []) callback(payload);
+    return true;
+  }
+  click() { return this.dispatchEvent({type: "click"}); }
   setAttribute(name, value) { this[name] = String(value); }
   removeAttribute(name) { delete this[name]; }
   querySelectorAll() { return []; }
   querySelector() { return null; }
   focus() {}
   showModal() { this.open = true; }
-  close() { this.open = false; this.listeners.get("close")?.(); }
+  close() { this.open = false; for (const callback of this.listeners.get("close") || []) callback({type: "close", target: this}); }
   get outerHTML() { return `<${this.tagName.toLowerCase()}>${this.innerHTML}</${this.tagName.toLowerCase()}>`; }
 }
 
@@ -61,10 +73,12 @@ global.document = {
   body: new Element("body"),
   querySelector: getElement,
   querySelectorAll: () => [],
-  addEventListener() {},
+  getElementById: (id) => getElement(`#${id}`),
+  addEventListener(name, callback) { if (name === "DOMContentLoaded") domReadyHandler = callback; },
   createElement: (tagName) => new Element(tagName),
 };
-global.window = {__INSIGHTFORGE_TEST__: true, ModelSettings: undefined};
+global.window = {__INSIGHTFORGE_TEST__: true, ModelSettings: undefined, addEventListener() {}};
+global.CSS = {escape: (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&")};
 global.setTimeout = () => 0;
 global.clearTimeout = () => {};
 global.fetch = async () => ({ok: true, status: 200, headers: {get: () => "application/json"}, json: async () => ({})});
@@ -103,6 +117,59 @@ function setDocument(version) {
     error: null,
   };
   hooks.renderDocumentWorkspace();
+}
+
+function jsonResponse(payload, status = 200) {
+  return {ok: status >= 200 && status < 300, status, statusText: status >= 200 && status < 300 ? "OK" : "Not Found", headers: {get: () => "application/json"}, json: async () => payload};
+}
+
+function deferredResponse(payload, status = 200) {
+  let settle;
+  const pending = new Promise((resolve) => { settle = resolve; });
+  return {
+    requested: false,
+    promise: pending,
+    resolve() { settle(jsonResponse(payload, status)); },
+  };
+}
+
+function installSurfaceFetch(routes = {}) {
+  global.fetch = async (path, options = {}) => {
+    const route = routes[`${options.method || "GET"} ${path}`] || routes[path];
+    if (route) {
+      if (route.promise) { route.requested = true; return route.promise; }
+      return route;
+    }
+    if (path.includes("/search") || path.includes("/provider")) throw new Error(`forbidden external route ${path}`);
+    if (path.endsWith("/next-action")) return jsonResponse({}, 200);
+    if (path.includes("/drafts/") || path.endsWith("/draft")) return jsonResponse(null, 404);
+    return jsonResponse({}, 200);
+  };
+}
+
+async function flushSurfacePromises() {
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+let surfaceBootstrapPromise;
+async function driveRealSurfaceBootstrap() {
+  if (surfaceBootstrapPromise) return surfaceBootstrapPromise;
+  installSurfaceFetch({
+    "/api/beta/consent": jsonResponse({beta_mode: false, consented: true, consent_version: 1}),
+    "/api/health": jsonResponse({runtime_mode: "deterministic_demo"}),
+    "/api/settings/mode": jsonResponse({managed_beta_mode: false}),
+    "/api/usage/policy": jsonResponse({daily_user_limits_enabled: false}),
+    "/api/projects": jsonResponse([], 200),
+    "/api/examples": jsonResponse([], 200),
+    "/api/history": jsonResponse({items: [], pages: 1, total: 0}, 200),
+    "/api/home/next-action": jsonResponse({}, 200),
+    "/api/auth/me": jsonResponse({id: "surface-test-account"}, 200),
+  });
+  surfaceBootstrapPromise = domReadyHandler();
+  await flushSurfacePromises();
+  return surfaceBootstrapPromise;
 }
 
 function assertDocumentSafetyContract(version, {validMarker, forbiddenMarker, label}) {
@@ -262,32 +329,88 @@ async function main() {
     });
   });
 
-  await runCase("retry clears stale solution content before the request resolves", async () => {
-    const originalFetch = global.fetch;
-    let release;
-    global.fetch = async (path, options = {}) => {
-      if (options.method === "POST" && path.endsWith("/solutions/generate")) {
-        return new Promise((resolve) => { release = () => resolve({ok: true, status: 200, headers: {get: () => "application/json"}, json: async () => fixtures.solutions_complete}); });
-      }
-      return {ok: true, status: 200, headers: {get: () => "application/json"}, json: async () => ({})};
-    };
-    try {
-      hooks.state.currentProjectId = "stale-project";
-      hooks.state.generationInFlight = null;
-      hooks.state.generationIntentId = null;
-      hooks.state.generationTerminalFailure = true;
-      hooks.state.generationFailureCode = "PROVIDER_FAILURE";
-      hooks.state.solutions = {candidates: [{id: "stale", title: "过时方案"}]};
-      hooks.renderSolutions();
-      const generation = hooks.retryFailedGeneration();
-      await Promise.resolve();
-      assert.equal(typeof release, "function", "fake POST must be pending so the pre-response state is observable");
-      assert.doesNotMatch(getElement("#solutions-content").innerText, /过时方案/, "retry must not keep showing stale solution cards while loading");
-      release();
-      await generation;
-    } finally {
-      global.fetch = originalFetch;
-    }
+  await runCase("real AI reference generation renders the mocked API result", async () => {
+    assert.equal(typeof domReadyHandler, "function", "the harness must retain the real DOMContentLoaded surface wiring");
+    await driveRealSurfaceBootstrap();
+    hooks.state.currentProjectId = "surface-project";
+    const response = deferredResponse({id: "reference-1", result: fixtures.ai_reference_complete});
+    installSurfaceFetch({
+      "POST /api/projects/surface-project/ai-reference": response,
+    });
+    await vm.runInThisContext("loadAIReference()", {filename: "app.js"});
+    getElement("#ai-reference-generate").click();
+    assert.equal(response.requested, true, "the real AI reference click handler must issue the mocked POST");
+    response.resolve();
+    await flushSurfacePromises();
+    const body = visibleBody("#ai-reference-content");
+    assert.match(body, /门店运营人员/);
+    assert.match(body, /AI生成参考/);
+  });
+
+  await runCase("real Evidence Action Card generation renders every required field", async () => {
+    assert.equal(typeof domReadyHandler, "function", "the real DOMContentLoaded surface wiring is required");
+    hooks.state.currentProjectId = "surface-project";
+    installSurfaceFetch({
+      "/api/projects/surface-project/evidence-guidance": jsonResponse({id: "guidance-1", result: fixtures.action_card_complete}, 201),
+    });
+    hooks.selectEvidenceEntry("action_guidance");
+    getElement("#evidence-guidance-generate").click();
+    await flushSurfacePromises();
+    const body = visibleBody("#evidence-guidance-content");
+    for (const label of ["要确认什么", "找谁 / 去哪里", "具体怎么做", "拿到什么就可以填写", "填写模板", "会影响哪个产品决定", "暂时拿不到怎么办", "这条材料的局限"]) assert.match(body, new RegExp(label.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&")));
+    assert.match(body, /最近一次缺货处理经历/);
+  });
+
+  await runCase("real solution generation renders exactly three visible cards", async () => {
+    hooks.state.currentProjectId = "surface-project";
+    hooks.state.ideaBrief = {confirmation_status: "confirmed"};
+    hooks.state.solutions = null;
+    installSurfaceFetch({
+      "/api/projects/surface-project/solutions/generate": jsonResponse(fixtures.solutions_complete, 200),
+    });
+    hooks.renderSolutions();
+    getElement("#generate-solutions-button").click();
+    await flushSurfacePromises();
+    const body = visibleBody("#solutions-content");
+    assert.equal((getElement("#solutions-content").innerHTML.match(/class=\"solution-card\"/g) || []).length, 3);
+    for (const title of fixtures.solutions_complete.candidates.map((candidate) => candidate.title)) assert.match(body, new RegExp(title));
+  });
+
+  await runCase("real document and handoff loaders preserve selected references", async () => {
+    hooks.state.currentProjectId = "surface-project";
+    installSurfaceFetch({
+      "/api/projects/surface-project/documents/prd/versions": jsonResponse([fixtures.documents.prd], 200),
+      "/api/projects/surface-project/documents/prd/draft": jsonResponse(null, 404),
+      "/api/projects/surface-project/handoff/readiness": jsonResponse(fixtures.handoff_ready, 200),
+    });
+    await hooks.loadDocumentWorkspace("prd");
+    assert.match(getElement("#document-editor").value, /方案：路径 B：人工复核队列/);
+    await vm.runInThisContext("loadHandoff()", {filename: "app.js"});
+    const body = visibleBody("#handoff-content");
+    assert.match(body, /PRD：已确认 v1/);
+    assert.match(body, /TechDoc：已确认 v1/);
+  });
+
+  await runCase("real retry click clears stale content before the mocked response resolves", async () => {
+    hooks.state.currentProjectId = "surface-project";
+    hooks.state.generationInFlight = null;
+    hooks.state.generationIntentId = null;
+    hooks.state.generationTerminalFailure = true;
+    hooks.state.generationFailureCode = "PROVIDER_FAILURE";
+    hooks.state.solutions = {candidates: [{id: "stale", title: "过时方案"}]};
+    hooks.renderSolutions();
+    hooks.state.activeGeneration = {status: "FAILED", projectId: "surface-project", runId: "failed-run"};
+    hooks.renderGenerationProgress();
+    const response = deferredResponse(fixtures.solutions_complete);
+    installSurfaceFetch({
+      "/api/projects/surface-project/solutions/generate": response,
+    });
+    getElement("#generation-progress-retry").click();
+    await flushSurfacePromises();
+    assert.equal(response.requested, true, "the real retry click must issue a new generation POST");
+    assert.doesNotMatch(getElement("#solutions-content").innerText, /过时方案/);
+    response.resolve();
+    await flushSurfacePromises();
   });
 
   const passed = results.filter((result) => result.status === "PASS").length;

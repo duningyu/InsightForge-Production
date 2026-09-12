@@ -202,7 +202,7 @@ class ModelAdapter:
         return self._generate(
             output_model=SolutionSetDraft,
             system=(
-                "Generate 2-3 materially different solutions. Return only JSON matching the requested schema. "
+                "Generate exactly 3 materially different solutions. Return only JSON matching the requested schema. "
                 "Do not make unsupported market claims."
             ),
             user=brief.model_dump_json(),
@@ -856,7 +856,7 @@ class AsyncModelAdapter(ModelAdapter):
     async def design_solutions_async(self, brief: IdeaBriefDraft) -> SolutionSetDraft:
         return await self._generate_async(
             output_model=SolutionSetDraft,
-            system="Generate 2-3 materially different solutions. Return only JSON matching the requested schema. Do not make unsupported market claims.",
+            system="Generate exactly 3 materially different solutions. Return only JSON matching the requested schema. Do not make unsupported market claims.",
             user=brief.model_dump_json(),
         )
 

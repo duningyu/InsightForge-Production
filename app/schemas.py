@@ -485,7 +485,7 @@ class SolutionCandidateDraft(StrictModel):
 
 
 class SolutionSetDraft(StrictModel):
-    candidates: list[SolutionCandidateDraft] = Field(min_length=2, max_length=3)
+    candidates: list[SolutionCandidateDraft] = Field(min_length=3, max_length=3)
     recommendation_candidate_id: str | None = None
     recommendation_rationale: str = ""
     llm_core_required: bool = False

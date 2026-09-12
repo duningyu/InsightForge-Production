@@ -111,7 +111,14 @@ def _solution_payload() -> dict[str, object]:
         "core_decision_logic": "logic", "major_dependency": "none",
         "requires_llm_runtime": False, "requires_rag_runtime": False, "requires_agent_runtime": False,
     }
-    return {"candidates": [{**item, "title": "Rules"}, {**item, "title": "Workflow"}], "llm_core_required": False}
+    return {
+        "candidates": [
+            {**item, "title": "Rules"},
+            {**item, "title": "Workflow"},
+            {**item, "title": "Prediction"},
+        ],
+        "llm_core_required": False,
+    }
 
 
 def _evidence_payload() -> dict[str, object]:

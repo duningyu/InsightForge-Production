@@ -156,7 +156,7 @@ def test_deterministic_runtime_uses_frozen_case_and_preserves_hypothesis_provena
     assert brief.clarification_required is False
     assert brief.provenance["problem"] == "model_hypothesis"
     solutions = runtime.design_solutions(brief)
-    assert 2 <= len(solutions.candidates) <= 3
+    assert len(solutions.candidates) == 3
     mechanisms = {item.mechanism for item in solutions.candidates}
     assert "rule_based" in mechanisms
     assert {"prediction_based", "human_in_the_loop"} & mechanisms

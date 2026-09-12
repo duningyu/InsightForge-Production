@@ -153,9 +153,9 @@ class DeterministicDemoRuntime:
                 "CLARIFICATION_REQUIRED: confirm or refine IdeaBrief before solution design"
             )
         solutions = case.get("solutions") or []
-        if len(solutions) < 2:
+        if len(solutions) != 3:
             raise StructuredRuntimeUnavailableError(
-                "DETERMINISTIC_DEMO_UNSUPPORTED: frozen case has no complete solution set"
+                "DETERMINISTIC_DEMO_UNSUPPORTED: frozen case does not contain exactly three complete solutions"
             )
         return SolutionSetDraft(candidates=solutions, llm_core_required=False)
 

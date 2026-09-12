@@ -1,0 +1,36 @@
+Task 4 exact-three contract RED evidence
+
+Parent under test: 2a47102 (fix: preserve solution and document inheritance)
+Command: py -3.12 -m pytest tests/test_task4_exact_three_contract.py -q
+Working directory: E:\AI_Projects\tmp\insightforge_task4_review_2a47102
+Exit code: 1
+
+Observed output:
+
+FFF                                                                      [100%]
+================================== FAILURES ===================================
+_____ test_solution_set_schema_requires_exactly_three_complete_candidates _____
+
+>       with pytest.raises(ValidationError):
+E       Failed: DID NOT RAISE ValidationError
+
+tests\test_task4_exact_three_contract.py:39: Failed
+___________ test_provider_adapters_request_exactly_three_solutions ____________
+
+>           assert "exactly 3" in prompt.casefold()
+E           AssertionError: assert 'exactly 3' in 'generate 2-3 materially different solutions. return only json matching the requested schema. do not make unsupported market claims.'
+
+tests\test_task4_exact_three_contract.py:84: AssertionError
+_________ test_deterministic_domain_rejects_a_non_three_solution_case _________
+
+>       with pytest.raises(StructuredRuntimeUnavailableError, match="exactly three"):
+E       Failed: DID NOT RAISE StructuredRuntimeUnavailableError
+
+tests\test_task4_exact_three_contract.py:98: Failed
+=========================== short test summary info ===========================
+FAILED tests/test_task4_exact_three_contract.py::test_solution_set_schema_requires_exactly_three_complete_candidates
+FAILED tests/test_task4_exact_three_contract.py::test_provider_adapters_request_exactly_three_solutions
+FAILED tests/test_task4_exact_three_contract.py::test_deterministic_domain_rejects_a_non_three_solution_case
+3 failed in 0.49s
+
+The terminal rendered the Chinese fixture input as mojibake in the full pytest trace; the failures above are copied from the actual run and the asserted contract failures are unaffected.

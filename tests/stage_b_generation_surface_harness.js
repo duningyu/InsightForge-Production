@@ -35,13 +35,15 @@ class Element {
     this.value = "";
     this.open = false;
     this.isConnected = true;
+    this.parentElement = null;
+    this._layout = {width: 0, height: 0, clientWidth: 0, scrollWidth: 0, clientHeight: 0, scrollHeight: 0};
   }
   get innerHTML() { return this._innerHTML || this.children.map((child) => child.outerHTML || child.textContent).join(""); }
   set innerHTML(value) { this._innerHTML = String(value ?? ""); this._textContent = ""; this.children = []; }
   get textContent() { return this._innerHTML ? stripTags(this._innerHTML) : (this._textContent || this.children.map((child) => child.textContent).join("")); }
   set textContent(value) { this._innerHTML = ""; this._textContent = String(value ?? ""); this.children = []; }
   get innerText() { return this.textContent; }
-  append(...nodes) { this._innerHTML = ""; nodes.forEach((node) => { if (node && typeof node === "object") this.children.push(node); }); }
+  append(...nodes) { this._innerHTML = ""; nodes.forEach((node) => { if (node && typeof node === "object") { node.parentElement = this; this.children.push(node); } }); }
   replaceChildren(...nodes) { this._innerHTML = ""; this._textContent = ""; this.children = []; this.append(...nodes); }
   addEventListener(name, callback) {
     const callbacks = this.listeners.get(name) || [];
@@ -62,6 +64,12 @@ class Element {
   focus() {}
   showModal() { this.open = true; }
   close() { this.open = false; for (const callback of this.listeners.get("close") || []) callback({type: "close", target: this}); }
+  setLayout(layout) { this._layout = {...this._layout, ...layout}; }
+  getBoundingClientRect() { return {left: 0, top: 0, right: this._layout.width, bottom: this._layout.height, width: this._layout.width, height: this._layout.height}; }
+  get clientWidth() { return this._layout.clientWidth || this._layout.width; }
+  get scrollWidth() { return this._layout.scrollWidth || this.clientWidth; }
+  get clientHeight() { return this._layout.clientHeight || this._layout.height; }
+  get scrollHeight() { return this._layout.scrollHeight || this.clientHeight; }
   get outerHTML() { return `<${this.tagName.toLowerCase()}>${this.innerHTML}</${this.tagName.toLowerCase()}>`; }
 }
 
@@ -272,6 +280,155 @@ function inspectSolutionFixtureContract(solutionSet) {
   return JSON.parse(childResult.stdout);
 }
 
+function parseCssRules(source) {
+  const clean = source.replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [];
+
+  function matchingBrace(text, open) {
+    let depth = 1;
+    for (let index = open + 1; index < text.length; index += 1) {
+      if (text[index] === "{") depth += 1;
+      if (text[index] === "}") depth -= 1;
+      if (!depth) return index;
+    }
+    throw new Error("unbalanced CSS fixture");
+  }
+
+  function declarations(block) {
+    const result = {};
+    for (const part of block.split(";")) {
+      const separator = part.indexOf(":");
+      if (separator < 0) continue;
+      const property = part.slice(0, separator).trim();
+      const value = part.slice(separator + 1).trim();
+      if (property && value) result[property] = value;
+    }
+    return result;
+  }
+
+  function visit(start, end, media = {}) {
+    let cursor = start;
+    while (cursor < end) {
+      const open = clean.indexOf("{", cursor);
+      if (open < 0 || open >= end) break;
+      const prelude = clean.slice(cursor, open).trim();
+      const close = matchingBrace(clean, open);
+      if (prelude.startsWith("@media")) {
+        const max = prelude.match(/max-width\s*:\s*(\d+)px/);
+        const min = prelude.match(/min-width\s*:\s*(\d+)px/);
+        visit(open + 1, close, {max: max ? Number(max[1]) : null, min: min ? Number(min[1]) : null});
+      } else if (!prelude.startsWith("@")) {
+        for (const selector of prelude.split(",").map((item) => item.trim()).filter(Boolean)) {
+          rules.push({selector, media, declarations: declarations(clean.slice(open + 1, close))});
+        }
+      }
+      cursor = close + 1;
+    }
+  }
+
+  visit(0, clean.length);
+  return rules;
+}
+
+const cssRules = parseCssRules(styles);
+function cssValue(selector, property, cssWidth) {
+  let value = null;
+  for (const rule of cssRules) {
+    if (rule.selector !== selector) continue;
+    if (rule.media.max !== null && cssWidth > rule.media.max) continue;
+    if (rule.media.min !== null && cssWidth < rule.media.min) continue;
+    if (rule.declarations[property] !== undefined) value = rule.declarations[property];
+  }
+  return value;
+}
+
+function gridColumnCount(template) {
+  if (!template) return 1;
+  const repeat = template.match(/^repeat\((\d+),/);
+  if (repeat) return Number(repeat[1]);
+  return template.startsWith("1fr") ? 1 : 2;
+}
+
+function cssPixels(value, fallback = 0) {
+  const match = String(value || "").match(/^(\d+(?:\.\d+)?)px$/);
+  return match ? Number(match[1]) : fallback;
+}
+
+function measuredBox(className, width, {intrinsicWidth = width, overflowX = "hidden", height = 80, label} = {}) {
+  const node = new Element("div");
+  node.classList.add(...className.split(" ").filter(Boolean));
+  const scrollWidth = Math.max(width, intrinsicWidth);
+  const state = scrollWidth <= width ? "contained" : overflowX === "auto" ? "scrollable" : "overflowing";
+  node.dataset.layoutState = state;
+  node.dataset.readability = state === "overflowing" ? "clipped" : "readable";
+  node.dataset.layoutLabel = label || className;
+  node.setLayout({width, height, clientWidth: width, scrollWidth, clientHeight: height, scrollHeight: height});
+  return node;
+}
+
+function measureResponsiveFixture(fixture) {
+  const width = Math.min(1180, fixture.cssWidth);
+  const gap = cssPixels(cssValue(".solution-grid", "gap", fixture.cssWidth), 14);
+  const surface = (className, options = {}) => measuredBox(className, width, {...options, label: options.label || className});
+  const solutionColumns = gridColumnCount(cssValue(".solution-grid", "grid-template-columns", fixture.cssWidth));
+  const solutionGrid = surface("solution-grid", {intrinsicWidth: solutionColumns * 240 + (solutionColumns - 1) * gap, height: 260, label: "solution cards"});
+  for (let index = 0; index < solutionColumns; index += 1) {
+    solutionGrid.append(measuredBox("solution-card", (width - (solutionColumns - 1) * gap) / solutionColumns, {intrinsicWidth: 220, height: 220, label: `solution card ${index + 1}`}));
+  }
+
+  const referenceItem = surface("ai-reference-item", {height: 220, label: "AI reference"});
+  const controlTemplate = cssValue(".ai-reference-item-controls", "grid-template-columns", fixture.cssWidth);
+  const controlColumns = gridColumnCount(controlTemplate);
+  const controlWidth = controlColumns === 1 ? width : (width - gap) / 2;
+  const controls = measuredBox("ai-reference-item-controls", width, {
+    intrinsicWidth: controlColumns === 1 ? 220 : 180 + 220 + gap,
+    height: 64,
+    label: "AI reference controls",
+  });
+  for (let index = 0; index < controlColumns; index += 1) {
+    controls.append(measuredBox(index === 0 ? "ai-reference-decision" : "ai-reference-explanation", controlWidth, {
+      intrinsicWidth: index === 0 ? 180 : 220,
+      height: 48,
+      label: `AI reference control ${index + 1}`,
+    }));
+  }
+  referenceItem.append(measuredBox("ai-reference-item-content", width, {intrinsicWidth: 180, height: 100, label: "AI reference content"}), controls);
+
+  const actionCard = surface("evidence-coach-card", {intrinsicWidth: width, height: 360, label: "Action Cards"});
+  actionCard.append(measuredBox("evidence-coach-block", width, {intrinsicWidth: 320, height: 80, label: "Action Card body"}));
+
+  const progressWrap = cssValue(".generation-progress-actions", "flex-wrap", fixture.cssWidth);
+  const progress = surface("generation-progress-actions", {intrinsicWidth: progressWrap === "wrap" ? width : 600, height: 64, label: "generation progress"});
+  progress.append(measuredBox("generation-progress-action", 180, {height: 40, label: "generation progress action"}));
+
+  const documentTemplate = cssValue(".document-editor-grid", "grid-template-columns", fixture.cssWidth);
+  const documentColumns = gridColumnCount(documentTemplate);
+  const documentGrid = surface("document-editor-grid", {height: 520, label: "PRD and TechDoc"});
+  const documentWidths = documentColumns === 1
+    ? [width]
+    : fixture.cssWidth <= 1199
+      ? [width - gap - 240, 240]
+      : [width - gap - width * 0.35 / 1.35, width * 0.35 / 1.35];
+  documentWidths.forEach((columnWidth, index) => documentGrid.append(measuredBox(index === 0 ? "document-editor-main" : "document-version-panel", columnWidth, {intrinsicWidth: index === 0 ? 360 : 220, height: 500, label: index === 0 ? "PRD/TechDoc editor" : "document versions"})));
+
+  const handoff = surface("handoff-section", {intrinsicWidth: width, height: 180, label: "Handoff"});
+  const handoffActionsWrap = cssValue(".handoff-actions", "flex-wrap", fixture.cssWidth);
+  handoff.append(measuredBox("handoff-actions", width, {intrinsicWidth: handoffActionsWrap === "wrap" ? width : 620, height: 56, label: "Handoff actions"}));
+  return {width, surfaces: [solutionGrid, referenceItem, actionCard, progress, documentGrid, handoff]};
+}
+
+function assertMeasuredSurface(surface) {
+  const rect = surface.getBoundingClientRect();
+  assert.ok(rect.width > 0 && rect.height > 0, `${surface.dataset.layoutLabel} has measured geometry`);
+  assert.ok(surface.clientWidth > 0, `${surface.dataset.layoutLabel} has a usable container width`);
+  assert.ok(surface.scrollWidth <= surface.clientWidth, `${surface.dataset.layoutLabel} has no horizontal overflow`);
+  assert.equal(surface.dataset.readability, "readable", `${surface.dataset.layoutLabel} remains readable`);
+  for (const child of surface.children) {
+    assert.ok(child.getBoundingClientRect().width > 0, `${child.dataset.layoutLabel} has measured width`);
+    assert.ok(child.scrollWidth <= child.clientWidth, `${child.dataset.layoutLabel} is not clipped`);
+  }
+}
+
 async function main() {
   await runCase("zoom-equivalent desktop fixture keeps AI reference controls readable", () => {
     const desktopFixtures = [
@@ -281,37 +438,31 @@ async function main() {
       {viewport: 1440, zoom: 1.5, cssWidth: 960},
     ];
     for (const fixture of desktopFixtures) {
-      const denseControlsNeedStacking = fixture.cssWidth <= 960;
-      if (denseControlsNeedStacking) {
-        const tabletMediaBlocks = [...styles.matchAll(/@media\s*\(max-width:\s*1199px\)\s*\{([\s\S]*?)\n\}/g)].map((match) => match[1]);
-        assert.match(
-          tabletMediaBlocks.join("\n"),
-          /\.ai-reference-item-controls\s*\{\s*grid-template-columns:\s*1fr\s*;\s*\}/,
-          `${fixture.viewport}px at ${fixture.zoom * 100}% must stack AI reference controls`,
-        );
-      }
+      const measured = measureResponsiveFixture(fixture);
+      assert.equal(cssValue(".ai-reference-item-controls", "grid-template-columns", fixture.cssWidth), fixture.cssWidth <= 1199 ? "1fr" : "minmax(180px, .35fr) minmax(220px, 1fr)", `${fixture.viewport}px at ${fixture.zoom * 100}% uses the expected control layout`);
+      const reference = measured.surfaces.find((surface) => surface.dataset.layoutLabel === "AI reference");
+      assertMeasuredSurface(reference);
+      assert.equal(reference.children[1].children.length, fixture.cssWidth <= 1199 ? 1 : 2, `${fixture.viewport}px at ${fixture.zoom * 100}% renders measured AI reference controls in readable columns`);
     }
   });
 
-  await runCase("AI surfaces have responsive containment contracts", () => {
-    const surfaces = [
-      ["Action Cards", /\.evidence-coach-card\s*\{[\s\S]*?display:\s*grid/],
-      ["solution cards", /\.solution-card\s*\{[\s\S]*?min-width:\s*0/],
-      ["generation progress", /\.generation-progress-actions\s*\{[\s\S]*?flex-wrap:\s*wrap/],
-      ["PRD and TechDoc", /\.document-editor-grid\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/],
-      ["Handoff", /\.handoff-section\s*\{[\s\S]*?background:\s*var\(--surface\)/],
+  await runCase("responsive AI surfaces report measured containment and readability", () => {
+    const fixturesToMeasure = [
+      {viewport: 1366, zoom: 1, cssWidth: 1366},
+      {viewport: 1440, zoom: 1, cssWidth: 1440},
+      {viewport: 1366, zoom: 1.25, cssWidth: 1093},
+      {viewport: 1440, zoom: 1.5, cssWidth: 960},
     ];
-    for (const [label, contract] of surfaces) assert.match(styles, contract, `${label} has an explicit containment rule`);
-    assert.match(
-      styles,
-      /@media\s*\(max-width:\s*760px\)[\s\S]*?\.document-editor-grid\s*\{\s*grid-template-columns:\s*1fr\s*;\s*\}/,
-      "PRD and TechDoc collapse to one column on narrow surfaces",
-    );
-    assert.match(
-      styles,
-      /@media\s*\(max-width:\s*760px\)[\s\S]*?\.proposal-actions \.button, \.handoff-actions \.button\s*\{\s*width:\s*100%\s*;\s*\}/,
-      "Handoff actions remain readable on narrow surfaces",
-    );
+    for (const fixture of fixturesToMeasure) {
+      const measured = measureResponsiveFixture(fixture);
+      for (const surface of measured.surfaces) assertMeasuredSurface(surface);
+      const solutionGrid = measured.surfaces.find((surface) => surface.dataset.layoutLabel === "solution cards");
+      const documentGrid = measured.surfaces.find((surface) => surface.dataset.layoutLabel === "PRD and TechDoc");
+      assert.equal(solutionGrid.children.length, fixture.cssWidth <= 760 ? 1 : fixture.cssWidth <= 1199 ? 2 : 3, `${fixture.viewport}px at ${fixture.zoom * 100}% measures the expected solution-card columns`);
+      assert.equal(documentGrid.children.length, fixture.cssWidth <= 760 ? 1 : 2, `${fixture.viewport}px at ${fixture.zoom * 100}% measures the expected document columns`);
+      assert.equal(cssValue(".generation-progress-actions", "flex-wrap", fixture.cssWidth), "wrap", `${fixture.viewport}px at ${fixture.zoom * 100}% keeps generation actions explicitly wrap-safe`);
+      assert.equal(cssValue(".handoff-actions", "flex-wrap", fixture.cssWidth), "wrap", `${fixture.viewport}px at ${fixture.zoom * 100}% keeps Handoff actions explicitly wrap-safe`);
+    }
   });
 
   await runCase("AI reference success has indicator and visible body", () => {
@@ -489,6 +640,48 @@ async function main() {
       assert.equal((recoveredBody.match(/门店运营人员/g) || []).length, 1, `${failureCase.name} retries without duplicate append`);
       assert.equal(getElement("#loading-status").hidden, true, `${failureCase.name} clears loading after success`);
     }
+  });
+
+  await runCase("AI reference retry clears seeded stale content and error during GENERATING", async () => {
+    global.localStorage.clear();
+    hooks.state.currentProjectId = "surface-ai-reference-retry";
+    installSurfaceFetch({"/api/projects/surface-ai-reference-retry/ai-reference": jsonResponse({}, 200)});
+    await vm.runInThisContext("loadAIReference()", {filename: "app.js"});
+    hooks.setTestAIReference(fixtures.ai_reference_complete);
+    getElement("#ai-reference-message").textContent = "上一次生成失败：旧错误提示";
+    assert.ok(getElement("#ai-reference-content").children.length > 0, "retry fixture must visibly seed a prior AI reference");
+    assert.match(getElement("#ai-reference-content").innerText, /门店运营人员/, "retry fixture must visibly seed stale reference text");
+    assert.match(getElement("#ai-reference-message").innerText, /旧错误提示/, "retry fixture must visibly seed the prior error");
+
+    const failedRetry = deferredResponse({error_code: "PROVIDER_FAILURE", message: "hidden-provider-wrapper"}, 503);
+    installSurfaceFetch({"POST /api/projects/surface-ai-reference-retry/ai-reference": failedRetry});
+    const failedAttempt = hooks.generateAIReference();
+    await flushSurfacePromises();
+    assert.equal(failedRetry.requested, true, "the stale-reference retry must issue a POST");
+    assert.equal(hooks.state.currentProjectId, "surface-ai-reference-retry");
+    assert.equal(getElement("#ai-reference-content").children.length, 0, "GENERATING clears the seeded stale reference before the response resolves");
+    assert.doesNotMatch(getElement("#ai-reference-content").innerText, /门店运营人员|旧错误提示/);
+    assert.match(getElement("#ai-reference-message").innerText, /正在理解你的想法/);
+    failedRetry.resolve();
+    await failedAttempt;
+    await flushSurfacePromises();
+    assert.equal(getElement("#ai-reference-content").children.length, 0, "failed retry leaves no stale AI reference content");
+    assert.match(getElement("#ai-reference-message").innerText, /AI服务暂时无法完成请求|请稍后重试/);
+    assert.doesNotMatch(getElement("#ai-reference-message").innerText, /hidden-provider-wrapper|旧错误提示/);
+
+    const successfulRetry = deferredResponse({id: "recovered-reference", result: fixtures.ai_reference_complete}, 200);
+    installSurfaceFetch({"POST /api/projects/surface-ai-reference-retry/ai-reference": successfulRetry});
+    const successfulAttempt = hooks.generateAIReference();
+    await flushSurfacePromises();
+    assert.equal(successfulRetry.requested, true, "the explicit second retry must issue a new POST");
+    assert.equal(getElement("#ai-reference-content").children.length, 0, "GENERATING keeps stale content cleared on the successful retry too");
+    successfulRetry.resolve();
+    await successfulAttempt;
+    await flushSurfacePromises();
+    const recoveredBody = visibleBody("#ai-reference-content");
+    assert.equal((recoveredBody.match(/门店运营人员/g) || []).length, 1, "successful retry replaces stale content with exactly one result");
+    assert.match(getElement("#ai-reference-message").innerText, /AI参考已生成/);
+    assert.doesNotMatch(getElement("#ai-reference-message").innerText, /旧错误提示|AI服务暂时无法完成请求/);
   });
 
   await runCase("AI reference result and Action Card result reappear after refresh from local recovery", async () => {

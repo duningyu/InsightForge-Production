@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 const fixtures = JSON.parse(fs.readFileSync("tests/fixtures/stage_b_generation_ux_cases.json", "utf8"));
+const styles = fs.readFileSync("app/static/styles.css", "utf8");
 let domReadyHandler;
 
 class ClassList {
@@ -79,6 +80,16 @@ global.document = {
 };
 global.window = {__INSIGHTFORGE_TEST__: true, ModelSettings: undefined, addEventListener() {}};
 global.CSS = {escape: (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&")};
+function memoryStorage() {
+  const values = new Map();
+  return {
+    getItem(key) { return values.has(String(key)) ? values.get(String(key)) : null; },
+    setItem(key, value) { values.set(String(key), String(value)); },
+    removeItem(key) { values.delete(String(key)); },
+    clear() { values.clear(); },
+  };
+}
+global.localStorage = memoryStorage();
 global.setTimeout = () => 0;
 global.clearTimeout = () => {};
 global.fetch = async () => ({ok: true, status: 200, headers: {get: () => "application/json"}, json: async () => ({})});
@@ -262,6 +273,47 @@ function inspectSolutionFixtureContract(solutionSet) {
 }
 
 async function main() {
+  await runCase("zoom-equivalent desktop fixture keeps AI reference controls readable", () => {
+    const desktopFixtures = [
+      {viewport: 1366, zoom: 1, cssWidth: 1366},
+      {viewport: 1440, zoom: 1, cssWidth: 1440},
+      {viewport: 1366, zoom: 1.25, cssWidth: 1093},
+      {viewport: 1440, zoom: 1.5, cssWidth: 960},
+    ];
+    for (const fixture of desktopFixtures) {
+      const denseControlsNeedStacking = fixture.cssWidth <= 960;
+      if (denseControlsNeedStacking) {
+        const tabletMediaBlocks = [...styles.matchAll(/@media\s*\(max-width:\s*1199px\)\s*\{([\s\S]*?)\n\}/g)].map((match) => match[1]);
+        assert.match(
+          tabletMediaBlocks.join("\n"),
+          /\.ai-reference-item-controls\s*\{\s*grid-template-columns:\s*1fr\s*;\s*\}/,
+          `${fixture.viewport}px at ${fixture.zoom * 100}% must stack AI reference controls`,
+        );
+      }
+    }
+  });
+
+  await runCase("AI surfaces have responsive containment contracts", () => {
+    const surfaces = [
+      ["Action Cards", /\.evidence-coach-card\s*\{[\s\S]*?display:\s*grid/],
+      ["solution cards", /\.solution-card\s*\{[\s\S]*?min-width:\s*0/],
+      ["generation progress", /\.generation-progress-actions\s*\{[\s\S]*?flex-wrap:\s*wrap/],
+      ["PRD and TechDoc", /\.document-editor-grid\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/],
+      ["Handoff", /\.handoff-section\s*\{[\s\S]*?background:\s*var\(--surface\)/],
+    ];
+    for (const [label, contract] of surfaces) assert.match(styles, contract, `${label} has an explicit containment rule`);
+    assert.match(
+      styles,
+      /@media\s*\(max-width:\s*760px\)[\s\S]*?\.document-editor-grid\s*\{\s*grid-template-columns:\s*1fr\s*;\s*\}/,
+      "PRD and TechDoc collapse to one column on narrow surfaces",
+    );
+    assert.match(
+      styles,
+      /@media\s*\(max-width:\s*760px\)[\s\S]*?\.proposal-actions \.button, \.handoff-actions \.button\s*\{\s*width:\s*100%\s*;\s*\}/,
+      "Handoff actions remain readable on narrow surfaces",
+    );
+  });
+
   await runCase("AI reference success has indicator and visible body", () => {
     hooks.setTestAIReference(fixtures.ai_reference_complete);
     const body = visibleBody("#ai-reference-content");
@@ -391,6 +443,77 @@ async function main() {
     const body = visibleBody("#ai-reference-content");
     assert.match(body, /门店运营人员/);
     assert.match(body, /AI生成参考/);
+  });
+
+  await runCase("AI reference provider, parse, schema, and empty failures recover without stale content", async () => {
+    const failureCases = [
+      {
+        name: "provider",
+        response: jsonResponse({error_code: "PROVIDER_FAILURE", message: "Traceback: hidden-provider-wrapper", recovery_actions: ["retry_generation"]}, 503),
+        safe: /AI服务暂时无法完成请求|请稍后重试/,
+      },
+      {
+        name: "parse",
+        response: {ok: true, status: 200, headers: {get: () => "application/json"}, json: async () => { throw new SyntaxError("Unexpected token hidden-provider-wrapper"); }},
+        safe: /没有生成可用内容|请稍后重试/,
+      },
+      {
+        name: "schema",
+        response: jsonResponse({id: "bad-schema", result: {possible_target_users: []}}, 200),
+        safe: /方案结构不完整|没有生成可用内容|请稍后重试/,
+      },
+      {
+        name: "empty",
+        response: jsonResponse({id: "empty-result", result: {possible_target_users: [], possible_scenarios: [], possible_user_problems: [], missing_information: [], mvp_thoughts: [], questions_to_validate: [], research_directions: []}}, 200),
+        safe: /方案结构不完整|没有生成可用内容|请稍后重试/,
+      },
+    ];
+    for (const failureCase of failureCases) {
+      global.localStorage.clear();
+      hooks.state.currentProjectId = `surface-recovery-${failureCase.name}`;
+      installSurfaceFetch({[`POST /api/projects/surface-recovery-${failureCase.name}/ai-reference`]: failureCase.response});
+      await vm.runInThisContext("loadAIReference()", {filename: "app.js"});
+      getElement("#ai-reference-generate").click();
+      await flushSurfacePromises();
+      const failureMessage = getElement("#ai-reference-message").innerText;
+      assert.match(failureMessage, failureCase.safe, `${failureCase.name} exposes Chinese user-safe recovery copy`);
+      assert.doesNotMatch(failureMessage, /Traceback|hidden-provider-wrapper|Unexpected token|MODEL_OUTPUT_SCHEMA_INVALID/, `${failureCase.name} does not leak raw failure details`);
+      assert.equal(getElement("#ai-reference-content").children.length, 0, `${failureCase.name} does not leave stale AI content`);
+      assert.equal(getElement("#loading-status").hidden, true, `${failureCase.name} clears loading after failure`);
+
+      installSurfaceFetch({[`POST /api/projects/surface-recovery-${failureCase.name}/ai-reference`]: jsonResponse({id: `recovered-${failureCase.name}`, result: fixtures.ai_reference_complete}, 200)});
+      getElement("#ai-reference-generate").click();
+      await flushSurfacePromises();
+      const recoveredBody = visibleBody("#ai-reference-content");
+      assert.match(recoveredBody, /门店运营人员/);
+      assert.equal((recoveredBody.match(/门店运营人员/g) || []).length, 1, `${failureCase.name} retries without duplicate append`);
+      assert.equal(getElement("#loading-status").hidden, true, `${failureCase.name} clears loading after success`);
+    }
+  });
+
+  await runCase("AI reference result and Action Card result reappear after refresh from local recovery", async () => {
+    global.localStorage.clear();
+    hooks.state.currentProjectId = "persisted-surface-project";
+    installSurfaceFetch({
+      "POST /api/projects/persisted-surface-project/ai-reference": jsonResponse({id: "persisted-reference", result: fixtures.ai_reference_complete}, 200),
+      "POST /api/projects/persisted-surface-project/evidence-guidance": jsonResponse({id: "persisted-guidance", result: fixtures.action_card_complete}, 201),
+    });
+    await vm.runInThisContext("loadAIReference()", {filename: "app.js"});
+    getElement("#ai-reference-generate").click();
+    await flushSurfacePromises();
+    hooks.state.evidenceEntry.mode = "action_guidance";
+    await hooks.generateEvidenceGuidance();
+    assert.ok(global.localStorage.getItem(hooks.draftStorageKey("persisted-surface-project", "ai_reference", "result")), "AI reference is persisted locally before refresh");
+    assert.ok(global.localStorage.getItem(hooks.draftStorageKey("persisted-surface-project", "evidence_guidance", "result")), "Action Card result is persisted locally before refresh");
+
+    installSurfaceFetch({
+      "/api/projects/persisted-surface-project/ai-reference": jsonResponse({}, 200),
+      "/api/projects/persisted-surface-project/evidence-guidance": jsonResponse({}, 200),
+    });
+    await vm.runInThisContext("loadAIReference()", {filename: "app.js"});
+    assert.match(visibleBody("#ai-reference-content"), /门店运营人员/);
+    await hooks.loadEvidenceGuidance();
+    assert.match(visibleBody("#evidence-guidance-content"), /最近一次缺货处理经历/);
   });
 
   await runCase("real Evidence Action Card generation renders every required field", async () => {

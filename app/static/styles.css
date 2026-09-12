@@ -206,6 +206,7 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
   .nav-item { grid-template-columns: 1fr; text-align: center; gap: 3px; padding: 12px 6px; }
   .nav-item strong { font-size: 11px; }
   .solution-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .ai-reference-item-controls { grid-template-columns: 1fr; }
   .recent-project-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .project-context label { min-width: 0; }
   .project-context .project-model-field { flex-basis: 180px; }

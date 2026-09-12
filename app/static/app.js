@@ -220,6 +220,8 @@ function humanizeErrorMessage(error, fallback = "这次操作没有完成，请�
   if (code === "PROVIDER_FAILURE") return "AI服务暂时无法完成请求，你的输入已保留，请稍后重试。";
   if (code === "APPLICATION_POSTPROCESS_FAILURE") return "AI返回的方案未通过应用校验，你的项目内容已保留，请重新生成。";
   if (code === "MODEL_OUTPUT_SCHEMA_INVALID") return "AI返回的方案结构不完整，你的项目内容已保留，请重新生成。";
+  if (code === "DOCUMENT_CONTENT_INVALID") return "当前文档内容与已选项目成果不一致，未展示该版本，请重新生成。";
+  if (code === "DOCUMENT_VERSION_SCHEMA_INVALID") return "当前文档版本信息不完整，未展示该版本，请稍后重试。";
   if (code === "GENERATION_PENDING") return "本次生成仍在处理中，请稍候查看结果。";
   if (code === "SOLUTION_GENERATION_IN_PROGRESS") return "正在生成方案，请稍候。";
   if (code === "IDEA_BRIEF_REQUIRED" || code === "IDEA_BRIEF_NOT_CONFIRMED") return "请先完善并确认项目定义，再生成方案。";
@@ -424,6 +426,257 @@ function sourceTypeLabel(value) {
     model_hypothesis: "模型假设",
     implementation_evidence: "实现证据",
   })[value] || value;
+}
+
+const AI_REFERENCE_FIELDS = [
+  "possible_target_users", "possible_scenarios", "possible_user_problems",
+  "missing_information", "mvp_thoughts", "questions_to_validate", "research_directions",
+];
+const EVIDENCE_CARD_TEXT_FIELDS = [
+  "title", "question_to_validate", "why_it_matters", "decision_impact",
+  "fallback_if_unavailable", "limitations",
+];
+const EVIDENCE_CARD_LIST_FIELDS = [
+  "who_or_where", "action_steps", "suggested_questions", "acceptable_artifacts", "fill_template",
+];
+const SOLUTION_LIST_FIELDS = [
+  "user_flow", "mvp_pages", "features", "inputs", "outputs", "decision_logic",
+  "data_requirements", "technical_components", "implementation_plan", "acceptance_cases",
+  "risks", "unknowns",
+];
+const SOLUTION_OBJECT_LIST_FIELDS = {
+  user_flow: ["step", "action", "ui_hint"],
+  inputs: ["input_type", "field", "required", "description"],
+  outputs: ["input_type", "field", "required", "description"],
+  data_requirements: ["data_field", "purpose", "source"],
+  risks: ["risk", "mitigation"],
+};
+const SOLUTION_TEXT_FIELDS = ["id", "title", "why_fit", "mechanism", "complexity"];
+const SOLUTION_DIVERSITY_FIELDS = [
+  "mechanism", "required_data_class", "automation_level", "human_role", "core_decision_logic", "major_dependency",
+];
+
+function isPlainRecord(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function viewString(value, {required = true, maxLength = 4000} = {}) {
+  if (typeof value !== "string") return required ? null : "";
+  const normalized = value.trim();
+  if (required && !normalized) return null;
+  return normalized.slice(0, maxLength);
+}
+
+function viewStringList(value, {required = true, maxItems = 20, maxLength = 4000} = {}) {
+  if (!Array.isArray(value)) return required ? null : [];
+  if (value.length > maxItems) return null;
+  const result = value.map((item) => viewString(item, {maxLength}));
+  return result.some((item) => item === null) ? null : result;
+}
+
+function viewDisclosure(value) {
+  const explicit = viewString(value, {required: false, maxLength: 500});
+  return explicit || "";
+}
+
+function viewSolutionList(value, field) {
+  if (!Array.isArray(value) || value.length > 20) return null;
+  const keys = SOLUTION_OBJECT_LIST_FIELDS[field] || [];
+  const result = value.map((item) => {
+    if (typeof item === "string") return viewString(item);
+    if (!isPlainRecord(item) || !keys.length) return null;
+    const parts = keys.map((key) => {
+      const raw = item[key];
+      if (typeof raw === "string") return viewString(raw, {required: false, maxLength: 1000});
+      if (typeof raw === "number" || typeof raw === "boolean") return String(raw);
+      return "";
+    }).filter(Boolean);
+    return parts.length ? parts.join("；") : null;
+  });
+  return result.some((item) => !item) ? null : result;
+}
+
+function toAIReferenceViewModel(value) {
+  if (!isPlainRecord(value)) return null;
+  const model = {};
+  for (const key of AI_REFERENCE_FIELDS) {
+    const items = viewStringList(value[key], {maxItems: 20});
+    if (!items) return null;
+    model[key] = items;
+  }
+  if (!AI_REFERENCE_FIELDS.some((key) => model[key].length)) return null;
+  model.uncertainty_notice = viewDisclosure(value.uncertainty_notice) || "AI生成参考，尚未经外部资料核实。";
+  model.fixture_disclosure = viewDisclosure(value.fixture_disclosure)
+    || (value.fixture_origin === "STAGE_A_SYNTHETIC" ? "Stage A 演示结果 · 非真实 AI 生成" : "");
+  return model;
+}
+
+function toEvidenceGuidanceViewModel(value) {
+  if (!isPlainRecord(value) || !Array.isArray(value.cards) || !value.cards.length || value.cards.length > 5) return null;
+  const cards = value.cards.map((card) => {
+    if (!isPlainRecord(card)) return null;
+    const model = {};
+    for (const key of EVIDENCE_CARD_TEXT_FIELDS) {
+      model[key] = viewString(card[key]);
+      if (!model[key]) return null;
+    }
+    for (const key of EVIDENCE_CARD_LIST_FIELDS) {
+      model[key] = viewStringList(card[key], {required: false, maxItems: 20});
+      if (!model[key]) return null;
+    }
+    return model;
+  });
+  if (cards.some((card) => !card)) return null;
+  return {
+    cards,
+    fixture_disclosure: viewDisclosure(value.fixture_disclosure)
+      || (value.fixture_origin === "STAGE_A_SYNTHETIC" ? "Stage A 演示结果 · 非真实 AI 生成" : ""),
+  };
+}
+
+function normalizeDiversityValue(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item).replace(/\s+/g, " ").trim().toLocaleLowerCase()).join("|");
+  return String(value || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+}
+
+function toSolutionCandidateViewModel(value) {
+  if (!isPlainRecord(value)) return null;
+  const model = {};
+  for (const key of SOLUTION_TEXT_FIELDS) {
+    model[key] = viewString(value[key]);
+    if (!model[key]) return null;
+  }
+  if (! ["low", "medium", "high"].includes(model.complexity)) return null;
+  for (const key of SOLUTION_LIST_FIELDS) {
+    model[key] = viewSolutionList(value[key], key);
+    if (!model[key] || !model[key].length) return null;
+  }
+  return model;
+}
+
+function solutionsAreSufficientlyDifferent(candidates) {
+  const hasQualityFields = candidates.every((candidate) =>
+    SOLUTION_DIVERSITY_FIELDS.every((field) => viewString(candidate[field])),
+  );
+  const fields = hasQualityFields ? SOLUTION_DIVERSITY_FIELDS : [
+    "mechanism", "data_requirements", "user_flow", "features", "decision_logic", "technical_components",
+  ];
+  for (let left = 0; left < candidates.length; left += 1) {
+    for (let right = left + 1; right < candidates.length; right += 1) {
+      const differences = fields.filter((field) => normalizeDiversityValue(candidates[left][field]) !== normalizeDiversityValue(candidates[right][field]));
+      if (differences.length < 2) return false;
+    }
+  }
+  return true;
+}
+
+function toSolutionsViewModel(value) {
+  if (!isPlainRecord(value) || !Array.isArray(value.candidates) || value.candidates.length !== 3) return null;
+  const candidates = value.candidates.map(toSolutionCandidateViewModel);
+  if (candidates.some((candidate) => !candidate)) return null;
+  if (new Set(candidates.map((candidate) => candidate.id)).size !== candidates.length) return null;
+  if (!solutionsAreSufficientlyDifferent(value.candidates)) return null;
+  return {
+    candidates,
+    fixture_disclosure: viewDisclosure(value.fixture_disclosure)
+      || (value.fixture_origin === "STAGE_A_SYNTHETIC" ? "Stage A 演示结果 · 非真实 AI 生成" : ""),
+  };
+}
+
+function toDocumentVersionViewModel(value, expectedDocType) {
+  if (!isPlainRecord(value)) return null;
+  const id = viewString(value.version_id || value.id, {maxLength: 200});
+  const docType = viewString(value.doc_type, {required: false, maxLength: 20}) || expectedDocType;
+  const version = Number(value.version);
+  const content = viewString(value.content, {maxLength: 2000000});
+  if (!id || !docType || docType !== expectedDocType || !Number.isInteger(version) || version < 1 || !content) return null;
+  return {
+    id,
+    version,
+    doc_type: docType,
+    content,
+    status: viewString(value.status, {required: false, maxLength: 40}) || "draft",
+    validation_status: viewString(value.validation_status, {required: false, maxLength: 40}) || "not_run",
+    created_at: viewString(value.created_at, {required: false, maxLength: 80}) || "",
+    artifact_health: isPlainRecord(value.artifact_health)
+      ? {health_status: viewString(value.artifact_health.health_status, {required: false, maxLength: 40}) || "unknown"}
+      : {health_status: "unknown"},
+  };
+}
+
+function snapshotNonGoalTerms(snapshot) {
+  const nonGoals = viewStringList(snapshot?.solution?.explicit_non_goals, {required: false, maxItems: 20}) || [];
+  return nonGoals.flatMap((item) => item
+    .replace(/^.*?(不做|不包含|暂不支持|禁止|不支持)/, "")
+    .split(/[、，,；;和以及]+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2));
+}
+
+function documentMatchesSelectedSnapshot(content) {
+  const snapshot = state.snapshot;
+  if (!isPlainRecord(snapshot)) return true;
+  const solution = isPlainRecord(snapshot.solution) ? snapshot.solution : {};
+  const selectedTitle = viewString(solution.title, {required: false, maxLength: 300});
+  const forbiddenTerms = snapshotNonGoalTerms(snapshot);
+  if (selectedTitle && !content.includes(selectedTitle)) return false;
+  if (forbiddenTerms.some((term) => content.includes(term))) return false;
+  return true;
+}
+
+function toDocumentWorkspaceViewModel(workspace) {
+  if (!isPlainRecord(workspace) || !["prd", "techdoc"].includes(workspace.docType)) return null;
+  if (!Array.isArray(workspace.versions)) return null;
+  const versions = workspace.versions.map((version) => toDocumentVersionViewModel(version, workspace.docType));
+  if (versions.some((version) => !version)) return null;
+  const selected = versions.find((version) => version.id === workspace.selectedVersionId) || null;
+  if (selected && !documentMatchesSelectedSnapshot(selected.content)) return null;
+  let draft = null;
+  if (workspace.draft) {
+    if (!isPlainRecord(workspace.draft)) return null;
+    const draftContent = viewString(workspace.draft.content, {maxLength: 2000000});
+    const baseVersionId = viewString(workspace.draft.base_version_id, {maxLength: 200});
+    if (!draftContent || !baseVersionId || !selected || baseVersionId !== selected.id || !documentMatchesSelectedSnapshot(draftContent)) return null;
+    draft = {content: draftContent, base_version_id: baseVersionId, revision: Number(workspace.draft.revision) || 0};
+  }
+  return {versions, selected, draft};
+}
+
+function toHandoffViewModel(value, snapshot) {
+  if (!isPlainRecord(value) || typeof value.ready !== "boolean" || !isPlainRecord(value.documents)) return null;
+  const documentSummary = {};
+  for (const docType of ["prd", "techdoc"]) {
+    const doc = value.documents[docType];
+    if (doc && !isPlainRecord(doc)) return null;
+    documentSummary[docType] = doc ? {
+      version_id: viewString(doc.version_id || doc.id, {maxLength: 200}),
+      version: Number.isInteger(Number(doc.version)) ? Number(doc.version) : null,
+    } : null;
+  }
+  if (value.ready && (!documentSummary.prd?.version_id || !documentSummary.techdoc?.version_id)) return null;
+  const arrayOfStrings = (items) => viewStringList(items, {required: false, maxItems: 30}) || [];
+  const snap = isPlainRecord(snapshot) ? snapshot : {};
+  const mvp = isPlainRecord(snap.mvp) ? snap.mvp : {};
+  const solution = isPlainRecord(snap.solution) ? snap.solution : {};
+  const missing = Array.isArray(value.missing)
+    ? value.missing.map((item) => humanizeHandoffMessage(item?.message || item)).filter(Boolean)
+    : [];
+  const unresolved = Array.isArray(value.unresolved_items)
+    ? value.unresolved_items.map((item) => typeof item === "string" ? viewString(item) : humanizeUnresolvedItem(item)).filter(Boolean)
+    : [];
+  return {
+    ready: value.ready,
+    documents: documentSummary,
+    missing,
+    unresolved,
+    acknowledgement_required: Boolean(value.acknowledgement_required),
+    unresolved_acknowledgement: Boolean(value.unresolved_acknowledgement),
+    features: arrayOfStrings(mvp.features),
+    non_goals: arrayOfStrings(solution.explicit_non_goals),
+    implementation_tasks: arrayOfStrings(mvp.implementation_plan),
+    acceptance_cases: arrayOfStrings(mvp.acceptance_criteria),
+    risks: arrayOfStrings(snap.unknowns),
+  };
 }
 
 const STATUS_PRESENTATION = {
@@ -1156,7 +1409,7 @@ function inputOutputBlocks(inputs = [], outputs = []) {
 }
 
 function openSolutionDetails(candidateId, trigger) {
-  const solution = state.solutions?.candidates?.find((item) => item.id === candidateId);
+  const solution = toSolutionsViewModel(state.solutions)?.candidates.find((item) => item.id === candidateId);
   if (!solution) { toast("该方案已不可用，请重新打开方案列表。"); return; }
   const dialog = qs("#solution-detail-dialog");
   dialog.returnFocus = trigger;
@@ -1192,7 +1445,14 @@ function openSolutionDetails(candidateId, trigger) {
 function renderSolutions() {
   const target = qs("#solutions-content");
   if (!target) return;
-  if (!state.solutions?.candidates?.length) {
+  const rawSolutions = state.solutions;
+  const solutions = toSolutionsViewModel(rawSolutions);
+  if (rawSolutions && !solutions) {
+    state.solutions = null;
+    state.generationTerminalFailure = true;
+    state.generationFailureCode = "APPLICATION_POSTPROCESS_FAILURE";
+  }
+  if (!solutions?.candidates?.length) {
     const confirmed = state.ideaBrief?.confirmation_status === "confirmed";
     const clarificationRequired = Boolean(state.ideaBrief?.clarification_required);
     const action = clarificationRequired
@@ -1217,13 +1477,13 @@ function renderSolutions() {
     qs("#open-idea-brief-button")?.addEventListener("click", openIdeaBriefReview);
     return;
   }
-  const fixtureNotice = state.solutions.fixture_disclosure || (state.solutions.fixture_origin === "STAGE_A_SYNTHETIC" ? "Stage A 演示结果 · 非真实 AI 生成" : "");
-  target.innerHTML = `${fixtureNotice ? `<p class="fixture-disclosure status-note">${escapeHtml(fixtureNotice)}</p>` : ""}<div class="solution-grid">${state.solutions.candidates.map((solution, index) => `
+  const fixtureNotice = solutions.fixture_disclosure;
+  target.innerHTML = `${fixtureNotice ? `<p class="fixture-disclosure status-note">${escapeHtml(fixtureNotice)}</p>` : ""}<div class="solution-grid">${solutions.candidates.map((solution, index) => `
     <article class="solution-card" data-candidate-id="${escapeHtml(solution.id)}">
       <div class="solution-card-head"><span>方案 ${String.fromCharCode(65 + index)}</span><span class="pill">${escapeHtml(mechanismLabel(solution.mechanism))}</span></div>
       <h3>${escapeHtml(solution.title)}</h3>
       <p>${escapeHtml(solution.why_fit)}</p>
-      <dl class="compact-spec"><div><dt>MVP 难度</dt><dd>${escapeHtml(complexityLabel(solution.complexity))}</dd></div><div><dt>数据要求</dt><dd>${escapeHtml(presentStructuredValue((solution.data_requirements || [])[0], "待确认"))}</dd></div><div><dt>最大风险</dt><dd>${escapeHtml(presentStructuredValue((solution.risks || [])[0], "待验证"))}</dd></div></dl>
+       <dl class="compact-spec"><div><dt>MVP 难度</dt><dd>${escapeHtml(complexityLabel(solution.complexity))}</dd></div><div><dt>数据要求</dt><dd>${escapeHtml(solution.data_requirements[0])}</dd></div><div><dt>最大风险</dt><dd>${escapeHtml(solution.risks[0])}</dd></div></dl>
       <details><summary>查看完整实施方案</summary>
         ${productFlowList(solution.user_flow)}
         ${detailList("MVP 页面", solution.mvp_pages)}
@@ -1429,7 +1689,9 @@ function renderEvidenceGuidance() {
     message.textContent = "正在整理可以实际补充的资料…";
     return;
   }
-  const cards = Array.isArray(evidenceGuidancePanel.result?.cards) ? evidenceGuidancePanel.result.cards : [];
+  const rawResult = evidenceGuidancePanel.result;
+  const result = toEvidenceGuidanceViewModel(rawResult);
+  const cards = result?.cards || [];
   if (!cards.length) {
     message.textContent = evidenceGuidancePanel.result
       ? "这次没有生成可用的资料行动建议，请稍后重试；没有创建资料来源。"
@@ -1437,7 +1699,7 @@ function renderEvidenceGuidance() {
     return;
   }
   message.textContent = "AI建议你去补这些资料，尚未加入项目资料，也不代表已经核实。";
-  const fixtureNotice = evidenceGuidancePanel.result?.fixture_disclosure || (evidenceGuidancePanel.result?.fixture_origin === "STAGE_A_SYNTHETIC" ? "Stage A 演示结果 · 非真实 AI 生成" : "");
+  const fixtureNotice = result.fixture_disclosure;
   if (fixtureNotice) {
     const notice = document.createElement("p");
     notice.className = "fixture-disclosure status-note";
@@ -1476,7 +1738,7 @@ async function loadEvidenceGuidance() {
   } catch (_) {}
   try {
     const stored = await api("/api/projects/" + encodeURIComponent(project) + "/evidence-guidance");
-    if (stored?.status === "completed" && stored.result?.cards?.length) {
+    if (stored?.status === "completed" && toEvidenceGuidanceViewModel(stored.result)) {
       evidenceGuidancePanel.result = stored.result;
       evidenceGuidancePanel.guidanceId = stored.id || null;
     }
@@ -1484,7 +1746,7 @@ async function loadEvidenceGuidance() {
   if (!evidenceGuidancePanel.result) {
     try {
       const recoveredResult = preferredRecoveryPayload(await loadUnifiedDraft(project, "evidence_guidance", "result"));
-      if (recoveredResult?.result?.cards?.length) evidenceGuidancePanel.result = recoveredResult.result;
+      if (toEvidenceGuidanceViewModel(recoveredResult?.result)) evidenceGuidancePanel.result = recoveredResult.result;
     } catch (_) {}
   }
   renderEvidenceEntryGuidance();
@@ -1494,6 +1756,8 @@ async function loadEvidenceGuidance() {
 async function generateEvidenceGuidance() {
   if (!state.currentProjectId || evidenceGuidancePanel.busy) return;
   evidenceGuidancePanel.project = state.currentProjectId;
+  evidenceGuidancePanel.result = null;
+  evidenceGuidancePanel.guidanceId = null;
   evidenceGuidancePanel.busy = true;
   evidenceGuidancePanel.requestKey ||= "evidence-guidance-" + state.currentProjectId;
   renderEvidenceGuidance();
@@ -1502,8 +1766,11 @@ async function generateEvidenceGuidance() {
       method: "POST",
       body: JSON.stringify({idempotency_key: evidenceGuidancePanel.requestKey}),
     });
-    evidenceGuidancePanel.result = response?.result || null;
-    evidenceGuidancePanel.guidanceId = response?.id || null;
+    if (!response?.id || !toEvidenceGuidanceViewModel(response.result)) {
+      throw Object.assign(new Error("invalid evidence guidance response"), {code: "MODEL_OUTPUT_SCHEMA_INVALID"});
+    }
+    evidenceGuidancePanel.result = response.result;
+    evidenceGuidancePanel.guidanceId = response.id;
     await queueUnifiedDraft(state.currentProjectId, "evidence_guidance", "result", {result: evidenceGuidancePanel.result}, {delay: 0});
     renderEvidenceGuidance();
   } catch (_) {
@@ -1592,6 +1859,8 @@ function renderDocumentWorkspace() {
   if (!editor || !list) return;
   const workspace = state.documentWorkspace;
   const errorNode = qs("#document-workspace-error");
+  const viewModel = workspace.error ? null : toDocumentWorkspaceViewModel(workspace);
+  if (!workspace.error && !viewModel) workspace.error = {code: "DOCUMENT_CONTENT_INVALID"};
   if (workspace.error) {
     if (errorNode) {
       errorNode.classList.remove("hidden");
@@ -1609,9 +1878,9 @@ function renderDocumentWorkspace() {
     return;
   }
   errorNode?.classList.add("hidden");
-  const selected = selectedDocumentVersion();
-  const draftMatches = workspace.draft && selected && workspace.draft.base_version_id === selected.id;
-  const expectedContent = draftMatches ? workspace.draft.content : selected?.content || "";
+  const selected = viewModel.selected;
+  const draftMatches = Boolean(viewModel.draft && selected && viewModel.draft.base_version_id === selected.id);
+  const expectedContent = draftMatches ? viewModel.draft.content : selected?.content || "";
   if (!workspace.dirty || editor.dataset.loadedVersionId !== (selected?.id || "")) {
     editor.value = expectedContent;
     editor.dataset.loadedVersionId = selected?.id || "";
@@ -1626,7 +1895,7 @@ function renderDocumentWorkspace() {
     ? (draftMatches ? `草稿已保存 · 基于 v${selected.version}` : `正在编辑 v${selected.version} · 修改会自动保存为草稿`)
     : "先生成一个文档版本后开始编辑";
 
-  list.innerHTML = workspace.versions.length ? workspace.versions.map((version) => {
+  list.innerHTML = viewModel.versions.length ? viewModel.versions.map((version) => {
     const selectedClass = version.id === workspace.selectedVersionId ? " selected" : "";
     const compareClass = version.id === workspace.compareVersionId ? " compare" : "";
     const health = version.artifact_health?.health_status || "unknown";
@@ -1842,16 +2111,19 @@ function exportSelectedDocument() {
 
 
 function renderHandoff() {
-  const h = state.handoff;
-  const snap = state.snapshot || {};
-  const mvp = snap.mvp || {};
-  const nonGoals = snap.solution?.explicit_non_goals || [];
-  const implementationTasks = mvp.implementation_plan || [];
-  const acceptanceCases = mvp.acceptance_criteria || [];
+  const h = toHandoffViewModel(state.handoff, state.snapshot) || {
+    ready: false, documents: {prd: null, techdoc: null}, missing: [], unresolved: [],
+    acknowledgement_required: false, unresolved_acknowledgement: false,
+    features: [], non_goals: [], implementation_tasks: [], acceptance_cases: [], risks: [],
+  };
+  const mvp = {features: h.features};
+  const nonGoals = h.non_goals;
+  const implementationTasks = h.implementation_tasks;
+  const acceptanceCases = h.acceptance_cases;
   const docSummary = h?.documents || {};
-  const risks = snap.unknowns || [];
+  const risks = h.risks;
   const missing = h?.missing || [];
-  const unresolved = h?.unresolved_items || [];
+  const unresolved = h?.unresolved || [];
   const acknowledgement = h?.unresolved_acknowledgement;
   const acknowledgementBlock = h?.acknowledgement_required && !acknowledgement ? `
     <div class="handoff-acknowledgement">
@@ -1860,15 +2132,15 @@ function renderHandoff() {
       <button id="handoff-acknowledge-button" class="button button-secondary" type="button" disabled>确认当前版本仍有待确认事项</button>
     </div>` : (acknowledgement ? "<p class=\"status-note\">已记录你对待确认事项的了解；这不表示这些事项已经被事实验证。</p>" : "");
   qs("#handoff-content").innerHTML = `
-    <div class="handoff-status ${h?.ready ? "handoff-ready" : "handoff-blocked"}"><strong>${escapeHtml(h?.ready ? "开发交接已具备正式上下文" : "当前还不能安全交接")}</strong><span>${escapeHtml(h?.ready ? "当前项目成果、PRD 和 TechDoc 均满足交接条件。" : humanizeHandoffMessage(missing[0]?.message))}</span></div>
+    <div class="handoff-status ${h.ready ? "handoff-ready" : "handoff-blocked"}"><strong>${escapeHtml(h.ready ? "开发交接已具备正式上下文" : "当前还不能安全交接")}</strong><span>${escapeHtml(h.ready ? "当前项目成果、PRD 和 TechDoc 均满足交接条件。" : humanizeHandoffMessage(missing[0]))}</span></div>
     <section class="handoff-section"><h3>MVP 范围</h3>${detailList("本版包含", mvp.features || [])}</section>
     <section class="handoff-section"><h3>明确不做</h3>${detailList("本版暂不包含", nonGoals.length ? nonGoals : ["当前 Snapshot 暂未声明额外非目标；交接前不要擅自扩展范围。"])}</section>
     <section class="handoff-section"><h3>实施任务</h3>${detailList("实施顺序", implementationTasks)}</section>
     <section class="handoff-section"><h3>验收案例</h3>${detailList("验收案例", acceptanceCases)}</section>
     <section class="handoff-section"><h3>已确认文档</h3><div class="handoff-docs"><span>PRD：${escapeHtml(handoffDocumentLabel(docSummary.prd))}</span><span>TechDoc：${escapeHtml(handoffDocumentLabel(docSummary.techdoc))}</span></div></section>
-    <section class="handoff-section"><h3>仍需确认的事项</h3>${unresolved.length ? detailList("事项", unresolved.map(humanizeUnresolvedItem)) : "<p>当前没有从文档中提取到待确认事项；资料是否充分仍需按实际来源判断。</p>"}${acknowledgementBlock}</section>
-    <section class="handoff-section"><h3>未解决风险</h3>${detailList("仍需确认", risks.length ? risks : ["当前方案未记录关键未知项。"])}${missing.length ? detailList("阻塞项", missing.map((item) => humanizeHandoffMessage(item.message))) : ""}</section>
-    <section class="handoff-section"><h3>复制/导出</h3><div class="handoff-actions"><button id="copy-handoff-button" class="button button-secondary" type="button">复制当前开发上下文</button><button id="export-handoff-button" class="button button-primary" type="button" ${h?.ready ? "" : "disabled"}>导出 Codex 交接包</button><button id="load-handoff-button" class="button button-quiet" type="button">重新检查准备度</button></div></section>
+     <section class="handoff-section"><h3>仍需确认的事项</h3>${unresolved.length ? detailList("事项", unresolved) : "<p>当前没有从文档中提取到待确认事项；资料是否充分仍需按实际来源判断。</p>"}${acknowledgementBlock}</section>
+    <section class="handoff-section"><h3>未解决风险</h3>${detailList("仍需确认", risks.length ? risks : ["当前方案未记录关键未知项。"])}${missing.length ? detailList("阻塞项", missing.map((item) => humanizeHandoffMessage(item))) : ""}</section>
+     <section class="handoff-section"><h3>复制/导出</h3><div class="handoff-actions"><button id="copy-handoff-button" class="button button-secondary" type="button">复制当前开发上下文</button><button id="export-handoff-button" class="button button-primary" type="button" ${h.ready ? "" : "disabled"}>导出 Codex 交接包</button><button id="load-handoff-button" class="button button-quiet" type="button">重新检查准备度</button></div></section>
     <details class="handoff-section advanced-panel"><summary>高级：MCP</summary><p>MCP 只作为已有确认上下文的高级读取/交接接口；当前 P0 不把远程 MCP 或企业权限作为主卖点。</p></details>`;
   qs("#load-handoff-button")?.addEventListener("click", loadHandoff);
   qs("#copy-handoff-button")?.addEventListener("click", copyHandoffContext);
@@ -2056,6 +2328,9 @@ async function restoreGenerationReference() {
 
 async function generateSolutions({newIntent = false} = {}) {
   if (state.generationInFlight) return state.generationInFlight;
+  state.solutions = null;
+  state.activeGeneration = null;
+  renderSolutions();
   if (newIntent || !state.generationIntentId) {
     state.generationIntentId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
@@ -2101,6 +2376,9 @@ async function generateSolutions({newIntent = false} = {}) {
         showRecoveryPayload(result, "solution_generation");
         return result;
       }
+      if (!toSolutionsViewModel(result)) {
+        throw Object.assign(new Error("invalid solution response"), {code: "MODEL_OUTPUT_SCHEMA_INVALID"});
+      }
       state.solutions = result;
       state.generationIntentId = null;
       state.generationTerminalFailure = false;
@@ -2110,6 +2388,7 @@ async function generateSolutions({newIntent = false} = {}) {
       await loadProjectNextAction();
       return result;
     } catch (error) {
+      state.solutions = null;
       state.generationTerminalFailure = true;
       state.generationFailureCode = error?.code || null;
       reportError(error);
@@ -2146,6 +2425,14 @@ async function pollSolutionGeneration(runId, projectId = state.currentProjectId)
       state.generationFailureCode = result.error_code || null;
       renderSolutions();
       showRecoveryPayload(result, "solution_generation");
+      return result;
+    }
+    if (!toSolutionsViewModel(result)) {
+      state.solutions = null;
+      state.generationTerminalFailure = true;
+      state.generationFailureCode = "MODEL_OUTPUT_SCHEMA_INVALID";
+      renderSolutions();
+      showRecoveryPayload({error_code: "MODEL_OUTPUT_SCHEMA_INVALID"}, "solution_generation");
       return result;
     }
     state.solutions = result;
@@ -2296,6 +2583,17 @@ async function loadDocuments() {
 }
 
 async function generateDocument(docType) {
+  const workspace = state.documentWorkspace;
+  workspace.docType = docType;
+  workspace.versions = [];
+  workspace.selectedVersionId = null;
+  workspace.compareVersionId = null;
+  workspace.draft = null;
+  workspace.dirty = false;
+  workspace.error = null;
+  const editor = qs("#document-editor");
+  if (editor) { editor.value = ""; editor.dataset.loadedVersionId = ""; editor.disabled = true; }
+  renderDocumentWorkspace();
   try {
     const useSnapshot = Boolean(state.useCompetitorSnapshot);
     const result = await api(`/api/projects/${state.currentProjectId}/documents/generate`, {
@@ -2306,10 +2604,22 @@ async function generateDocument(docType) {
         use_competitor_snapshot: useSnapshot,
       }),
     });
-    toast(`${docType.toUpperCase()} 已生成：${result.version_id || result.id || "新版本"}`);
-    state.documentWorkspace.docType = docType;
+    const generated = toDocumentVersionViewModel(result, docType);
+    if (!generated || !documentMatchesSelectedSnapshot(generated.content)) {
+      throw Object.assign(new Error("invalid document response"), {code: "DOCUMENT_VERSION_SCHEMA_INVALID"});
+    }
+    toast(`${docType.toUpperCase()} 已生成：${generated.id}`);
     await Promise.all([loadDocuments(), loadHandoff(), loadProjectNextAction()]);
-  } catch (error) { reportError(error); }
+  } catch (error) {
+    workspace.error = {code: error?.code || "DOCUMENT_VERSION_SCHEMA_INVALID"};
+    workspace.versions = [];
+    workspace.selectedVersionId = null;
+    workspace.compareVersionId = null;
+    workspace.draft = null;
+    workspace.dirty = false;
+    renderDocumentWorkspace();
+    reportError(error);
+  }
 }
 
 async function confirmDocument(versionId) {
@@ -2374,14 +2684,14 @@ function rememberAIReferenceDraft() {
 }
 function renderAIReference() {
   const content = qs("#ai-reference-content"); if (!content) return;
-  content.replaceChildren(); const result = aiReferencePanel.result; if (!result) return;
-  const hasContent = AI_REFERENCE_GROUPS.some(([key]) => Array.isArray(result[key]) && result[key].length);
-  if (!hasContent) {
+  content.replaceChildren(); const rawResult = aiReferencePanel.result; if (!rawResult) return;
+  const result = toAIReferenceViewModel(rawResult);
+  if (!result) {
     const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "这次没有生成可用建议，请重新尝试。"; content.append(empty);
     return;
   }
-  const notice = document.createElement("p"); notice.className = "status-note"; notice.textContent = result.uncertainty_notice || "AI生成参考，尚未经外部资料核实。"; content.append(notice);
-  const fixtureNotice = result.fixture_disclosure || (result.fixture_origin === "STAGE_A_SYNTHETIC" ? "Stage A 演示结果 · 非真实 AI 生成" : "");
+  const notice = document.createElement("p"); notice.className = "status-note"; notice.textContent = result.uncertainty_notice; content.append(notice);
+  const fixtureNotice = result.fixture_disclosure;
   if (fixtureNotice) {
     const disclosure = document.createElement("p"); disclosure.className = "fixture-disclosure status-note"; disclosure.textContent = fixtureNotice; content.append(disclosure);
   }
@@ -2391,8 +2701,8 @@ function renderAIReference() {
     const heading = document.createElement("h3"); heading.textContent = label; section.append(heading);
     values.forEach((item) => {
       const row = document.createElement("div"); row.className = "ai-reference-item";
-      const itemText = presentStructuredValue(item, "待确认");
-      const itemKey = typeof item === "string" ? item : JSON.stringify(item);
+      const itemText = item;
+      const itemKey = item;
       const itemContent = document.createElement("div"); itemContent.className = "ai-reference-item-content";
       const itemLabel = document.createElement("strong"); itemLabel.textContent = "具体建议";
       const text = document.createElement("p"); text.textContent = itemText; itemContent.append(itemLabel, text);
@@ -2414,22 +2724,31 @@ function renderAIReference() {
 async function loadAIReference() {
   aiReferencePanel.project = state.currentProjectId; aiReferencePanel.result = null; aiReferencePanel.decisions = []; aiReferencePanel.referenceId = null;
   if (!aiReferencePanel.project) { renderAIReference(); return; }
-  try { const stored = await api(`/api/projects/${encodeURIComponent(aiReferencePanel.project)}/ai-reference`); if (stored?.result) { aiReferencePanel.result = stored.result; aiReferencePanel.referenceId = stored.id; } } catch (_) { /* no reference yet */ }
+  try {
+    const stored = await api(`/api/projects/${encodeURIComponent(aiReferencePanel.project)}/ai-reference`);
+    if (stored?.result && toAIReferenceViewModel(stored.result)) { aiReferencePanel.result = stored.result; aiReferencePanel.referenceId = stored.id; }
+  } catch (_) { /* no reference yet */ }
   const recovered = await loadUnifiedDraft(aiReferencePanel.project, "ai_reference", "result").catch(() => null); const payload = preferredRecoveryPayload(recovered);
-  if (payload?.result && !aiReferencePanel.result) aiReferencePanel.result = payload.result;
+  if (payload?.result && !aiReferencePanel.result && toAIReferenceViewModel(payload.result)) aiReferencePanel.result = payload.result;
   if (payload?.decisions) aiReferencePanel.decisions = payload.decisions;
   renderAIReference();
 }
 async function generateAIReference() {
   if (aiReferencePanel.busy || !aiReferencePanel.project) return;
+  aiReferencePanel.result = null; aiReferencePanel.referenceId = null; aiReferencePanel.decisions = [];
+  renderAIReference();
   aiReferencePanel.busy = true; qs("#ai-reference-generate").disabled = true; qs("#ai-reference-message").textContent = "正在理解你的想法并整理参考建议…";
   try {
     aiReferencePanel.requestKey ||= `ai-reference-${aiReferencePanel.project}`;
     const response = await api(`/api/projects/${encodeURIComponent(aiReferencePanel.project)}/ai-reference`, {method:"POST", body:JSON.stringify({idempotency_key: aiReferencePanel.requestKey})});
+    const result = toAIReferenceViewModel(response?.result);
+    if (!result || !response?.id) throw Object.assign(new Error("invalid ai reference response"), {code: "MODEL_OUTPUT_SCHEMA_INVALID"});
     aiReferencePanel.referenceId = response.id; aiReferencePanel.result = response.result; aiReferencePanel.decisions = []; renderAIReference(); rememberAIReferenceDraft();
-    const hasContent = AI_REFERENCE_GROUPS.some(([key]) => Array.isArray(response.result?.[key]) && response.result[key].length);
-    qs("#ai-reference-message").textContent = hasContent ? "AI参考已生成，请阅读后选择要采用、修改或忽略的内容。" : "这次没有生成可用建议，请重新尝试。";
-  } catch (_) { qs("#ai-reference-message").textContent = "AI参考生成失败，请稍后重试；没有创建资料来源。"; }
+    qs("#ai-reference-message").textContent = "AI参考已生成，请阅读后选择要采用、修改或忽略的内容。";
+  } catch (error) {
+    aiReferencePanel.result = null; aiReferencePanel.referenceId = null; aiReferencePanel.decisions = [];
+    qs("#ai-reference-message").textContent = humanizeErrorMessage(error, "AI参考生成失败，请稍后重试；没有创建资料来源。");
+  }
   finally { aiReferencePanel.busy = false; qs("#ai-reference-generate").disabled = false; }
 }
 async function applyAIReference() {
@@ -2724,6 +3043,7 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     openIdeaBriefReview,
     renderIdeaBrief,
     renderAIReference,
+    generateAIReference,
     setTestAIReference(result, decisions = []) { aiReferencePanel.result = result; aiReferencePanel.decisions = decisions; aiReferencePanel.referenceId = "test-reference"; renderAIReference(); },
     setTestEvidenceGuidance(result) {
       state.evidenceEntry.mode = "action_guidance";
@@ -2748,6 +3068,8 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     renderEvidenceGuidance,
     loadEvidenceGuidance,
     generateEvidenceGuidance,
+    generateDocument,
+    pollSolutionGeneration,
     selectEvidenceEntry,
     addGuidedEvidence,
     createGuidanceNavigator,

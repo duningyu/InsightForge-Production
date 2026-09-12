@@ -39,6 +39,7 @@ class FakeElement {
 }
 
 const elements = new Map();
+const completeSolutionsFixture = JSON.parse(fs.readFileSync("tests/fixtures/stage_b_generation_ux_cases.json", "utf8")).solutions_complete;
 function getElement(selector) {
   if (!elements.has(selector)) elements.set(selector, new FakeElement());
   return elements.get(selector);
@@ -194,9 +195,10 @@ async function exerciseRetryClearsStaleFailure() {
   );
   global.fetch = async (path, options = {}) => {
     if (options.method === "POST") {
-      return jsonResponse({
-        candidates: [{id: "solution-a", title: "可恢复方案", why_fit: "用于验证重试后的成功结果。"}],
-      }, 200);
+      const payload = JSON.parse(JSON.stringify(completeSolutionsFixture));
+      payload.candidates[0].title = "可恢复方案";
+      payload.candidates[0].why_fit = "用于验证重试后的成功结果。";
+      return jsonResponse(payload, 200);
     }
     if (path.endsWith("/next-action")) return jsonResponse({}, 200);
     throw new Error(`unexpected retry fetch ${path}`);
@@ -205,7 +207,7 @@ async function exerciseRetryClearsStaleFailure() {
     hooks.state.currentProjectId = "retry-project";
     hooks.state.solutions = null;
     await hooks.generateSolutions({newIntent: true});
-    assert.equal(hooks.state.solutions.candidates.length, 1, "retry renders the successful solution result");
+    assert.equal(hooks.state.solutions.candidates.length, 3, "retry renders the complete solution result");
     assert.equal(
       getElement("#runtime-disclosure").classList.contains("hidden"),
       true,

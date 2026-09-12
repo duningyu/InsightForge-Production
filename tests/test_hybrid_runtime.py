@@ -772,7 +772,7 @@ def test_evidence_api_returns_exact_safe_recovery_and_audits_resolved_runtime(cl
     assert body["error_code"] == "MODEL_OUTPUT_SCHEMA_INVALID"
     assert "模型" in body["message"]
     assert body["content_written"] is False
-    assert body["retryable"] is True
+    assert body["retryable"] is False
     assert "preserved_input" not in body
     assert "Provider response" not in response.text
     assert "evidence-secret" not in response.text

@@ -323,8 +323,8 @@ def test_stage_b_generation_failures_are_safe_actionable_and_do_not_write(
     assert payload["error_code"] == "PROVIDER_OUTPUT_PARSE_FAILED"
     assert payload["message"]
     assert payload["content_written"] is False
-    assert payload["retryable"] is True
-    assert payload["recovery_actions"] == ["重新生成"]
+    assert payload["retryable"] is False
+    assert payload["recovery_actions"] == ["检查输入和模型配置后重新生成"]
     assert after == before
 
 
@@ -347,10 +347,148 @@ def test_stage_b_async_failure_poll_recursively_sanitizes_stored_failure(client,
     assert payload["error_code"] == "PROVIDER_OUTPUT_PARSE_FAILED"
     assert payload["message"]
     assert payload["content_written"] is False
-    assert payload["retryable"] is True
-    assert payload["recovery_actions"] == ["重新生成"]
+    assert payload["retryable"] is False
+    assert payload["recovery_actions"] == ["检查输入和模型配置后重新生成"]
 
 
 def test_stage_b_registers_no_public_debug_route(client):
     public_paths = [getattr(route, "path", "") for route in client.app.routes]
     assert not [path for path in public_paths if "debug" in path.lower()]
+
+
+@pytest.mark.parametrize("boundary", ("exception", "sync_replay", "async_poll"))
+@pytest.mark.parametrize(
+    ("code", "expected_code", "message", "actions"),
+    (
+        ("MODEL_TIMEOUT", "MODEL_TIMEOUT", "所选模型响应超时；本次未生成可用内容，请稍后重试。", ["稍后重试"]),
+        ("MODEL_PROVIDER_ERROR", "MODEL_PROVIDER_ERROR", "所选模型暂时无法完成生成；本次未生成可用内容，请稍后重试。", ["稍后重试", "检查所选模型配置"]),
+        ("MODEL_OUTPUT_CONTRACT_FAILED", "MODEL_OUTPUT_CONTRACT_FAILED", "AI 返回的内容格式不符合要求，本次未生成可用内容；请检查输入和模型配置。", ["检查输入和模型配置后重新生成"]),
+        ("UNKNOWN: sk-stage-b-api-key-secret", "MODEL_OUTPUT_CONTRACT_FAILED", "AI 返回的内容格式不符合要求，本次未生成可用内容；请检查输入和模型配置。", ["检查输入和模型配置后重新生成"]),
+    ),
+    ids=("timeout", "provider", "output_contract", "unknown"),
+)
+def test_public_failure_text_is_app_owned_on_every_boundary(
+    client, monkeypatch, boundary, code, expected_code, message, actions
+):
+    # Copying any producer/stored message, action, or unknown code must fail.
+    project_id = _quick_project(client)
+    error = StructuredRuntimeRecoveryError(
+        error_code=code,
+        message=" | ".join(PRIVATE_MARKERS),
+        recovery_actions=list(PRIVATE_MARKERS),
+    )
+    if boundary == "exception":
+        def fail(*_args, **_kwargs):
+            raise error
+
+        runtime = _FailingRuntime()
+        monkeypatch.setattr(runtime, "generate_ai_reference", fail)
+        monkeypatch.setattr(client.app.state, "structured_runtime", _FakeRuntimeRouter(runtime))
+        response = client.post(f"/api/projects/{project_id}/ai-reference", json={"idempotency_key": "hostile-text"})
+        assert response.status_code == 503
+    elif boundary == "sync_replay":
+        guard = client.app.state.solution_generation_guard
+        participant = client.app.state.beta_context.participant_id
+        assert guard.begin(participant, project_id, "hostile-text").owner
+        guard.complete(participant, project_id, "hostile-text", error.as_payload(), status_code=503)
+        response = client.post(f"/api/projects/{project_id}/solutions/generate", headers={"X-Idempotency-Key": "hostile-text"})
+        assert response.status_code == 503
+    else:
+        run = replace(_failed_async_run(project_id), response=error.as_payload())
+        monkeypatch.setattr(client.app.state.async_generation_repository, "get", lambda *_args, **_kwargs: run)
+        response = client.get(f"/api/projects/{project_id}/solutions/generate/{run.generation_run_id}")
+        assert response.status_code == 200
+        assert response.json()["status"] == "FAILED"
+    payload = _assert_public_response(response)
+    assert payload["error_code"] == expected_code
+    assert payload["message"] == message
+    assert payload["recovery_actions"] == actions
+    assert payload["content_written"] is False
+
+
+@pytest.mark.parametrize(
+    ("code", "retryable"),
+    (
+        ("MODEL_TIMEOUT", True),
+        ("MODEL_PROVIDER_ERROR", True),
+        ("MODEL_OUTPUT_CONTRACT_FAILED", False),
+        ("PROVIDER_OUTPUT_PARSE_FAILED", False),
+        ("MODEL_OUTPUT_SCHEMA_INVALID", False),
+        ("MODEL_CREDENTIAL_MISSING", False),
+        ("MODEL_CREDENTIAL_INVALID", False),
+        ("MODEL_CONFIGURATION_INVALID", False),
+        ("MODEL_CAPABILITY_UNAVAILABLE", False),
+        ("ASYNC_GENERATION_CANCELLED", False),
+    ),
+)
+def test_typed_retry_policy_survives_sync_and_async_replay(client, monkeypatch, code, retryable):
+    from app.services.generation_contracts import GenerationContractError, failure_public
+
+    project_id = _quick_project(client)
+    error = (GenerationContractError("SURFACE_SCHEMA_FAILED") if code == "MODEL_OUTPUT_CONTRACT_FAILED"
+             else StructuredRuntimeRecoveryError(error_code=code, message="不可信的说明", recovery_actions=["不可信的操作"]))
+
+    def fail(*_args, **_kwargs):
+        raise error
+
+    runtime = _FailingRuntime()
+    monkeypatch.setattr(runtime, "generate_ai_reference", fail)
+    monkeypatch.setattr(client.app.state, "structured_runtime", _FakeRuntimeRouter(runtime))
+    response = client.post(f"/api/projects/{project_id}/ai-reference", json={"idempotency_key": "typed-retry"})
+    assert response.status_code == 503
+    assert response.json()["retryable"] is retryable
+    assert error.retryable is retryable
+
+    # Legacy envelopes may omit the field or contain a now-incorrect True.
+    for stored_flag in (None, True, False):
+        stored = error.as_payload()
+        if stored_flag is not None:
+            stored["retryable"] = stored_flag
+        expected = retryable and stored_flag is not False
+        assert failure_public(stored)["retryable"] is expected
+        run = replace(_failed_async_run(project_id), response=stored)
+        monkeypatch.setattr(client.app.state.async_generation_repository, "get", lambda *_args, **_kwargs: run)
+        poll = client.get(f"/api/projects/{project_id}/solutions/generate/{run.generation_run_id}")
+        assert poll.status_code == 200
+        assert poll.json()["retryable"] is expected
+
+        guard = client.app.state.solution_generation_guard
+        participant = client.app.state.beta_context.participant_id
+        key = f"retry-{stored_flag}"
+        assert guard.begin(participant, project_id, key).owner
+        guard.complete(participant, project_id, key, stored, status_code=503)
+        replay = client.post(f"/api/projects/{project_id}/solutions/generate", headers={"X-Idempotency-Key": key})
+        assert replay.status_code == 503
+        assert replay.json()["retryable"] is expected
+
+
+@pytest.mark.parametrize(
+    ("code", "retryable"),
+    (
+        ("MODEL_RATE_LIMITED", True), ("MODEL_NETWORK_ERROR", True),
+        ("STRUCTURED_RUNTIME_UNAVAILABLE", True),
+        ("SOLUTION_GENERATION_FAILED", True), ("ASYNC_GENERATION_FAILED", True),
+        ("STAGE_A_FIXTURE_CONTROLLED_FAILURE", True),
+        ("MODEL_QUOTA_EXHAUSTED", False), ("MODEL_NOT_FOUND", False),
+        ("MODEL_MODEL_NOT_FOUND", False), ("MODEL_UNAUTHORIZED", False),
+        ("MODEL_REQUEST_REJECTED", False), ("MODEL_INVALID_REQUEST", False),
+        ("MODEL_UNSUPPORTED_PROTOCOL", False), ("MODEL_DISPATCH_CONTROL_INVALID", False),
+        ("MODEL_STRUCTURED_OUTPUT_UNSUPPORTED", False), ("MODEL_UNSUPPORTED_FEATURE", False),
+        ("CREDENTIAL_BACKEND_UNAVAILABLE", False), ("MODEL_ROUND_LIMIT_REACHED", False),
+        ("LOCAL_GUIDANCE_REQUIRED", False), ("IDEMPOTENCY_MODEL_MISMATCH", False),
+        ("SOLUTION_GENERATION_IN_PROGRESS", False),
+    ),
+)
+def test_existing_failure_codes_keep_safe_identity_and_typed_retry_policy(code, retryable):
+    from app.services.generation_contracts import failure_public
+
+    # Closing the code set must retain every existing producer's public identity.
+    error = StructuredRuntimeRecoveryError(
+        error_code=code, message=" | ".join(PRIVATE_MARKERS), recovery_actions=list(PRIVATE_MARKERS)
+    )
+    for payload in (error.as_public_payload(), failure_public(error.as_payload())):
+        assert not _public_leaks(payload)
+        assert payload["error_code"] == code
+        assert payload["retryable"] is retryable
+        assert all(any("\u4e00" <= char <= "\u9fff" for char in text)
+                   for text in (payload["message"], *payload["recovery_actions"]))

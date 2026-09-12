@@ -225,7 +225,14 @@ def test_stage_a_failure_fixture_uses_normal_route_and_retry(stage_a_fail_once_c
     assert first_payload["error_code"] == "STAGE_A_FIXTURE_CONTROLLED_FAILURE"
     assert "项目内容已经保留" in first_payload["message"]
     assert any("重新生成" in action for action in first_payload["recovery_actions"])
-    assert first_payload["preserved_input"]["original_idea"] == "求职进度管理助手"
+    assert "preserved_input" not in first_payload
+    assert first_payload["content_written"] is False
+    assert first_payload["retryable"] is True
+    preserved = client.app.state.db.fetch_one(
+        "SELECT original_idea FROM idea_briefs WHERE project_id=? ORDER BY version DESC LIMIT 1",
+        (project_id,),
+    )
+    assert preserved["original_idea"] == "求职进度管理助手"
 
     retry = client.post(f"/api/projects/{project_id}/solutions/generate")
     assert retry.status_code == 201, retry.text

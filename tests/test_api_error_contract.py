@@ -44,7 +44,7 @@ def _walk(value: Any, path: str = "$"):
             yield from _walk(item, f"{path}[{index}]")
 
 
-def _assert_safe_failure(payload: dict[str, Any]) -> None:
+def _assert_safe_failure(payload: dict[str, Any], *, retryable: bool) -> None:
     for path, key, _value in _walk(payload):
         normalized = "".join(character for character in str(key).lower() if character.isalnum())
         assert normalized not in DENIED_KEYS, f"denied key at {path}: {payload!r}"
@@ -54,7 +54,7 @@ def _assert_safe_failure(payload: dict[str, Any]) -> None:
     assert payload["error_code"]
     assert payload.get("message") or payload.get("detail")
     assert payload["content_written"] is False
-    assert payload["retryable"] is True
+    assert payload["retryable"] is retryable
     assert payload["recovery_actions"]
 
 
@@ -119,4 +119,4 @@ def test_generation_error_handler_exposes_only_safe_failure_semantics(
     )
 
     assert response.status_code == 503, response.text
-    _assert_safe_failure(response.json())
+    _assert_safe_failure(response.json(), retryable=type(error) is StructuredRuntimeUnavailableError)

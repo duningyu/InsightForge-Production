@@ -24,6 +24,8 @@ def test_async_public_rejects_legacy_incomplete_success(db, response):
 
 @pytest.mark.parametrize("kind", ["two", "missing", "malformed", "valid"])
 def test_async_poll_and_post_replay_check_stored_success(client, kind):
+    # Seed a historical terminal result without racing the live worker's claim.
+    client.app.state.async_generation_worker.stop()
     project = "project_insightforge_demo"
     repository = client.app.state.async_generation_repository
     participant = client.app.state.beta_context.participant_id

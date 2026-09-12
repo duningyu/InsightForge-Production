@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from app.errors import StructuredOutputContractError
+from app.errors import StructuredOutputContractError, public_recovery_payload
 from app.schemas import AIReferenceDraft, EvidenceGuidanceDraft, SolutionCandidateDraft
 
 
@@ -220,17 +220,11 @@ def validate_document_draft(data: Any) -> dict[str, Any]:
 
 
 def failure_public(data: dict[str, Any]) -> dict[str, Any]:
-    # Error producers own fixed messages. No arbitrary diagnostic/nested fields.
+    # Persisted text is untrusted too: use the same typed copy as live errors.
     result = {key: data[key] for key in (
-        "error_code", "message", "quota_status", "failure_stage", "fixture_origin", "fixture_disclosure",
+        "quota_status", "failure_stage", "fixture_origin", "fixture_disclosure",
     ) if isinstance(data.get(key), str)}
-    result.setdefault("error_code", "MODEL_OUTPUT_CONTRACT_FAILED")
-    result.setdefault("message", StructuredOutputContractError.message)
-    if result["error_code"] == "MODEL_OUTPUT_CONTRACT_FAILED":
-        result["message"] = StructuredOutputContractError.message
-    result["recovery_actions"] = data["recovery_actions"] if _items(data.get("recovery_actions")) else ["重新生成"]
-    result["content_written"] = False
-    result["retryable"] = data["retryable"] if isinstance(data.get("retryable"), bool) else True
+    result.update(public_recovery_payload(data.get("error_code"), retryable=data.get("retryable")))
     return result
 
 

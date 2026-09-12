@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
-from app.errors import StructuredRuntimeRecoveryError, StructuredRuntimeUnavailableError
+from app.errors import StructuredOutputContractError, StructuredRuntimeRecoveryError, StructuredRuntimeUnavailableError
 from app.schemas import (
     AIReferenceDraft,
     CompetitorComparisonDraft,
@@ -554,6 +554,11 @@ class ManagedQwenStructuredRuntime:
             if operation is not None and self._after_provider_failure is not None:
                 self._release_reservation(operation, reservation)
             self.last_provider_diagnostic = dict(exc.safe_diagnostic)
+            if exc.code in {"malformed_response", "invalid_content"}:
+                raise StructuredOutputContractError(
+                    preserved_input=kwargs.get("claim") if method == "analyze_evidence" else (args[0] if args else {}),
+                    safe_diagnostic=exc.safe_diagnostic,
+                ) from exc
             raise StructuredRuntimeRecoveryError(
                 error_code=f"MODEL_{exc.code.upper()}",
                 message=(
@@ -614,6 +619,11 @@ class ManagedQwenStructuredRuntime:
             if operation is not None and self._after_provider_failure is not None:
                 self._release_reservation(operation, reservation)
             self.last_provider_diagnostic = dict(exc.safe_diagnostic)
+            if exc.code in {"malformed_response", "invalid_content"}:
+                raise StructuredOutputContractError(
+                    preserved_input=kwargs.get("claim") if method == "analyze_evidence" else (args[0] if args else {}),
+                    safe_diagnostic=exc.safe_diagnostic,
+                ) from exc
             raise StructuredRuntimeRecoveryError(
                 error_code=f"MODEL_{exc.code.upper()}",
                 message=("AI 服务暂时繁忙，你的项目内容已保存，请稍后重试。" if exc.safe_diagnostic.get("provider_error_source") == "UPSTREAM_HTTP_503" else "AI 服务暂时不可用；你的输入已保存，可以稍后重试。"),

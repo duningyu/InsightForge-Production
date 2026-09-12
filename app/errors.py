@@ -81,3 +81,21 @@ class StructuredRuntimeRecoveryError(StructuredRuntimeUnavailableError):
             "recovery_actions": list(self.recovery_actions),
             "preserved_input": value,
         }
+
+
+class StructuredOutputContractError(StructuredRuntimeRecoveryError):
+    """Structured generation failed before producing a usable domain object."""
+
+    message = "AI 返回的内容格式不符合要求，本次未生成可用内容；请重试。"
+
+    def __init__(
+        self, *, preserved_input: Any | None = None,
+        safe_diagnostic: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            error_code="MODEL_OUTPUT_CONTRACT_FAILED",
+            message=self.message,
+            recovery_actions=["重新生成"],
+            preserved_input=preserved_input,
+            safe_diagnostic=safe_diagnostic,
+        )

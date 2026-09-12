@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from typing import Literal
@@ -51,12 +52,12 @@ def _provider_response(content: str) -> httpx.Response:
     )
 
 
-def _generate_sync(content: str) -> OutputContractDraft:
+def _generate_sync(content: str | httpx.Response) -> OutputContractDraft:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return _provider_response(content)
+        return content if isinstance(content, httpx.Response) else _provider_response(content)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         adapter = ModelAdapter(
@@ -75,12 +76,12 @@ def _generate_sync(content: str) -> OutputContractDraft:
             assert len(requests) == 1
 
 
-def _generate_async(content: str) -> OutputContractDraft:
+def _generate_async(content: str | httpx.Response) -> OutputContractDraft:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return _provider_response(content)
+        return content if isinstance(content, httpx.Response) else _provider_response(content)
 
     async def exercise() -> OutputContractDraft:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -102,7 +103,7 @@ def _generate_async(content: str) -> OutputContractDraft:
     return asyncio.run(exercise())
 
 
-def _generate(kind: Literal["sync", "async"], content: str) -> OutputContractDraft:
+def _generate(kind: Literal["sync", "async"], content: str | httpx.Response) -> OutputContractDraft:
     if kind == "sync":
         return _generate_sync(content)
     return _generate_async(content)
@@ -166,4 +167,96 @@ def test_structured_output_rejects_invalid_or_ambiguous_payload(
     error = caught.value
     assert error.retryable is False
     assert content not in str(error)
+    assert "STAGE_B_RAW_SENTINEL" not in _exception_chain_text(error)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert "格式" in error.safe_message
+    assert set(error.safe_diagnostic) == {
+        "output_sha256", "output_byte_count", "output_classification"
+    }
+    assert error.safe_diagnostic["output_sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
+    assert error.safe_diagnostic["output_byte_count"] == len(content.encode("utf-8"))
+
+
+@pytest.mark.parametrize("kind", ("sync", "async"))
+def test_bom_and_whitespace_are_removed_before_parsing(kind):
+    result = _generate(kind, ' \t\ufeff {"message":"你好","items":[]} \r\n')
+    assert result.model_dump() == {"message": "你好", "items": []}
+
+
+@pytest.mark.parametrize("kind", ("sync", "async"))
+@pytest.mark.parametrize("content", (
+    "", '\ufeff  ',
+    '```json\n{"message":"ok","items":[]}\n```\nSTAGE_B_RAW_SENTINEL',
+    '```python\n{"message":"ok","items":[]}\n```',
+    '```json\n{"message":"ok","items":[]}\n```\n```json\n{}\n```',
+    '{"message":"ok","items":[],"error":{"message":"STAGE_B_RAW_SENTINEL"}}',
+))
+def test_unsupported_or_ambiguous_wrappers_and_embedded_errors_fail_closed(kind, content):
+    with pytest.raises(ProviderCallError) as caught:
+        _generate(kind, content)
+    assert caught.value.retryable is False
+    assert "STAGE_B_RAW_SENTINEL" not in _exception_chain_text(caught.value)
+
+
+@pytest.mark.parametrize("kind", ("sync", "async"))
+@pytest.mark.parametrize("response", (
+    lambda: httpx.Response(200, content=b"STAGE_B_RAW_SENTINEL-not-json"),
+    lambda: httpx.Response(200, json={"error": {"message": "STAGE_B_RAW_SENTINEL"}}),
+    lambda: httpx.Response(200, json={"choices": [{"message": {"content": None}}]}),
+))
+def test_invalid_transport_envelopes_are_safe_typed_failures(kind, response):
+    with pytest.raises(ProviderCallError) as caught:
+        _generate(kind, response())
+    error = caught.value
+    assert "格式" in error.safe_message
+    assert error.retryable is False
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert "STAGE_B_RAW_SENTINEL" not in _exception_chain_text(error)
+    assert set(error.safe_diagnostic) == {
+        "output_sha256", "output_byte_count", "output_classification"
+    }
+
+
+@pytest.mark.parametrize("kind", ("sync", "async"))
+@pytest.mark.parametrize("content", (
+    '{"message":"STAGE_B_RAW_SENTINEL"',
+    '{"unexpected":"STAGE_B_RAW_SENTINEL"}',
+))
+def test_managed_runtime_exposes_actionable_output_failure_without_diagnostics(kind, content):
+    from app.errors import StructuredRuntimeRecoveryError
+    from app.schemas import QuickStartRequest
+    from app.services.ai_runtime import ManagedQwenStructuredRuntime
+
+    request = QuickStartRequest(idea="需要工业预警")
+    transport = httpx.MockTransport(lambda _request: _provider_response(content))
+
+    async def exercise_async():
+        async with httpx.AsyncClient(transport=transport) as client:
+            runtime = ManagedQwenStructuredRuntime(
+                model="stage-b-test-model", api_key="stage-b-fake-key",
+                async_adapter_factory=lambda **kwargs: AsyncModelAdapter(client=client, **kwargs),
+            )
+            return await runtime.async_interpret_idea(request)
+
+    with pytest.raises(StructuredRuntimeRecoveryError) as caught:
+        if kind == "async":
+            asyncio.run(exercise_async())
+        else:
+            with httpx.Client(transport=transport) as client:
+                runtime = ManagedQwenStructuredRuntime(
+                    model="stage-b-test-model", api_key="stage-b-fake-key",
+                    adapter_factory=lambda **kwargs: ModelAdapter(client=client, **kwargs),
+                )
+                runtime.interpret_idea(request)
+
+    error = caught.value
+    assert error.error_code == "MODEL_OUTPUT_CONTRACT_FAILED"
+    assert "格式" in error.message
+    assert "未生成" in error.message
+    assert "重试" in error.message
+    assert error.as_payload()["preserved_input"] == request.model_dump(mode="json")
+    assert error.as_payload()["recovery_actions"]
+    assert "safe_diagnostic" not in error.as_payload()
     assert "STAGE_B_RAW_SENTINEL" not in _exception_chain_text(error)

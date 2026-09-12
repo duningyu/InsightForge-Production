@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
@@ -14,6 +15,7 @@ from typing import Any, Callable, Literal, TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from app.errors import StructuredOutputContractError
 from app.schemas import (
     AIReferenceDraft,
     CompetitorComparisonDraft,
@@ -341,38 +343,7 @@ class ModelAdapter:
             structured=True,
             output_model=output_model,
         )
-        content = self._content_from_response(body)
-        malformed = False
-        parsed: Any = None
-        try:
-            parsed = json.loads(content)
-        except (TypeError, json.JSONDecodeError):
-            malformed = True
-        self.last_safe_diagnostic.update({
-            "structured_payload_found": isinstance(parsed, (dict, list)),
-            "json_parse_success": not malformed,
-        })
-        if malformed:
-            raise ProviderCallError(
-                "malformed_response", "Provider returned invalid JSON.", False
-            )
-        invalid = False
-        validated: _Model | None = None
-        try:
-            validated = output_model.model_validate(parsed)
-        except ValidationError:
-            invalid = True
-        self.last_safe_diagnostic["schema_validation_success"] = not invalid
-        if invalid:
-            raise ProviderCallError(
-                "invalid_content",
-                "Provider response did not match the required schema.",
-                False,
-            )
-        assert validated is not None
-        if isinstance(parsed, dict) and isinstance(parsed.get("candidates"), list):
-            self.last_safe_diagnostic["raw_candidate_count"] = len(parsed["candidates"])
-        return validated
+        return self._validate_structured_response(body, output_model)
 
     def _request(
         self, *, system: str, user: str, structured: bool, max_tokens: int | None = None,
@@ -530,18 +501,7 @@ class ModelAdapter:
             "response_content_type": response.headers.get("content-type", "").split(";", 1)[0].strip() or None,
             "response_body_length": len(response.content),
         }
-        malformed_json = False
-        body: Any = None
-        try:
-            body = response.json()
-        except (json.JSONDecodeError, ValueError):
-            malformed_json = True
-        if malformed_json:
-            raise ProviderCallError(
-                "malformed_response", "Provider returned invalid JSON.", False
-            )
-        if not isinstance(body, dict):
-            raise ProviderCallError("malformed_response", "Provider returned an invalid response shape.", False)
+        body = self._decode_response_body(response, structured=structured)
         # Internal transport metadata used only for safe diagnostics; never persisted verbatim.
         body["_http_status"] = response.status_code
         if isinstance(body.get("choices"), list) and body["choices"]:
@@ -690,6 +650,90 @@ class ModelAdapter:
             ),
             user=json.dumps(context, ensure_ascii=False),
         )
+
+    def _output_contract_failure(
+        self, raw: bytes, *, classification: str, code: str = "malformed_response",
+    ) -> ProviderCallError:
+        diagnostic = {
+            "output_sha256": hashlib.sha256(raw).hexdigest(),
+            "output_byte_count": len(raw),
+            "output_classification": classification,
+        }
+        self.last_safe_diagnostic.update(diagnostic)
+        return ProviderCallError(
+            code, StructuredOutputContractError.message, False,
+            safe_diagnostic=diagnostic,
+        )
+
+    def _decode_response_body(self, response: httpx.Response, *, structured: bool) -> dict[str, Any]:
+        body: Any = None
+        try:
+            body = response.json()
+        except ValueError:
+            pass
+        # Raise outside the handler: even `from None` retains the raw context.
+        if not isinstance(body, dict):
+            if structured:
+                raise self._output_contract_failure(response.content, classification="invalid_envelope")
+            raise ProviderCallError("malformed_response", "Provider returned an invalid response shape.", False)
+        return body
+
+    def _normalize_structured_output(self, content: str) -> dict[str, Any]:
+        """Accept exactly one object, optionally inside a JSON or unlabelled fence."""
+        raw = content.encode("utf-8")
+        normalized = content.strip().lstrip("\ufeff").strip()
+        self.last_safe_diagnostic.update({
+            "structured_payload_found": False,
+            "json_parse_success": False,
+            "schema_validation_success": False,
+        })
+        if not normalized:
+            raise self._output_contract_failure(raw, classification="empty_output")
+        fence = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", normalized, re.DOTALL)
+        if fence is not None:
+            normalized = fence.group(1).strip()
+        parsed: Any = None
+        malformed = False
+        try:
+            parsed = json.loads(normalized)
+        except ValueError:
+            malformed = True
+        self.last_safe_diagnostic["json_parse_success"] = not malformed
+        if malformed:
+            raise self._output_contract_failure(raw, classification="invalid_json")
+        if not isinstance(parsed, dict):
+            raise self._output_contract_failure(raw, classification="non_object")
+        if "error" in parsed:
+            raise self._output_contract_failure(raw, classification="provider_error")
+        self.last_safe_diagnostic["structured_payload_found"] = True
+        return parsed
+
+    def _validate_structured_response(self, body: dict[str, Any], output_model: type[_Model]) -> _Model:
+        content: str | None = None
+        if "error" not in body:
+            try:
+                content = self._content_from_response(body)
+            except ProviderCallError:
+                pass
+        if content is None:
+            raise self._output_contract_failure(
+                json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                classification="provider_error" if "error" in body else "invalid_envelope",
+            )
+        parsed = self._normalize_structured_output(content)
+        validated: _Model | None = None
+        try:
+            validated = output_model.model_validate(parsed)
+        except ValidationError:
+            pass
+        if validated is None:
+            raise self._output_contract_failure(
+                content.encode("utf-8"), classification="schema_mismatch", code="invalid_content",
+            )
+        self.last_safe_diagnostic["schema_validation_success"] = True
+        if isinstance(parsed.get("candidates"), list):
+            self.last_safe_diagnostic["raw_candidate_count"] = len(parsed["candidates"])
+        return validated
 
     def _content_from_response(self, body: dict[str, Any]) -> str:
         malformed = False
@@ -851,22 +895,7 @@ class AsyncModelAdapter(ModelAdapter):
 
     async def _generate_async(self, *, output_model: type[_Model], system: str, user: str) -> _Model:
         body = await self._request_async(system=system, user=user, structured=True, output_model=output_model)
-        content = self._content_from_response(body)
-        try:
-            parsed = json.loads(content)
-        except (TypeError, json.JSONDecodeError) as exc:
-            self.last_safe_diagnostic.update({"structured_payload_found": False, "json_parse_success": False})
-            raise ProviderCallError("malformed_response", "Provider returned invalid JSON.", False) from exc
-        self.last_safe_diagnostic.update({"structured_payload_found": isinstance(parsed, (dict, list)), "json_parse_success": True})
-        try:
-            validated = output_model.model_validate(parsed)
-        except ValidationError as exc:
-            self.last_safe_diagnostic["schema_validation_success"] = False
-            raise ProviderCallError("invalid_content", "Provider response did not match the required schema.", False) from exc
-        self.last_safe_diagnostic["schema_validation_success"] = True
-        if isinstance(parsed, dict) and isinstance(parsed.get("candidates"), list):
-            self.last_safe_diagnostic["raw_candidate_count"] = len(parsed["candidates"])
-        return validated
+        return self._validate_structured_response(body, output_model)
 
     async def _request_async(self, *, system: str, user: str, structured: bool,
                              max_tokens: int | None = None, live: bool = False,
@@ -924,12 +953,7 @@ class AsyncModelAdapter(ModelAdapter):
         if response.status_code >= 400:
             raise self._error_for_status(response)
         self.last_safe_diagnostic = {"provider_request_started": True, "provider_request_completed": True, "upstream_response_received": True, "upstream_http_status": response.status_code, "upstream_request_id": next((response.headers[name][:120] for name in ("x-request-id", "request-id") if response.headers.get(name)), "NO_UPSTREAM_REQUEST_ID"), "upstream_error_code": "NO_UPSTREAM_ERROR_CODE", "provider_exception_class": None, "provider_failure_stage": None, "retry_after_present": "retry-after" in response.headers, "response_body_length": len(response.content)}
-        try:
-            body = response.json()
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise ProviderCallError("malformed_response", "Provider returned invalid JSON.", False) from exc
-        if not isinstance(body, dict):
-            raise ProviderCallError("malformed_response", "Provider returned an invalid response shape.", False)
+        body = self._decode_response_body(response, structured=structured)
         body["_http_status"] = response.status_code
         if isinstance(body.get("choices"), list) and body["choices"]:
             first = body["choices"][0]

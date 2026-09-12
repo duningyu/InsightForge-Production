@@ -62,4 +62,6 @@ Append task reports, review packages, reviewer verdicts, and any scoped fix ruli
 - Whole-branch review: `whole-branch-review.md` initially FAIL with R1-R5. Concentrated R1-R4 fix `7a4a0a8` was independently scoped-reviewed; F1/F2 remained.
 - Final concentrated fix: `34ba419`, with RED evidence `f1-f2-red-evidence.md` and fix report `f1-f2-fix-report.md`.
 - Final scoped re-review: `f1-f2-rereview.md` PASS; 55 Python tests, 202 frontend checks, and zero external connection attempts.
+- Post-review regression correction: `8032244`; affected regression set 63 passed and frontend harness 204 passed. It restores materially distinct fake exact-three payloads and historical safe-render behavior without weakening Stage B contracts.
+- Fresh repository-wide verification after `8032244`: `1000 passed, 12 failed` in 944.45s; the 12 failures match the documented pre-existing baseline set. No new full-suite failures remain.
 - R5 remains a verification limitation: no current-head complete Chromium viewport/reload acceptance was established in this phase.

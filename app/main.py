@@ -585,13 +585,16 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
     @application.exception_handler(StructuredRuntimeUnavailableError)
     async def structured_runtime_error_handler(_request, exc: StructuredRuntimeUnavailableError):
         # Provider/runtime details are diagnostic data, not primary user copy.
-        # Keep the response actionable and stable; the frontend may expose only
-        # the raw exception inside its collapsed technical-details disclosure.
+        # Keep the response actionable and stable; raw exception text remains
+        # private even when the upstream failure was unexpected.
         return JSONResponse(
             status_code=503,
             content={
                 "detail": "这次没有生成可用内容，请稍后重试。你的项目内容未被改成资料。",
                 "error_code": "STRUCTURED_RUNTIME_UNAVAILABLE",
+                "recovery_actions": ["稍后重试"],
+                "content_written": False,
+                "retryable": True,
             },
         )
 
@@ -599,7 +602,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
     async def structured_runtime_recovery_handler(
         _request, exc: StructuredRuntimeRecoveryError
     ):
-        return JSONResponse(status_code=503, content=exc.as_payload())
+        return JSONResponse(status_code=503, content=exc.as_public_payload())
 
     @application.exception_handler(CredentialBackendUnavailable)
     async def credential_backend_error_handler(_request, _exc: CredentialBackendUnavailable):

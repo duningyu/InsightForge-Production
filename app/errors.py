@@ -82,6 +82,16 @@ class StructuredRuntimeRecoveryError(StructuredRuntimeUnavailableError):
             "preserved_input": value,
         }
 
+    def as_public_payload(self) -> dict[str, Any]:
+        """Return the stable API failure contract without private diagnostics/input."""
+        return {
+            "error_code": self.error_code,
+            "message": self.message,
+            "recovery_actions": list(self.recovery_actions),
+            "content_written": False,
+            "retryable": True,
+        }
+
 
 class StructuredOutputContractError(StructuredRuntimeRecoveryError):
     """Structured generation failed before producing a usable domain object."""

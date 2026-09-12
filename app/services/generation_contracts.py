@@ -229,8 +229,8 @@ def failure_public(data: dict[str, Any]) -> dict[str, Any]:
     if result["error_code"] == "MODEL_OUTPUT_CONTRACT_FAILED":
         result["message"] = StructuredOutputContractError.message
     result["recovery_actions"] = data["recovery_actions"] if _items(data.get("recovery_actions")) else ["重新生成"]
-    if isinstance(data.get("retryable"), bool):
-        result["retryable"] = data["retryable"]
+    result["content_written"] = False
+    result["retryable"] = data["retryable"] if isinstance(data.get("retryable"), bool) else True
     return result
 
 

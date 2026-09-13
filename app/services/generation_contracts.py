@@ -29,6 +29,14 @@ REFERENCE_FIELDS = (
     "possible_target_users", "possible_scenarios", "possible_user_problems",
     "missing_information", "mvp_thoughts", "questions_to_validate", "research_directions",
 )
+AI_REFERENCE_GENERATION_INSTRUCTION = (
+    "Always populate at least one non-empty substantive reference field from: "
+    + ", ".join(REFERENCE_FIELDS)
+    + ". uncertainty_notice is supplemental and must never be the only non-empty field. "
+    "When no external evidence is supplied, provide suggestions, hypotheses, questions to validate, "
+    "or possible product directions based on the supplied idea and context. Label them as unverified; "
+    "never present them as research findings, market facts, statistics, sources, or user interviews."
+)
 
 
 def _safe_shape_type(value: Any) -> str:

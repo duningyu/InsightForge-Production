@@ -22,6 +22,7 @@ from app.schemas import (
 )
 from app.services.provider_adapters import AsyncModelAdapter, DEFAULT_PROVIDER_TIMEOUT, ModelAdapter, ProviderCallError
 from app.services.dispatch_control import DispatchControlContext
+from app.services.generation_contracts import AI_REFERENCE_GENERATION_INSTRUCTION
 from app.services.stage_b_evaluation import StageBEvaluationContext
 
 RuntimeMode = Literal["llm_structured", "deterministic_demo", "managed_qwen"]
@@ -393,7 +394,8 @@ class OpenAIStructuredRuntime:
         self.model_rounds_used = 1
         system = (
             "Provide conservative brainstorming for a product idea. Return structured reference suggestions only. "
-            "Do not claim user research, official data, market facts, or sources. Mark all suggestions as unverified."
+            "Do not claim user research, official data, market facts, or sources. Mark all suggestions as unverified. "
+            + AI_REFERENCE_GENERATION_INSTRUCTION
         )
         try:
             response = self.client.responses.parse(

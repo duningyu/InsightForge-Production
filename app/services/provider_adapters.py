@@ -28,7 +28,7 @@ from app.schemas import (
 from app.services.capability_probe import CapabilityProbe, CapabilityReport, CapabilityStatus
 from app.services.model_providers import ProviderConfigurationError, ProviderRegistry
 from app.services.dispatch_control import DispatchControlContext
-from app.services.generation_contracts import safe_reference_shape
+from app.services.generation_contracts import AI_REFERENCE_GENERATION_INSTRUCTION, safe_reference_shape
 
 
 class ProviderCallError(RuntimeError):
@@ -660,7 +660,8 @@ class ModelAdapter:
                 "Provide conservative brainstorming suggestions for a product idea. "
                 "Return only structured JSON. Do not invent research, official facts, "
                 "statistics, sources, URLs, or user interviews; keep every suggestion "
-                "as an unverified hypothesis."
+                "as an unverified hypothesis. "
+                + AI_REFERENCE_GENERATION_INSTRUCTION
             ),
             user=json.dumps(context, ensure_ascii=False),
         )
@@ -911,7 +912,8 @@ class AsyncModelAdapter(ModelAdapter):
                 "Provide conservative brainstorming suggestions for a product idea. "
                 "Return only structured JSON. Do not invent research, official facts, "
                 "statistics, sources, URLs, or user interviews; keep every suggestion "
-                "as an unverified hypothesis."
+                "as an unverified hypothesis. "
+                + AI_REFERENCE_GENERATION_INSTRUCTION
             ),
             user=json.dumps(context, ensure_ascii=False),
         )

@@ -43,7 +43,10 @@ class AIReferenceProviderReference(BaseModel):
     """Provider-facing item; categories are mapped into the unchanged domain draft."""
 
     model_config = ConfigDict(extra="forbid")
-    category: str
+    category: str = Field(
+        ...,
+        json_schema_extra={"enum": list(REFERENCE_FIELDS)},
+    )
     content: str = Field(min_length=1)
 
     @field_validator("category")

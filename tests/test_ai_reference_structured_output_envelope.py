@@ -4,8 +4,18 @@ from pydantic import ValidationError
 from app.schemas import AIReferenceDraft
 from app.services.generation_contracts import (
     AIReferenceProviderEnvelope,
+    AIReferenceProviderReference,
+    REFERENCE_FIELDS,
     map_ai_reference_provider_envelope,
 )
+
+
+def test_provider_facing_schema_exposes_reference_category_enum():
+    schema = AIReferenceProviderEnvelope.model_json_schema()
+    item_schema = schema["$defs"][AIReferenceProviderReference.__name__]
+    category_schema = item_schema["properties"]["category"]
+
+    assert set(category_schema["enum"]) == set(REFERENCE_FIELDS)
 
 
 def test_provider_envelope_requires_substantive_reference_item():

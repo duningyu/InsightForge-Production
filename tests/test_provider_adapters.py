@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from app.schemas import IdeaBriefDraft, QuickStartRequest, SolutionSetDraft
+from app.services.generation_contracts import REFERENCE_FIELDS
 
 
 @pytest.mark.parametrize(
@@ -254,6 +255,25 @@ def test_qwen_structured_generation_uses_strict_json_schema():
         handler=handler,
     ).interpret_idea(QuickStartRequest(idea="Predict failures"))
     assert isinstance(actual, IdeaBriefDraft)
+
+
+def test_qwen_ai_reference_provider_schema_exposes_category_enum():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        schema = body["response_format"]["json_schema"]["schema"]
+        item_schema = schema["$defs"]["AIReferenceProviderReference"]
+        assert set(item_schema["properties"]["category"]["enum"]) == set(REFERENCE_FIELDS)
+        return _chat_response({
+            "references": [{"category": "mvp_thoughts", "content": "建议先记录投递阶段。"}],
+        })
+
+    actual = _provider_adapter(
+        provider="qwen",
+        model="qwen3.7-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        handler=handler,
+    ).generate_ai_reference({"idea": "求职进度管理工具"})
+    assert actual.mvp_thoughts == ["建议先记录投递阶段。"]
 
 
 def test_qwen_live_check_disables_thinking():

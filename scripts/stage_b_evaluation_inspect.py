@@ -592,7 +592,10 @@ def main(argv: list[str] | None = None) -> int:
         if "--help" in argv[1:]:
             parser.print_help()
             return 0
-        args = parser.parse_args(argv[1:])
+        try:
+            args = parser.parse_args(argv[1:])
+        except SystemExit as exc:
+            return int(exc.code)
         return _run_phase2_canary_cli(args, command)
     if command == "ai-reference-shape-canary":
         parser = argparse.ArgumentParser(description="Run the internal Stage-B AI Reference shape diagnostic")

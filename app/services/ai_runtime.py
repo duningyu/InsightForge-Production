@@ -614,6 +614,14 @@ class ManagedQwenStructuredRuntime:
     async def _call_async(self, method: str, *args: Any, **kwargs: Any) -> Any:
         self.model_rounds_used = 1
         dispatch_control = kwargs.pop("dispatch_control", None)
+        evaluation_context = kwargs.pop("evaluation_context", None)
+        if evaluation_context is not None:
+            derived_control = evaluation_context.to_dispatch_control(
+                provider="bailian", model=self.model
+            )
+            if dispatch_control is not None and dispatch_control != derived_control:
+                raise StructuredRuntimeUnavailableError("EVALUATION_DISPATCH_CONTEXT_MISMATCH")
+            dispatch_control = derived_control
         operation = {"design_solutions": "solution_generation", "analyze_evidence": "evidence_analysis", "generate_ai_reference": "solution_generation", "generate_evidence_guidance": "evidence_analysis"}.get(method)
         reservation = None
         if operation is not None and self._before_provider_call is not None:
@@ -630,9 +638,11 @@ class ManagedQwenStructuredRuntime:
                 adapter_kwargs["generation_run_id"] = generation_run_id
             if self._attempt_observer is not None:
                 adapter_kwargs["attempt_observer"] = self._attempt_observer
-            adapter_kwargs.update(self._dispatch_kwargs(dispatch_control))
+            adapter_kwargs.update(self._dispatch_kwargs(dispatch_control, evaluation_context))
             adapter = self._async_adapter_factory(**adapter_kwargs)
             async_method = getattr(adapter, f"{method}_async")
+            if evaluation_context is not None and evaluation_context.receipt_store is not None:
+                evaluation_context.receipt_store.mark_transport_started(evaluation_context.evaluation_id)
             result = await async_method(*args, **kwargs)
             self.last_provider_diagnostic = dict(getattr(adapter, "last_safe_diagnostic", {}))
             return result
@@ -676,8 +686,8 @@ class ManagedQwenStructuredRuntime:
     def interpret_idea(self, request: QuickStartRequest) -> IdeaBriefDraft:
         return self._call("interpret_idea", request)
 
-    def design_solutions(self, brief: IdeaBriefDraft, *, dispatch_control: DispatchControlContext | None = None) -> SolutionSetDraft:
-        return self._call("design_solutions", brief, dispatch_control=dispatch_control)
+    def design_solutions(self, brief: IdeaBriefDraft, *, dispatch_control: DispatchControlContext | None = None, evaluation_context: StageBEvaluationContext | None = None) -> SolutionSetDraft:
+        return self._call("design_solutions", brief, dispatch_control=dispatch_control, evaluation_context=evaluation_context)
 
     def compare_competitors(
         self, candidates: list[dict[str, Any]], *, project_context: dict[str, Any] | None = None,
@@ -698,8 +708,8 @@ class ManagedQwenStructuredRuntime:
     def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
         return self._call("generate_evidence_guidance", context)
 
-    async def async_design_solutions(self, brief: IdeaBriefDraft, *, generation_intent_id: str | None = None, generation_run_id: str | None = None, dispatch_control: DispatchControlContext | None = None) -> SolutionSetDraft:
-        return await self._call_async("design_solutions", brief, dispatch_control=dispatch_control, _generation_intent_id=generation_intent_id, _generation_run_id=generation_run_id)
+    async def async_design_solutions(self, brief: IdeaBriefDraft, *, generation_intent_id: str | None = None, generation_run_id: str | None = None, dispatch_control: DispatchControlContext | None = None, evaluation_context: StageBEvaluationContext | None = None) -> SolutionSetDraft:
+        return await self._call_async("design_solutions", brief, dispatch_control=dispatch_control, evaluation_context=evaluation_context, _generation_intent_id=generation_intent_id, _generation_run_id=generation_run_id)
 
     async def async_interpret_idea(self, request: QuickStartRequest) -> IdeaBriefDraft:
         return await self._call_async("interpret_idea", request)

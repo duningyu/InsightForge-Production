@@ -56,6 +56,7 @@ from app.db import Database, utc_now
 from app.errors import ConflictError, StructuredRuntimeRecoveryError
 from app.schemas import IdeaBriefDraft, SolutionSetDraft
 from app.services.ai_runtime import StructuredAIRuntime, build_ai_trace_payload, sha256_payload
+from app.services.stage_b_evaluation import StageBEvaluationContext, StageBExecutionPolicy
 
 
 class SolutionDesignService:
@@ -228,6 +229,8 @@ class SolutionDesignService:
 
     def generate(self, project_id: str, *, actor: str, managed_selection: Any | None = None,
                  dispatch_control: DispatchControlContext | None = None,
+                 evaluation_context: StageBEvaluationContext | None = None,
+                 execution_policy: StageBExecutionPolicy | None = None,
                  competitor_snapshot_id: str | None = None,
                  use_competitor_snapshot: bool = True) -> dict[str, Any]:
         brief_row = self._confirmed_brief_row(project_id)
@@ -243,8 +246,13 @@ class SolutionDesignService:
         )
         started = time.perf_counter()
         try:
-            design_kwargs = ({"dispatch_control": dispatch_control}
-                             if dispatch_control is not None else {})
+            if execution_policy is not None:
+                execution_policy.validate()
+            design_kwargs = {}
+            if dispatch_control is not None:
+                design_kwargs["dispatch_control"] = dispatch_control
+            if evaluation_context is not None:
+                design_kwargs["evaluation_context"] = evaluation_context
             raw_output = call_generation(lambda: runtime.design_solutions(brief, **design_kwargs))
             try:
                 raw_set = parse_generation(SolutionSetDraft, raw_output)
@@ -306,8 +314,11 @@ class SolutionDesignService:
 
         def regenerate() -> list[SolutionCandidateDraft]:
             nonlocal regenerated
-            regenerate_kwargs = ({"dispatch_control": dispatch_control}
-                                  if dispatch_control is not None else {})
+            regenerate_kwargs = {}
+            if dispatch_control is not None:
+                regenerate_kwargs["dispatch_control"] = dispatch_control
+            if evaluation_context is not None:
+                regenerate_kwargs["evaluation_context"] = evaluation_context
             regenerated_set = parse_generation(SolutionSetDraft, call_generation(lambda: runtime.design_solutions(brief, **regenerate_kwargs)))
             regenerated = list(regenerated_set.candidates)
             return regenerated
@@ -335,7 +346,15 @@ class SolutionDesignService:
             candidates = validate_with_one_regeneration(
                 list(raw_set.candidates),
                 llm_core_required=raw_set.llm_core_required,
-                regenerate=None if dispatch_control is not None else regenerate,
+                regenerate=(
+                    regenerate
+                    if (
+                        execution_policy.validation_regeneration_allowed
+                        if execution_policy is not None
+                        else dispatch_control is None
+                    )
+                    else None
+                ),
             )
         except ValueError as exc:
             if isinstance(exc, GenerationContractError) and raw_set.candidates:
@@ -464,6 +483,8 @@ class SolutionDesignService:
         generation_intent_id: str | None = None,
         generation_run_id: str | None = None,
         dispatch_control: DispatchControlContext | None = None,
+        evaluation_context: StageBEvaluationContext | None = None,
+        execution_policy: StageBExecutionPolicy | None = None,
         competitor_snapshot_id: str | None = None,
         use_competitor_snapshot: bool = True,
     ) -> dict[str, Any]:
@@ -484,6 +505,8 @@ class SolutionDesignService:
             else resolver(project_id) if callable(resolver) else self.runtime
         )
         started = time.perf_counter()
+        if execution_policy is not None:
+            execution_policy.validate()
         try:
             async_kwargs = {
                 "generation_intent_id": generation_intent_id,
@@ -491,6 +514,8 @@ class SolutionDesignService:
             }
             if dispatch_control is not None:
                 async_kwargs["dispatch_control"] = dispatch_control
+            if evaluation_context is not None:
+                async_kwargs["evaluation_context"] = evaluation_context
             raw_set = parse_generation(SolutionSetDraft, await await_generation(runtime.async_design_solutions(brief, **async_kwargs)))
         except StructuredRuntimeRecoveryError as exc:
             _release_runtime_reservation(runtime)

@@ -88,6 +88,18 @@ class StageBEvaluationContext:
         )
 
 
+@dataclass(frozen=True)
+class StageBExecutionPolicy:
+    """Explicit policy for one bounded Stage-B product-flow execution."""
+
+    validation_regeneration_allowed: bool = True
+    max_provider_transports: int = 1
+
+    def validate(self) -> None:
+        if self.max_provider_transports != 1:
+            raise StageBGuardError("STAGE_B_PRODUCT_FLOW_MUST_ALLOW_EXACTLY_ONE_TRANSPORT")
+
+
 def evaluate_stage_b_guard(
     *,
     real_provider_stage_b: bool,

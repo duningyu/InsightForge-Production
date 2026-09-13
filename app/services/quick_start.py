@@ -82,6 +82,29 @@ class QuickStartService:
         )
         return brief_id
 
+    def _confirm_brief_tx(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        brief_id: str,
+        project_id: str,
+        actor: str,
+        note: str,
+    ) -> None:
+        now = utc_now()
+        connection.execute(
+            "UPDATE idea_briefs SET confirmation_status = 'confirmed', confirmed_at = ? WHERE id = ?",
+            (now, brief_id),
+        )
+        self.db.insert_audit_tx(
+            connection,
+            actor=actor,
+            action="idea_brief_confirmed",
+            entity_type="idea_brief",
+            entity_id=brief_id,
+            payload={"project_id": project_id, "note": note, "market_validation": False},
+        )
+
     def quick_start(self, payload: QuickStartRequest, *, actor: str) -> dict[str, Any]:
         project = self.projects.create_project(
             title=self._title_from_idea(payload.idea),
@@ -174,19 +197,13 @@ class QuickStartService:
             raise ConflictError("cannot confirm a superseded IdeaBrief")
         if brief["confirmation_status"] == "confirmed":
             return brief
-        now = utc_now()
         with self.db.connect() as connection:
-            connection.execute(
-                "UPDATE idea_briefs SET confirmation_status = 'confirmed', confirmed_at = ? WHERE id = ?",
-                (now, brief["id"]),
-            )
-            self.db.insert_audit_tx(
+            self._confirm_brief_tx(
                 connection,
+                brief_id=brief["id"],
+                project_id=project_id,
                 actor=actor,
-                action="idea_brief_confirmed",
-                entity_type="idea_brief",
-                entity_id=brief["id"],
-                payload={"project_id": project_id, "note": note, "market_validation": False},
+                note=note,
             )
         return self.get_brief(project_id)
 

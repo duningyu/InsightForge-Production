@@ -32,6 +32,10 @@ from app.services.stage_b_evaluation import (
     StageBGuardError,
     evaluate_stage_b_guard,
 )
+from app.services.stage_b_synthetic_seed import (
+    STAGE_B_PHASE1A_PARTICIPANT,
+    StageBPhase1ASyntheticProjectSeedService,
+)
 
 
 def _database_path() -> Path:
@@ -441,6 +445,17 @@ def _run_local_prd_canary_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_seed_phase1a_project_cli(args: argparse.Namespace) -> int:
+    database = Database(args.database)
+    database.init_schema()
+    result = StageBPhase1ASyntheticProjectSeedService(database).seed(
+        participant=args.participant,
+        actor=args.actor,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ["--help"]:
@@ -448,12 +463,22 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument(
             "command",
             nargs="?",
-            choices=("inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary"),
+            choices=("inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project"),
             help="operator command (the diagnostic command requires its own arguments)",
         )
         parser.print_help()
         return 0
-    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary"} else "inspect"
+    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project"} else "inspect"
+    if command == "seed-phase1a-project":
+        parser = argparse.ArgumentParser(description="Create the internal Stage-B Phase1A synthetic canary project")
+        parser.add_argument("seed-phase1a-project", nargs="?")
+        parser.add_argument("--database", type=Path, default=_database_path())
+        parser.add_argument("--participant", default=STAGE_B_PHASE1A_PARTICIPANT)
+        parser.add_argument("--actor", default="stage-b-operator")
+        if "--help" in argv[1:]:
+            parser.print_help()
+            return 0
+        return _run_seed_phase1a_project_cli(parser.parse_args(argv[1:]))
     if command in {"solutions-canary", "local-prd-canary"}:
         parser = argparse.ArgumentParser(description=f"Run the internal Stage-B {command} operator")
         parser.add_argument(command, nargs="?")

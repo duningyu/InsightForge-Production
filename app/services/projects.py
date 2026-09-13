@@ -123,18 +123,62 @@ class ProjectService:
     def create_project(self, *, title: str, summary: str, actor: str) -> dict[str, Any]:
         project_id = f"project_{uuid.uuid4().hex}"
         now = utc_now()
-        self.db.execute(
-            "INSERT INTO projects(id, title, summary, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (project_id, title.strip(), summary.strip(), "active", now, now),
+        with self.db.connect() as connection:
+            self.create_project_tx(
+                connection,
+                project_id=project_id,
+                title=title,
+                summary=summary,
+                actor=actor,
+            )
+        return self.get_project(project_id)
+
+    def create_project_tx(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        project_id: str,
+        title: str,
+        summary: str,
+        actor: str,
+        project_origin: str = "user",
+        exclude_from_beta_metrics: bool = False,
+        audit_action: str = "project_created",
+        audit_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a project inside a caller-owned transaction."""
+        now = utc_now()
+        connection.execute(
+            """INSERT INTO projects(
+                id, title, summary, status, project_origin,
+                exclude_from_beta_metrics, created_at, updated_at
+            ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?)""",
+            (
+                project_id, title.strip(), summary.strip(), project_origin,
+                int(exclude_from_beta_metrics), now, now,
+            ),
         )
-        self.db.insert_audit(
+        payload = {"title": title, "summary": summary}
+        if audit_payload:
+            payload.update(audit_payload)
+        self.db.insert_audit_tx(
+            connection,
             actor=actor,
-            action="project_created",
+            action=audit_action,
             entity_type="project",
             entity_id=project_id,
-            payload={"title": title, "summary": summary},
+            payload=payload,
         )
-        return self.get_project(project_id)
+        return {
+            "id": project_id,
+            "title": title.strip(),
+            "summary": summary.strip(),
+            "status": "active",
+            "project_origin": project_origin,
+            "exclude_from_beta_metrics": int(exclude_from_beta_metrics),
+            "created_at": now,
+            "updated_at": now,
+        }
 
     def move_to_trash(self, project_id: str, *, actor: str) -> dict[str, Any]:
         project = self.get_project(project_id)

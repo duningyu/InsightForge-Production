@@ -264,6 +264,16 @@ def _run_ai_reference_shape_canary_cli(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["--help"]:
+        parser = argparse.ArgumentParser(description="Inspect Stage-B evaluation metadata or run an internal diagnostic")
+        parser.add_argument(
+            "command",
+            nargs="?",
+            choices=("inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary"),
+            help="operator command (the diagnostic command requires its own arguments)",
+        )
+        parser.print_help()
+        return 0
     command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary"} else "inspect"
     if command == "ai-reference-shape-canary":
         parser = argparse.ArgumentParser(description="Run the internal Stage-B AI Reference shape diagnostic")

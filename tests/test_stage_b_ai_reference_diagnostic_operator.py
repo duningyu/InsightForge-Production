@@ -220,6 +220,13 @@ def test_operator_help_does_not_create_receipt_or_initialize_provider(tmp_path: 
     assert called is False
 
 
+def test_operator_top_level_help_is_safe_and_successful(capsys) -> None:
+    from scripts.stage_b_evaluation_inspect import main
+
+    assert main(["--help"]) == 0
+    assert "ai-reference-shape-canary" in capsys.readouterr().out
+
+
 def test_operator_runs_two_evaluations_without_cross_linkage(tmp_path: Path) -> None:
     from scripts.stage_b_evaluation_inspect import run_ai_reference_shape_canary
 

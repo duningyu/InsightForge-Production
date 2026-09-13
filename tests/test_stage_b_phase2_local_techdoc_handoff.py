@@ -69,10 +69,12 @@ def _phase2_database(tmp_path):
     snapshot_id = "snapshot_phase2"
     snapshot_fields = [
         snapshot_id, project_id, brief["id"], decision_id, "Selected", "one liner",
-        json.dumps("target"), json.dumps("problem"), json.dumps("solution"),
-        json.dumps("mvp"), json.dumps("flow"), json.dumps("inputs"),
-        json.dumps("outputs"), json.dumps("technical"), json.dumps("unknowns"),
-        json.dumps("next"), now, now, "test", sha256(b"snapshot").hexdigest(),
+        json.dumps({"users": ["target"]}), json.dumps({"problem": "problem"}),
+        json.dumps({"title": "Selected solution", "summary": "solution", "why_fit": "fit"}),
+        json.dumps({"features": ["mvp"], "pages": ["page"], "risks": ["risk"]}),
+        json.dumps(["flow"]), json.dumps(["inputs"]),
+        json.dumps(["outputs"]), json.dumps(["technical"]), json.dumps(["unknowns"]),
+        json.dumps(["next"]), now, now, "test", sha256(b"snapshot").hexdigest(),
     ]
     database.execute(
         """INSERT INTO project_snapshots(
@@ -121,6 +123,41 @@ def _phase2_database(tmp_path):
         (version_id, snapshot_id, now),
     )
     return database, project_id, version_id, solution_id, snapshot_id
+
+
+def _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id):
+    """Make the isolated fixture satisfy the existing handoff document contract."""
+    DocumentVersionService(database).confirm(
+        prd_version_id, actor="test-operator", note="fixture", human_confirmed=True
+    )
+    now = utc_now()
+    document_id = "document_phase2_techdoc"
+    version_id = "version_phase2_techdoc"
+    database.execute(
+        "INSERT INTO documents(id, project_id, doc_type, title, created_at) VALUES (?, ?, 'techdoc', 'TechDoc', ?)",
+        (document_id, project_id, now),
+    )
+    database.execute(
+        """INSERT INTO document_versions(
+            id, document_id, project_id, doc_type, version, canvas_version,
+            status, content, citations_json, validation_status, idempotency_key, created_at,
+            approved_at
+        ) VALUES (?, ?, ?, 'techdoc', 1, 1, 'approved', ?, '[]', 'passed', ?, ?, ?)""",
+        (version_id, document_id, project_id, "# TechDoc\nfixture", "techdoc-fixture", now, now),
+    )
+    database.execute(
+        """INSERT INTO artifact_health(artifact_type, artifact_id, health_status, reason, updated_at)
+           VALUES ('document_version', ?, 'current', 'fixture', ?)""",
+        (version_id, now),
+    )
+    database.execute(
+        """INSERT INTO artifact_dependencies(
+               artifact_type, artifact_id, dependency_type, dependency_id,
+               dependency_version, created_at
+           ) VALUES ('document_version', ?, 'project_snapshot', ?, NULL, ?)""",
+        (version_id, snapshot_id, now),
+    )
+    return version_id
 
 
 class _ProviderTripwire:
@@ -466,6 +503,107 @@ def test_phase2_operator_without_project_id_returns_rejection_status(
 ) -> None:
     assert operator.main(["local-techdoc-canary"]) == 2
     assert "--project-id" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("document_state", ["missing", "unconfirmed", "stale"])
+def test_handoff_canary_rejects_missing_unconfirmed_or_stale_techdoc_before_mutation(
+    tmp_path, document_state
+) -> None:
+    database, project_id, prd_version_id, _solution_id, snapshot_id = _phase2_database(tmp_path)
+    if document_state != "missing":
+        techdoc_version_id = _prepare_confirmed_handoff_documents(
+            database, project_id, prd_version_id, snapshot_id
+        )
+        if document_state == "unconfirmed":
+            database.execute(
+                "UPDATE document_versions SET status='draft', approved_at=NULL WHERE id=?",
+                (techdoc_version_id,),
+            )
+        else:
+            database.execute(
+                "UPDATE artifact_health SET health_status='stale_evidence' WHERE artifact_id=?",
+                (techdoc_version_id,),
+            )
+
+    with pytest.raises(StageBGuardError, match="HANDOFF|TECHDOC"):
+        operator.run_handoff_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM handoff_runs WHERE project_id=?", (project_id,)
+    )["n"] == 0
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM handoff_unresolved_acknowledgements WHERE project_id=?",
+        (project_id,),
+    )["n"] == 0
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_HANDOFF,),
+    )["n"] == 0
+
+
+def test_handoff_canary_valid_prepared_project_reaches_local_assembly(tmp_path) -> None:
+    database, project_id, prd_version_id, _solution_id, snapshot_id = _phase2_database(tmp_path)
+    _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)
+
+    result = operator.run_handoff_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+
+    assert result.operation == operator.PHASE2_HANDOFF
+    assert result.project_id == project_id
+
+
+def test_handoff_canary_acknowledgement_and_build_are_idempotent(tmp_path) -> None:
+    database, project_id, prd_version_id, _solution_id, snapshot_id = _phase2_database(tmp_path)
+    _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)
+
+    first = operator.run_handoff_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+    second = operator.run_handoff_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+
+    assert second == first
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM handoff_unresolved_acknowledgements WHERE project_id=?", (project_id,)
+    )["n"] == 1
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM handoff_runs WHERE project_id=? AND target_client='generic'", (project_id,)
+    )["n"] == 1
+    receipt = StageBEvaluationReceiptStore(database=database).inspect(first.evaluation_id)
+    assert receipt["dispatch_count"] == 0
+    assert receipt["transport_count"] == 0
+    assert "fixture" not in json.dumps(receipt, ensure_ascii=False)
+
+
+def test_handoff_canary_rejects_multiple_current_techdocs_fail_closed(tmp_path) -> None:
+    database, project_id, prd_version_id, _solution_id, snapshot_id = _phase2_database(tmp_path)
+    _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)
+    now = utc_now()
+    database.execute(
+        """INSERT INTO document_versions(
+            id, document_id, project_id, doc_type, version, canvas_version,
+            status, content, citations_json, validation_status, idempotency_key, created_at, approved_at
+        ) VALUES (?, ?, ?, 'techdoc', 2, 1, 'approved', ?, '[]', 'passed', ?, ?, ?)""",
+        ("version_phase2_techdoc_2", "document_phase2_techdoc", project_id,
+         "# TechDoc 2\nfixture", "techdoc-fixture-2", now, now),
+    )
+    database.execute(
+        "INSERT INTO artifact_health(artifact_type, artifact_id, health_status, reason, updated_at) VALUES ('document_version', ?, 'current', 'fixture', ?)",
+        ("version_phase2_techdoc_2", now),
+    )
+    database.execute(
+        "INSERT INTO artifact_dependencies(artifact_type, artifact_id, dependency_type, dependency_id, dependency_version, created_at) VALUES ('document_version', ?, 'project_snapshot', ?, NULL, ?)",
+        ("version_phase2_techdoc_2", snapshot_id, now),
+    )
+
+    with pytest.raises(StageBGuardError, match="TECHDOC_NOT_EXACTLY_ONE"):
+        operator.run_handoff_canary(database=database, project_id=project_id, actor="phase2-test-operator")
+    assert database.fetch_one("SELECT COUNT(*) AS n FROM handoff_runs WHERE project_id=?", (project_id,))["n"] == 0
+    assert database.fetch_one("SELECT COUNT(*) AS n FROM stage_b_evaluation_receipts WHERE idea_id=?", (project_id,))["n"] == 0
 
 
 def test_phase2_normal_invocation_dispatches_to_mapped_runner(monkeypatch, capsys) -> None:

@@ -23,6 +23,7 @@ from typing import Any, Callable, Literal
 from app.db import Database
 from app.services.document_versions import DocumentVersionService
 from app.services.generation import LocalDocumentGenerator
+from app.services.handoff import HandoffService
 from app.services.loop import DocumentLoop
 from app.services.stage_b_evaluation import (
     DEFAULT_STAGE_B_TRANSPORT_BUDGET,
@@ -80,6 +81,10 @@ class Phase2SafeReceiptMetadata:
     selected_solution_id: str | None = None
     document_id: str | None = None
     version_id: str | None = None
+    prd_document_id: str | None = None
+    prd_version_id: str | None = None
+    techdoc_document_id: str | None = None
+    techdoc_version_id: str | None = None
     snapshot_id: str | None = None
     acknowledgement_id: str | None = None
     acknowledgement_content_sha256: str | None = None
@@ -426,8 +431,190 @@ def run_confirm_techdoc_canary(*, database: Database, project_id: str, actor: st
     return _phase2_unimplemented(Phase2OperatorContext(PHASE2_TECHDOC_CONFIRM, project_id, actor, ""))
 
 
+def _phase2_handoff_preflight(database: Database, project_id: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Resolve one exact, current document pair before any Handoff mutation."""
+    project = database.fetch_one(
+        "SELECT id, project_origin, exclude_from_beta_metrics, current_snapshot_id FROM projects WHERE id=?",
+        (project_id,),
+    )
+    if project is None:
+        raise StageBGuardError("PHASE2_HANDOFF_PROJECT_MISSING")
+    if project["project_origin"] not in {"demo", "qa"} or not bool(project["exclude_from_beta_metrics"]):
+        raise StageBGuardError("STAGE_B_SYNTHETIC_PROJECT_REQUIRED")
+    snapshot_id = project.get("current_snapshot_id")
+    snapshot = database.fetch_one(
+        "SELECT id, project_id, version, confirmed_at FROM project_snapshots WHERE id=? AND project_id=?",
+        (snapshot_id, project_id),
+    ) if snapshot_id else None
+    health = database.fetch_one(
+        "SELECT health_status FROM artifact_health WHERE artifact_type='project_snapshot' AND artifact_id=?",
+        (snapshot_id,),
+    ) if snapshot_id else None
+    if snapshot is None or not snapshot["confirmed_at"] or health is None or health["health_status"] != "current":
+        raise StageBGuardError("PHASE2_HANDOFF_SNAPSHOT_NOT_READY")
+    selected = database.fetch_all(
+        """
+        SELECT candidate.id AS selected_solution_id
+        FROM snapshot_decision_links AS link
+        JOIN project_decisions AS decision ON decision.id=link.decision_id
+        JOIN solution_candidates AS candidate ON candidate.id=decision.selected_option_id
+        WHERE link.snapshot_id=? AND link.role='current_solution'
+          AND decision.project_id=? AND decision.status='confirmed' AND candidate.project_id=?
+        """, (snapshot_id, project_id, project_id),
+    )
+    if len(selected) != 1:
+        raise StageBGuardError("PHASE2_HANDOFF_SELECTED_SOLUTION_AMBIGUOUS")
+
+    documents: dict[str, dict[str, Any]] = {}
+    for doc_type in ("prd", "techdoc"):
+        rows = database.fetch_all(
+            """
+            SELECT version.*
+            FROM document_versions AS version
+            JOIN artifact_dependencies AS dependency
+              ON dependency.artifact_type='document_version' AND dependency.artifact_id=version.id
+             AND dependency.dependency_type='project_snapshot' AND dependency.dependency_id=?
+            WHERE version.project_id=? AND version.doc_type=?
+              AND version.status='approved' AND version.approved_at IS NOT NULL
+              AND version.lifecycle_status='active' AND version.validation_status='passed'
+            """, (snapshot_id, project_id, doc_type),
+        )
+        if len(rows) != 1:
+            raise StageBGuardError(f"PHASE2_HANDOFF_{doc_type.upper()}_NOT_EXACTLY_ONE")
+        version = rows[0]
+        version_health = database.fetch_one(
+            "SELECT health_status FROM artifact_health WHERE artifact_type='document_version' AND artifact_id=?",
+            (version["id"],),
+        )
+        if version_health is None or version_health["health_status"] != "current":
+            raise StageBGuardError(f"PHASE2_HANDOFF_{doc_type.upper()}_NOT_CURRENT")
+        documents[doc_type] = version
+    readiness = HandoffService(database).readiness(project_id)
+    invalid = [item["code"] for item in readiness.get("missing", [])
+               if item["code"] != "unresolved_items_acknowledgement_required"]
+    if invalid:
+        raise StageBGuardError("PHASE2_HANDOFF_NOT_READY")
+    return project, snapshot, selected[0], documents["prd"], documents["techdoc"], readiness
+
+
+def _phase2_handoff_result(*, evaluation_id: str, project_id: str, snapshot: dict[str, Any], solution: dict[str, Any],
+                           prd: dict[str, Any], techdoc: dict[str, Any], safe: dict[str, Any]) -> Phase2SafeReceiptMetadata:
+    return Phase2SafeReceiptMetadata(
+        operation=PHASE2_HANDOFF, evaluation_id=evaluation_id, project_id=project_id,
+        selected_solution_id=solution["selected_solution_id"], snapshot_id=snapshot["id"],
+        prd_document_id=prd["document_id"], prd_version_id=prd["id"],
+        techdoc_document_id=techdoc["document_id"], techdoc_version_id=techdoc["id"],
+        acknowledgement_id=safe.get("acknowledgement_id"),
+        acknowledgement_content_sha256=safe.get("acknowledgement_content_sha256"),
+        handoff_run_id=safe.get("handoff_run_id"), package_sha256=safe.get("package_sha256"),
+        status=safe.get("status"), counts=safe.get("counts"), terminal_stage="HANDOFF_BUILT",
+    )
+
+
 def run_handoff_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
-    return _phase2_unimplemented(Phase2OperatorContext(PHASE2_HANDOFF, project_id, actor, ""))
+    project, snapshot, solution, prd, techdoc, preflight_readiness = _phase2_handoff_preflight(database, project_id)
+    idempotency_key = "stage-b-phase2:handoff:" + hashlib.sha256(
+        f"{project_id}:{snapshot['id']}:{solution['selected_solution_id']}:{prd['id']}:{techdoc['id']}:generic".encode()
+    ).hexdigest()
+    context = Phase2OperatorContext(PHASE2_HANDOFF, project_id, actor, idempotency_key)
+    evaluation_id = "phase2-handoff-" + hashlib.sha256(idempotency_key.encode()).hexdigest()[:24]
+    existing = database.fetch_all(
+        "SELECT evaluation_id, status FROM stage_b_evaluation_receipts WHERE operation=? AND idea_id=?",
+        (context.operation, project_id),
+    )
+    if len(existing) > 1 or (existing and existing[0]["evaluation_id"] != evaluation_id):
+        raise StageBGuardError("PHASE2_HANDOFF_RECEIPT_AMBIGUOUS")
+    if existing:
+        if existing[0]["status"] != "SUCCEEDED":
+            raise StageBGuardError("PHASE2_HANDOFF_PREVIOUSLY_FAILED")
+        runs = database.fetch_all(
+            "SELECT * FROM handoff_runs WHERE project_id=? AND target_client='generic'", (project_id,)
+        )
+        if len(runs) != 1:
+            raise StageBGuardError("PHASE2_HANDOFF_RESULT_MISMATCH")
+        manifest = json.loads(runs[0]["manifest_json"])
+        docs = manifest.get("confirmed_documents", {})
+        if (manifest.get("project_id") != project_id or manifest.get("snapshot", {}).get("id") != snapshot["id"]
+                or docs.get("prd", {}).get("version_id") != prd["id"]
+                or docs.get("techdoc", {}).get("version_id") != techdoc["id"]):
+            raise StageBGuardError("PHASE2_HANDOFF_RESULT_MISMATCH")
+        ack = preflight_readiness.get("unresolved_acknowledgement")
+        return _phase2_handoff_result(evaluation_id=evaluation_id, project_id=project_id, snapshot=snapshot,
+                                      solution=solution, prd=prd, techdoc=techdoc, safe={
+                                          "acknowledgement_id": ack.get("id") if ack else None,
+                                          "acknowledgement_content_sha256": ack.get("content_sha256") if ack else None,
+                                          "handoff_run_id": runs[0]["id"], "package_sha256": runs[0]["sha256"],
+                                          "status": runs[0]["status"], "counts": {
+                                              "acknowledged_items": len(ack.get("items", [])) if ack else 0,
+                                              "source_count": int((database.fetch_one(
+                                                  "SELECT COUNT(*) AS n FROM sources WHERE project_id=?", (project_id,)
+                                              ) or {"n": 0})["n"]),
+                                              "files": len(manifest.get("files", {})),
+                                          },
+                                      })
+    store = StageBEvaluationReceiptStore(database=database)
+    store.create(evaluation_id=evaluation_id, execution_id=evaluation_id, idea_id=project_id,
+                 evaluation_type=PHASE2_HANDOFF, execution_mode="INSIGHTFORGE",
+                 participant=STAGE_B_PARTICIPANT, provider=STAGE_B_PROVIDER, model=STAGE_B_MODEL,
+                 operation=PHASE2_HANDOFF, prompt_version=INSIGHTFORGE_PROMPT_VERSION,
+                 context_version=CONTEXT_VERSION, retry_ordinal=0,
+                 budget_before=DEFAULT_STAGE_B_TRANSPORT_BUDGET, prompt=None)
+    readback = StageBEvaluationReceiptStore(database=Database(database.path)).inspect(evaluation_id)
+    if not (readback["status"] == "CREATED" and readback["idea_id"] == context.project_id
+            and readback["operation"] == context.operation and readback["dispatch_count"] == 0
+            and readback["transport_count"] == 0 and not readback["transport_attempted"]):
+        raise StageBGuardError("PHASE2_HANDOFF_PRE_MUTATION_READBACK_FAILED")
+    _ = StageBEvaluationContext(evaluation_id=evaluation_id, evaluation_type=PHASE2_HANDOFF,
+                                surface="HANDOFF", participant=STAGE_B_PARTICIPANT,
+                                execution_mode="INSIGHTFORGE", retry_ordinal=0, receipt_store=store)
+    started_at = time.monotonic()
+    try:
+        service = HandoffService(database)
+        readiness = service.readiness(project_id)
+        ack = readiness.get("unresolved_acknowledgement")
+        if not readiness["ready"]:
+            invalid = [item["code"] for item in readiness.get("missing", [])
+                       if item["code"] != "unresolved_items_acknowledgement_required"]
+            if invalid:
+                raise StageBGuardError("PHASE2_HANDOFF_NOT_READY")
+            ack = service.acknowledge_unresolved(
+                project_id, actor=context.actor, confirmed=True,
+                note="Phase 2 Handoff canary acknowledgement",
+            )
+            readiness = service.readiness(project_id)
+            if not readiness["ready"]:
+                raise StageBGuardError("PHASE2_HANDOFF_NOT_READY")
+        zip_bytes, manifest = service.build_zip(project_id, target_client="generic", actor=context.actor)
+        package_sha256 = hashlib.sha256(zip_bytes).hexdigest()
+        docs = manifest.get("confirmed_documents", {})
+        if (manifest.get("project_id") != project_id or manifest.get("snapshot", {}).get("id") != snapshot["id"]
+                or docs.get("prd", {}).get("version_id") != prd["id"]
+                or docs.get("techdoc", {}).get("version_id") != techdoc["id"]):
+            raise StageBGuardError("PHASE2_HANDOFF_RESULT_MISMATCH")
+        run = database.fetch_one("SELECT * FROM handoff_runs WHERE id=? AND project_id=?", (manifest["handoff_run_id"], project_id))
+        if run is None or run["status"] != "completed" or run["sha256"] != package_sha256:
+            raise StageBGuardError("PHASE2_HANDOFF_RUN_INVALID")
+        source_count = int((database.fetch_one("SELECT COUNT(*) AS n FROM sources WHERE project_id=?", (project_id,)) or {"n": 0})["n"])
+        safe = {"content": True, "kind": PHASE2_HANDOFF, "project_id": project_id,
+                "snapshot_id": snapshot["id"], "selected_solution_id": solution["selected_solution_id"],
+                "prd_version_id": prd["id"], "techdoc_version_id": techdoc["id"],
+                "acknowledgement_id": ack.get("id") if ack else None,
+                "acknowledgement_content_sha256": ack.get("content_sha256") if ack else None,
+                "handoff_run_id": run["id"], "package_sha256": package_sha256,
+                "status": run["status"], "counts": {"acknowledged_items": len(ack.get("items", [])) if ack else 0,
+                                                         "source_count": source_count, "files": len(manifest.get("files", {}))}}
+        store.mark_success(evaluation_id, response=safe, started_at=started_at, response_timestamp=time.monotonic())
+        store.write_artifact(evaluation_id, prompt=None, response=safe)
+        return _phase2_handoff_result(evaluation_id=evaluation_id, project_id=project_id, snapshot=snapshot,
+                                      solution=solution, prd=prd, techdoc=techdoc, safe=safe)
+    except Exception as exc:
+        safe_failure = StageBGuardError("PHASE2_HANDOFF_FAILED")
+        try:
+            store.mark_failure(evaluation_id, error=safe_failure, started_at=started_at, response_timestamp=time.monotonic())
+            store.write_artifact(evaluation_id, prompt=None, response={"kind": PHASE2_HANDOFF, "failure": "HANDOFF_FAILED"})
+        except Exception:
+            store.mark_artifact_failure(evaluation_id)
+        raise safe_failure from exc
 
 
 def _database_path() -> Path:

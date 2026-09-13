@@ -498,7 +498,8 @@ def test_phase2_local_sequence_binds_each_step_and_reaches_handoff(tmp_path) -> 
         database=database, project_id=project_id, actor="phase2-test-operator"
     )
     handoff = operator.run_handoff_canary(
-        database=database, project_id=project_id, actor="phase2-test-operator"
+        database=database, project_id=project_id, actor="phase2-test-operator",
+        acknowledge_unresolved=True,
     )
 
     assert prd.selected_solution_id == solution_id
@@ -539,6 +540,87 @@ def test_phase2_local_sequence_binds_each_step_and_reaches_handoff(tmp_path) -> 
         assert recovered["operation"] == result.operation
         assert recovered["dispatch_count"] == 0
         assert recovered["transport_count"] == 0
+
+
+def test_handoff_canary_requires_explicit_unresolved_acknowledgement(tmp_path, monkeypatch) -> None:
+    database, project_id, prd_version_id, _solution_id, snapshot_id = _phase2_database(tmp_path)
+    _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)
+    acknowledgement_calls: list[dict[str, object]] = []
+
+    original_acknowledge = operator.HandoffService.acknowledge_unresolved
+
+    def record_acknowledgement(self, *args, **kwargs):
+        acknowledgement_calls.append({"args": args, "kwargs": kwargs})
+        return original_acknowledge(self, *args, **kwargs)
+
+    monkeypatch.setattr(operator.HandoffService, "acknowledge_unresolved", record_acknowledgement)
+
+    with pytest.raises(StageBGuardError, match="HANDOFF_ACKNOWLEDGEMENT_REQUIRED"):
+        operator.run_handoff_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    assert acknowledgement_calls == []
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM handoff_unresolved_acknowledgements WHERE project_id=?",
+        (project_id,),
+    ) == {"n": 0}
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM handoff_runs WHERE project_id=? AND target_client='generic'",
+        (project_id,),
+    ) == {"n": 0}
+    assert database.fetch_one(
+        "SELECT status FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_HANDOFF,),
+    ) == {"status": "FAILED"}
+
+
+def test_handoff_canary_explicit_acknowledgement_is_used_once(tmp_path, monkeypatch) -> None:
+    database, project_id, prd_version_id, _solution_id, snapshot_id = _phase2_database(tmp_path)
+    _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)
+    acknowledgement_calls = 0
+    original_acknowledge = operator.HandoffService.acknowledge_unresolved
+
+    def record_acknowledgement(self, *args, **kwargs):
+        nonlocal acknowledgement_calls
+        acknowledgement_calls += 1
+        return original_acknowledge(self, *args, **kwargs)
+
+    monkeypatch.setattr(operator.HandoffService, "acknowledge_unresolved", record_acknowledgement)
+
+    result = operator.run_handoff_canary(
+        database=database,
+        project_id=project_id,
+        actor="phase2-test-operator",
+        acknowledge_unresolved=True,
+    )
+
+    assert result.operation == operator.PHASE2_HANDOFF
+    assert acknowledgement_calls == 1
+
+
+def test_handoff_canary_explicit_acknowledgement_recovers_ack_required_failure(tmp_path) -> None:
+    database, project_id, prd_version_id, _solution_id, snapshot_id = _phase2_database(tmp_path)
+    _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)
+
+    with pytest.raises(StageBGuardError, match="HANDOFF_ACKNOWLEDGEMENT_REQUIRED"):
+        operator.run_handoff_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    result = operator.run_handoff_canary(
+        database=database,
+        project_id=project_id,
+        actor="phase2-test-operator",
+        acknowledge_unresolved=True,
+    )
+
+    assert result.operation == operator.PHASE2_HANDOFF
+
+
+def test_handoff_canary_cli_exposes_explicit_acknowledgement_flag(capsys) -> None:
+    assert operator.main(["handoff-canary", "--help"]) == 0
+    assert "--acknowledge-unresolved" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -732,7 +814,8 @@ def test_handoff_post_persistence_failure_removes_ack_and_run_and_fails_receipt(
 
     with pytest.raises(StageBGuardError, match="HANDOFF_FAILED"):
         operator.run_handoff_canary(
-            database=database, project_id=project_id, actor="phase2-test-operator"
+            database=database, project_id=project_id, actor="phase2-test-operator",
+            acknowledge_unresolved=True,
         )
 
     assert database.fetch_one(
@@ -795,7 +878,8 @@ def test_handoff_cleanup_failure_still_fails_receipt(tmp_path, monkeypatch) -> N
 
     with pytest.raises(StageBGuardError, match="HANDOFF_FAILED"):
         operator.run_handoff_canary(
-            database=database, project_id=project_id, actor="phase2-test-operator"
+            database=database, project_id=project_id, actor="phase2-test-operator",
+            acknowledge_unresolved=True,
         )
 
     assert database.fetch_one(
@@ -941,7 +1025,8 @@ def test_handoff_canary_valid_prepared_project_reaches_local_assembly(tmp_path) 
     _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)
 
     result = operator.run_handoff_canary(
-        database=database, project_id=project_id, actor="phase2-test-operator"
+        database=database, project_id=project_id, actor="phase2-test-operator",
+        acknowledge_unresolved=True,
     )
 
     assert result.operation == operator.PHASE2_HANDOFF
@@ -953,10 +1038,12 @@ def test_handoff_canary_acknowledgement_and_build_are_idempotent(tmp_path) -> No
     _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)
 
     first = operator.run_handoff_canary(
-        database=database, project_id=project_id, actor="phase2-test-operator"
+        database=database, project_id=project_id, actor="phase2-test-operator",
+        acknowledge_unresolved=True,
     )
     second = operator.run_handoff_canary(
-        database=database, project_id=project_id, actor="phase2-test-operator"
+        database=database, project_id=project_id, actor="phase2-test-operator",
+        acknowledge_unresolved=True,
     )
 
     assert second == first

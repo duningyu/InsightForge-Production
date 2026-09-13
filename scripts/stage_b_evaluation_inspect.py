@@ -827,6 +827,7 @@ def run_handoff_canary(
     real_provider_stage_b: bool = True,
     safe_fixture_mode: bool = False,
     accounts_enabled: bool = False,
+    acknowledge_unresolved: bool = False,
 ) -> Phase2SafeReceiptMetadata:
     evaluate_stage_b_guard(
         real_provider_stage_b=real_provider_stage_b,
@@ -847,40 +848,69 @@ def run_handoff_canary(
     if len(existing) > 1 or (existing and existing[0]["evaluation_id"] != evaluation_id):
         raise StageBGuardError("PHASE2_HANDOFF_RECEIPT_AMBIGUOUS")
     if existing:
+        receipt_reopened = False
         if existing[0]["status"] != "SUCCEEDED":
-            raise StageBGuardError("PHASE2_HANDOFF_PREVIOUSLY_FAILED")
-        runs = database.fetch_all(
-            "SELECT * FROM handoff_runs WHERE project_id=? AND target_client='generic'", (project_id,)
-        )
-        if len(runs) != 1:
-            raise StageBGuardError("PHASE2_HANDOFF_RESULT_MISMATCH")
-        manifest = json.loads(runs[0]["manifest_json"])
-        docs = manifest.get("confirmed_documents", {})
-        if (manifest.get("project_id") != project_id or manifest.get("snapshot", {}).get("id") != snapshot["id"]
-                or docs.get("prd", {}).get("version_id") != prd["id"]
-                or docs.get("techdoc", {}).get("version_id") != techdoc["id"]):
-            raise StageBGuardError("PHASE2_HANDOFF_RESULT_MISMATCH")
-        ack = preflight_readiness.get("unresolved_acknowledgement")
-        return _phase2_handoff_result(evaluation_id=evaluation_id, project_id=project_id, snapshot=snapshot,
-                                      solution=solution, prd=prd, techdoc=techdoc, safe={
-                                          "acknowledgement_id": ack.get("id") if ack else None,
-                                          "acknowledgement_content_sha256": ack.get("content_sha256") if ack else None,
-                                          "handoff_run_id": runs[0]["id"], "package_sha256": runs[0]["sha256"],
-                                          "status": runs[0]["status"], "counts": {
-                                              "acknowledged_items": len(ack.get("items", [])) if ack else 0,
-                                              "source_count": int((database.fetch_one(
-                                                  "SELECT COUNT(*) AS n FROM sources WHERE project_id=?", (project_id,)
-                                              ) or {"n": 0})["n"]),
-                                              "files": len(manifest.get("files", {})),
-                                          },
-                                      })
+            failure = database.fetch_one(
+                "SELECT failure_reason FROM stage_b_evaluation_receipts WHERE evaluation_id=?",
+                (evaluation_id,),
+            )
+            if not (acknowledge_unresolved and failure
+                    and failure["failure_reason"] == "HANDOFF_ACKNOWLEDGEMENT_REQUIRED"):
+                raise StageBGuardError("PHASE2_HANDOFF_PREVIOUSLY_FAILED")
+            database.execute(
+                """
+                UPDATE stage_b_evaluation_receipts
+                SET status='CREATED', dispatch_permit_id=NULL, dispatch_ordinal=NULL,
+                    dispatch_count=0, transport_ordinal=NULL, transport_count=0,
+                    transport_attempted=0, dispatch_prepared_at=NULL,
+                    transport_started_at=NULL, transport_completed_at=NULL,
+                    response_non_empty=NULL, decode_status=NULL,
+                    schema_validation=NULL, application_postprocess=NULL,
+                    output_contract_attempted=0, failure_stage=NULL,
+                    failure_classification=NULL, failure_reason=NULL,
+                    latency_ms=NULL, response_sha256=NULL,
+                    artifact_relative_path=NULL, artifact_sha256=NULL,
+                    request_bytes=NULL, response_bytes=NULL,
+                    artifact_persistence_status=NULL
+                WHERE evaluation_id=? AND status='FAILED'
+                """,
+                (evaluation_id,),
+            )
+            receipt_reopened = True
+        if not receipt_reopened:
+            runs = database.fetch_all(
+                "SELECT * FROM handoff_runs WHERE project_id=? AND target_client='generic'", (project_id,)
+            )
+            if len(runs) != 1:
+                raise StageBGuardError("PHASE2_HANDOFF_RESULT_MISMATCH")
+            manifest = json.loads(runs[0]["manifest_json"])
+            docs = manifest.get("confirmed_documents", {})
+            if (manifest.get("project_id") != project_id or manifest.get("snapshot", {}).get("id") != snapshot["id"]
+                    or docs.get("prd", {}).get("version_id") != prd["id"]
+                    or docs.get("techdoc", {}).get("version_id") != techdoc["id"]):
+                raise StageBGuardError("PHASE2_HANDOFF_RESULT_MISMATCH")
+            ack = preflight_readiness.get("unresolved_acknowledgement")
+            return _phase2_handoff_result(evaluation_id=evaluation_id, project_id=project_id, snapshot=snapshot,
+                                          solution=solution, prd=prd, techdoc=techdoc, safe={
+                                              "acknowledgement_id": ack.get("id") if ack else None,
+                                              "acknowledgement_content_sha256": ack.get("content_sha256") if ack else None,
+                                              "handoff_run_id": runs[0]["id"], "package_sha256": runs[0]["sha256"],
+                                              "status": runs[0]["status"], "counts": {
+                                                  "acknowledged_items": len(ack.get("items", [])) if ack else 0,
+                                                  "source_count": int((database.fetch_one(
+                                                      "SELECT COUNT(*) AS n FROM sources WHERE project_id=?", (project_id,)
+                                                  ) or {"n": 0})["n"]),
+                                                  "files": len(manifest.get("files", {})),
+                                              },
+                                          })
     store = StageBEvaluationReceiptStore(database=database)
-    store.create(evaluation_id=evaluation_id, execution_id=evaluation_id, idea_id=project_id,
-                 evaluation_type=PHASE2_HANDOFF, execution_mode="INSIGHTFORGE",
-                 participant=STAGE_B_PARTICIPANT, provider=STAGE_B_PROVIDER, model=STAGE_B_MODEL,
-                 operation=PHASE2_HANDOFF, prompt_version=INSIGHTFORGE_PROMPT_VERSION,
-                 context_version=CONTEXT_VERSION, retry_ordinal=0,
-                 budget_before=DEFAULT_STAGE_B_TRANSPORT_BUDGET, prompt=None)
+    if not existing or not receipt_reopened:
+        store.create(evaluation_id=evaluation_id, execution_id=evaluation_id, idea_id=project_id,
+                     evaluation_type=PHASE2_HANDOFF, execution_mode="INSIGHTFORGE",
+                     participant=STAGE_B_PARTICIPANT, provider=STAGE_B_PROVIDER, model=STAGE_B_MODEL,
+                     operation=PHASE2_HANDOFF, prompt_version=INSIGHTFORGE_PROMPT_VERSION,
+                     context_version=CONTEXT_VERSION, retry_ordinal=0,
+                     budget_before=DEFAULT_STAGE_B_TRANSPORT_BUDGET, prompt=None)
     readback = StageBEvaluationReceiptStore(database=Database(database.path)).inspect(evaluation_id)
     if not (readback["status"] == "CREATED" and readback["idea_id"] == context.project_id
             and readback["operation"] == context.operation and readback["dispatch_count"] == 0
@@ -909,6 +939,8 @@ def run_handoff_canary(
                        if item["code"] != "unresolved_items_acknowledgement_required"]
             if invalid:
                 raise StageBGuardError("PHASE2_HANDOFF_NOT_READY")
+            if not acknowledge_unresolved:
+                raise StageBGuardError("HANDOFF_ACKNOWLEDGEMENT_REQUIRED")
             ack = service.acknowledge_unresolved(
                 project_id, actor=context.actor, confirmed=True,
                 note="Phase 2 Handoff canary acknowledgement",
@@ -940,7 +972,11 @@ def run_handoff_canary(
         return _phase2_handoff_result(evaluation_id=evaluation_id, project_id=project_id, snapshot=snapshot,
                                       solution=solution, prd=prd, techdoc=techdoc, safe=safe)
     except Exception as exc:
-        safe_failure = StageBGuardError("PHASE2_HANDOFF_FAILED")
+        safe_failure = (
+            exc
+            if isinstance(exc, StageBGuardError) and str(exc) == "HANDOFF_ACKNOWLEDGEMENT_REQUIRED"
+            else StageBGuardError("PHASE2_HANDOFF_FAILED")
+        )
         cleanup_exc = None
         try:
             _phase2_cleanup_new_handoff_artifacts(database, project_id, ack_ids_before, handoff_run_ids_before)
@@ -1382,6 +1418,12 @@ def _phase2_parser(command: str) -> argparse.ArgumentParser:
     parser.add_argument("--database", type=Path, default=_database_path())
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--actor", default="stage-b-operator")
+    if command == "handoff-canary":
+        parser.add_argument(
+            "--acknowledge-unresolved",
+            action="store_true",
+            help="Explicitly acknowledge unresolved items before Handoff export",
+        )
     return parser
 
 
@@ -1396,6 +1438,8 @@ def _run_phase2_canary_cli(args: argparse.Namespace, command: str) -> int:
     }
     accepted = inspect.signature(runner).parameters
     kwargs.update({key: value for key, value in guard_kwargs.items() if key in accepted})
+    if command == "handoff-canary":
+        kwargs["acknowledge_unresolved"] = args.acknowledge_unresolved
     result = runner(**kwargs)
     print(json.dumps(sanitize_phase2_receipt_metadata(result), ensure_ascii=False, indent=2))
     return 0

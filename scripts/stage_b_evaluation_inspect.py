@@ -11,12 +11,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import inspect
 import json
 import os
 import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -36,6 +38,8 @@ from app.services.stage_b_evaluation import (
     StageBEvaluationReceiptStore,
     StageBExecutionPolicy,
     StageBGuardError,
+    classify_failure_stage,
+    classify_provider_failure,
     evaluate_stage_b_guard,
 )
 from app.services.stage_b_synthetic_seed import (
@@ -225,7 +229,98 @@ def _phase2_techdoc_preflight(database: Database, project_id: str) -> tuple[dict
     return project, snapshot, selected[0]
 
 
-def run_confirm_prd_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
+def _phase2_guard(*, participant: str, real_provider_stage_b: bool, safe_fixture_mode: bool, accounts_enabled: bool) -> None:
+    evaluate_stage_b_guard(
+        real_provider_stage_b=real_provider_stage_b,
+        safe_fixture_mode=safe_fixture_mode,
+        accounts_enabled=accounts_enabled,
+        participant_id=participant,
+    )
+
+
+def _phase2_compensate_confirmation(
+    database: Database, *, version_id: str, previous_status: str,
+    previous_approved_at: str | None, existing_audit_ids: set[str], actor: str,
+) -> None:
+    database.execute(
+        "UPDATE document_versions SET status=?, approved_at=? WHERE id=?",
+        (previous_status, previous_approved_at, version_id),
+    )
+    for row in database.fetch_all(
+        "SELECT id FROM audit_events WHERE action='document_version_confirmed' AND entity_id=? AND actor=?",
+        (version_id, actor),
+    ):
+        if row["id"] not in existing_audit_ids:
+            database.execute("DELETE FROM audit_events WHERE id=?", (row["id"],))
+
+
+def _phase2_cleanup_new_techdoc_artifacts(database: Database, project_id: str, before_ids: set[str]) -> None:
+    """Remove only TechDoc artifacts created by this failed canary attempt."""
+    rows = database.fetch_all(
+        "SELECT id, document_id FROM document_versions WHERE project_id=? AND doc_type='techdoc'",
+        (project_id,),
+    )
+    new_versions = [row for row in rows if row["id"] not in before_ids]
+    for row in new_versions:
+        version_id = row["id"]
+        database.execute("DELETE FROM artifact_dependencies WHERE artifact_type='document_version' AND artifact_id=?", (version_id,))
+        database.execute("DELETE FROM artifact_health WHERE artifact_type='document_version' AND artifact_id=?", (version_id,))
+        database.execute("DELETE FROM validation_issues WHERE version_id=?", (version_id,))
+        database.execute("DELETE FROM document_claims WHERE version_id=?", (version_id,))
+        database.execute("UPDATE generation_runs SET version_id=NULL WHERE version_id=?", (version_id,))
+        database.execute("DELETE FROM document_versions WHERE id=?", (version_id,))
+        database.execute("DELETE FROM audit_events WHERE entity_type='document_version' AND entity_id=?", (version_id,))
+        if database.fetch_one("SELECT 1 FROM document_versions WHERE document_id=? LIMIT 1", (row["document_id"],)) is None:
+            database.execute("DELETE FROM documents WHERE id=?", (row["document_id"],))
+
+
+def _phase2_cleanup_new_handoff_artifacts(
+    database: Database, project_id: str, before_ack_ids: set[str], before_run_ids: set[str]
+) -> None:
+    """Remove only acknowledgement/run rows created by this failed canary."""
+    for row in database.fetch_all(
+        "SELECT id FROM handoff_unresolved_acknowledgements WHERE project_id=?", (project_id,)
+    ):
+        if row["id"] not in before_ack_ids:
+            database.execute("DELETE FROM handoff_unresolved_acknowledgements WHERE id=?", (row["id"],))
+            database.execute("DELETE FROM audit_events WHERE entity_type='handoff_acknowledgement' AND entity_id=?", (row["id"],))
+    for row in database.fetch_all("SELECT id FROM handoff_runs WHERE project_id=?", (project_id,)):
+        if row["id"] not in before_run_ids:
+            database.execute("DELETE FROM handoff_runs WHERE id=?", (row["id"],))
+            database.execute("DELETE FROM audit_events WHERE entity_type='handoff_run' AND entity_id=?", (row["id"],))
+
+
+def _phase2_force_failed_receipt(database: Database, evaluation_id: str, error: Exception,
+                                 started_at: float, response_timestamp: float) -> None:
+    """Best-effort terminal receipt fallback when the receipt service itself fails."""
+    classification = classify_provider_failure(error)
+    database.execute(
+        """
+        UPDATE stage_b_evaluation_receipts
+        SET status='FAILED', response_non_empty=0,
+            decode_status='NOT_APPLICABLE', schema_validation='NOT_APPLICABLE',
+            application_postprocess='NOT_APPLICABLE', output_contract_attempted=0,
+            failure_stage=?, failure_classification=?, failure_reason=?,
+            transport_completed_at=?, latency_ms=?
+        WHERE evaluation_id=?
+        """,
+        (classify_failure_stage(classification), classification, str(error)[:240],
+        datetime.now(timezone.utc).isoformat(),
+        round((response_timestamp - started_at) * 1000, 3), evaluation_id),
+    )
+
+
+def run_confirm_prd_canary(
+    *, database: Database, project_id: str, actor: str,
+    participant: str = STAGE_B_PARTICIPANT,
+    real_provider_stage_b: bool = True,
+    safe_fixture_mode: bool = False,
+    accounts_enabled: bool = False,
+) -> Phase2SafeReceiptMetadata:
+    _phase2_guard(
+        participant=participant, real_provider_stage_b=real_provider_stage_b,
+        safe_fixture_mode=safe_fixture_mode, accounts_enabled=accounts_enabled,
+    )
     project, snapshot, solution, prd = _phase2_prd_preflight(database, project_id)
     idempotency_key = "stage-b-phase2:prd-confirm:" + hashlib.sha256(
         f"{project_id}:{snapshot['id']}:{prd['id']}".encode("utf-8")
@@ -271,6 +366,14 @@ def run_confirm_prd_canary(*, database: Database, project_id: str, actor: str) -
     ):
         raise StageBGuardError("PHASE2_PRD_CONFIRM_PRE_MUTATION_READBACK_FAILED")
     started_at = time.monotonic()
+    previous_status = prd["status"]
+    previous_approved_at = prd["approved_at"]
+    existing_audit_ids = {
+        row["id"] for row in database.fetch_all(
+            "SELECT id FROM audit_events WHERE action='document_version_confirmed' AND entity_id=? AND actor=?",
+            (prd["id"], context.actor),
+        )
+    }
     try:
         confirmed = DocumentVersionService(database).confirm(
             prd["id"], actor=context.actor,
@@ -298,7 +401,17 @@ def run_confirm_prd_canary(*, database: Database, project_id: str, actor: str) -
             solution_id=solution["selected_solution_id"], snapshot_id=snapshot["id"], version=confirmed,
         )
     except Exception as exc:
-        safe_failure = StageBGuardError("PHASE2_PRD_CONFIRMATION_FAILED")
+        compensation_exc = None
+        try:
+            _phase2_compensate_confirmation(
+                database, version_id=prd["id"], previous_status=previous_status,
+                previous_approved_at=previous_approved_at, existing_audit_ids=existing_audit_ids,
+                actor=context.actor,
+            )
+            safe_failure = StageBGuardError("PHASE2_PRD_CONFIRMATION_FAILED")
+        except Exception as caught:
+            compensation_exc = caught
+            safe_failure = StageBGuardError("COMPENSATION_FAILED")
         try:
             store.mark_failure(
                 evaluation_id, error=safe_failure,
@@ -309,11 +422,23 @@ def run_confirm_prd_canary(*, database: Database, project_id: str, actor: str) -
                 response={"kind": PHASE2_PRD_CONFIRM, "failure": "CONFIRMATION_FAILED"},
             )
         except Exception:
-            store.mark_artifact_failure(evaluation_id)
-        raise safe_failure from exc
+            _phase2_force_failed_receipt(
+                database, evaluation_id, safe_failure, started_at, time.monotonic()
+            )
+        raise safe_failure from (compensation_exc or exc)
 
 
-def run_local_techdoc_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
+def run_local_techdoc_canary(
+    *, database: Database, project_id: str, actor: str,
+    participant: str = STAGE_B_PARTICIPANT,
+    real_provider_stage_b: bool = True,
+    safe_fixture_mode: bool = False,
+    accounts_enabled: bool = False,
+) -> Phase2SafeReceiptMetadata:
+    _phase2_guard(
+        participant=participant, real_provider_stage_b=real_provider_stage_b,
+        safe_fixture_mode=safe_fixture_mode, accounts_enabled=accounts_enabled,
+    )
     project, snapshot, solution = _phase2_techdoc_preflight(database, project_id)
 
     idempotency_key = "stage-b-phase2:techdoc-generate:" + hashlib.sha256(
@@ -371,6 +496,11 @@ def run_local_techdoc_canary(*, database: Database, project_id: str, actor: str)
         execution_mode="INSIGHTFORGE", retry_ordinal=0, receipt_store=store,
     )
     started_at = time.monotonic()
+    techdoc_ids_before = {
+        row["id"] for row in database.fetch_all(
+            "SELECT id FROM document_versions WHERE project_id=? AND doc_type='techdoc'", (project_id,)
+        )
+    }
     try:
         result = DocumentLoop(database, generator=LocalDocumentGenerator()).run(
             project_id, "techdoc", idempotency_key=idempotency_key,
@@ -400,18 +530,27 @@ def run_local_techdoc_canary(*, database: Database, project_id: str, actor: str)
         )
     except Exception as exc:
         safe_failure = StageBGuardError("PHASE2_TECHDOC_GENERATION_FAILED")
+        cleanup_exc = None
         try:
-            store.mark_failure(
-                evaluation_id, error=safe_failure,
-                started_at=started_at, response_timestamp=time.monotonic(),
-            )
+            _phase2_cleanup_new_techdoc_artifacts(database, project_id, techdoc_ids_before)
+        except Exception as caught:
+            cleanup_exc = caught
+        failure_timestamp = time.monotonic()
+        try:
+            store.mark_failure(evaluation_id, error=safe_failure,
+                               started_at=started_at, response_timestamp=failure_timestamp)
+        except Exception:
+            _phase2_force_failed_receipt(database, evaluation_id, safe_failure, started_at, failure_timestamp)
+        try:
             store.write_artifact(
                 evaluation_id, prompt=None,
                 response={"kind": PHASE2_TECHDOC_GENERATE, "failure": "GENERATION_FAILED"},
             )
         except Exception:
-            store.mark_artifact_failure(evaluation_id)
-        raise safe_failure from exc
+            _phase2_force_failed_receipt(
+                database, evaluation_id, safe_failure, started_at, time.monotonic()
+            )
+        raise safe_failure from (cleanup_exc or exc)
 
 
 def _phase2_techdoc_result(
@@ -427,8 +566,179 @@ def _phase2_techdoc_result(
     )
 
 
-def run_confirm_techdoc_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
-    return _phase2_unimplemented(Phase2OperatorContext(PHASE2_TECHDOC_CONFIRM, project_id, actor, ""))
+def run_confirm_techdoc_canary(
+    *, database: Database, project_id: str, actor: str,
+    participant: str = STAGE_B_PARTICIPANT,
+    real_provider_stage_b: bool = True,
+    safe_fixture_mode: bool = False,
+    accounts_enabled: bool = False,
+) -> Phase2SafeReceiptMetadata:
+    _phase2_guard(
+        participant=participant, real_provider_stage_b=real_provider_stage_b,
+        safe_fixture_mode=safe_fixture_mode, accounts_enabled=accounts_enabled,
+    )
+    project, snapshot, solution = _phase2_techdoc_preflight(database, project_id)
+    idempotency_key = "stage-b-phase2:techdoc-confirm:" + hashlib.sha256(
+        f"{project_id}:{snapshot['id']}:{solution['selected_solution_id']}".encode("utf-8")
+    ).hexdigest()
+    context = Phase2OperatorContext(PHASE2_TECHDOC_CONFIRM, project_id, actor, idempotency_key)
+    evaluation_id = "phase2-techdoc-confirm-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:24]
+    store = StageBEvaluationReceiptStore(database=database)
+    existing_rows = database.fetch_all(
+        "SELECT evaluation_id, status FROM stage_b_evaluation_receipts WHERE operation=? AND idea_id=?",
+        (context.operation, project_id),
+    )
+    if len(existing_rows) > 1 or (
+        existing_rows and existing_rows[0]["evaluation_id"] != evaluation_id
+    ):
+        raise StageBGuardError("PHASE2_TECHDOC_CONFIRMATION_RECEIPT_AMBIGUOUS")
+    existing = existing_rows[0] if existing_rows else None
+    if existing is not None:
+        if existing["status"] != "SUCCEEDED":
+            raise StageBGuardError("PHASE2_TECHDOC_CONFIRMATION_PREVIOUSLY_FAILED")
+        techdocs = database.fetch_all(
+            """
+            SELECT version.*
+            FROM document_versions AS version
+            JOIN artifact_dependencies AS dependency
+              ON dependency.artifact_type='document_version'
+             AND dependency.artifact_id=version.id
+             AND dependency.dependency_type='project_snapshot'
+             AND dependency.dependency_id=?
+            JOIN artifact_health AS health
+              ON health.artifact_type='document_version' AND health.artifact_id=version.id
+            WHERE version.project_id=? AND version.doc_type='techdoc'
+              AND version.lifecycle_status='active' AND version.validation_status='passed'
+              AND version.status='approved' AND health.health_status='current'
+            """,
+            (snapshot["id"], project_id),
+        )
+        if len(techdocs) != 1:
+            raise StageBGuardError("PHASE2_TECHDOC_CONFIRMATION_RESULT_MISMATCH")
+        techdoc = techdocs[0]
+        confirmed = DocumentVersionService(database)._get(techdoc["id"])
+        if confirmed["status"] != "approved":
+            raise StageBGuardError("PHASE2_TECHDOC_CONFIRMATION_RESULT_MISMATCH")
+        return _phase2_techdoc_confirmation_result(
+            evaluation_id=evaluation_id, project_id=project_id,
+            solution_id=solution["selected_solution_id"], snapshot_id=snapshot["id"], version=confirmed,
+        )
+
+    techdocs = database.fetch_all(
+        """
+        SELECT version.*
+        FROM document_versions AS version
+        JOIN artifact_dependencies AS dependency
+          ON dependency.artifact_type='document_version'
+         AND dependency.artifact_id=version.id
+         AND dependency.dependency_type='project_snapshot'
+         AND dependency.dependency_id=?
+        WHERE version.project_id=? AND version.doc_type='techdoc'
+          AND version.lifecycle_status='active' AND version.validation_status='passed'
+          AND version.status='draft' AND version.approved_at IS NULL
+        """,
+        (snapshot["id"], project_id),
+    )
+    if len(techdocs) != 1:
+        raise StageBGuardError("PHASE2_TECHDOC_CONFIRM_NOT_EXACTLY_ONE")
+    techdoc = techdocs[0]
+    health = database.fetch_one(
+        "SELECT health_status FROM artifact_health WHERE artifact_type='document_version' AND artifact_id=?",
+        (techdoc["id"],),
+    )
+    if health is None or health["health_status"] != "current":
+        raise StageBGuardError("PHASE2_TECHDOC_CONFIRM_NOT_CURRENT")
+
+    store.create(
+        evaluation_id=evaluation_id, execution_id=evaluation_id, idea_id=project_id,
+        evaluation_type=PHASE2_TECHDOC_CONFIRM, execution_mode="INSIGHTFORGE",
+        participant=STAGE_B_PARTICIPANT, provider=STAGE_B_PROVIDER, model=STAGE_B_MODEL,
+        operation=PHASE2_TECHDOC_CONFIRM, prompt_version=INSIGHTFORGE_PROMPT_VERSION,
+        context_version=CONTEXT_VERSION, retry_ordinal=0,
+        budget_before=DEFAULT_STAGE_B_TRANSPORT_BUDGET, prompt=None,
+    )
+    readback = StageBEvaluationReceiptStore(database=Database(database.path)).inspect(evaluation_id)
+    if not (
+        readback["status"] == "CREATED"
+        and readback["idea_id"] == context.project_id
+        and readback["operation"] == context.operation
+        and readback["dispatch_count"] == 0
+        and readback["transport_count"] == 0
+        and not readback["transport_attempted"]
+    ):
+        raise StageBGuardError("PHASE2_TECHDOC_CONFIRM_PRE_MUTATION_READBACK_FAILED")
+    _ = StageBEvaluationContext(
+        evaluation_id=evaluation_id, evaluation_type=PHASE2_TECHDOC_CONFIRM,
+        surface="TECHDOC", participant=STAGE_B_PARTICIPANT,
+        execution_mode="INSIGHTFORGE", retry_ordinal=0, receipt_store=store,
+    )
+    started_at = time.monotonic()
+    previous_status = techdoc["status"]
+    previous_approved_at = techdoc["approved_at"]
+    existing_audit_ids = {
+        row["id"] for row in database.fetch_all(
+            "SELECT id FROM audit_events WHERE action='document_version_confirmed' AND entity_id=? AND actor=?",
+            (techdoc["id"], context.actor),
+        )
+    }
+    try:
+        confirmed = DocumentVersionService(database).confirm(
+            techdoc["id"], actor=context.actor,
+            note="Phase 2 TechDoc confirmation canary", human_confirmed=True,
+        )
+        safe_response = {
+            "content": True, "kind": PHASE2_TECHDOC_CONFIRM,
+            "project_id": project_id, "snapshot_id": snapshot["id"],
+            "version_id": confirmed["id"], "status": confirmed["status"],
+        }
+        store.mark_success(
+            evaluation_id, response=safe_response,
+            started_at=started_at, response_timestamp=time.monotonic(),
+        )
+        store.write_artifact(evaluation_id, prompt=None, response=safe_response)
+        return _phase2_techdoc_confirmation_result(
+            evaluation_id=evaluation_id, project_id=project_id,
+            solution_id=solution["selected_solution_id"], snapshot_id=snapshot["id"], version=confirmed,
+        )
+    except Exception as exc:
+        compensation_exc = None
+        try:
+            _phase2_compensate_confirmation(
+                database, version_id=techdoc["id"], previous_status=previous_status,
+                previous_approved_at=previous_approved_at, existing_audit_ids=existing_audit_ids,
+                actor=context.actor,
+            )
+            safe_failure = StageBGuardError("PHASE2_TECHDOC_CONFIRMATION_FAILED")
+        except Exception as caught:
+            compensation_exc = caught
+            safe_failure = StageBGuardError("COMPENSATION_FAILED")
+        try:
+            store.mark_failure(
+                evaluation_id, error=safe_failure,
+                started_at=started_at, response_timestamp=time.monotonic(),
+            )
+            store.write_artifact(
+                evaluation_id, prompt=None,
+                response={"kind": PHASE2_TECHDOC_CONFIRM, "failure": "CONFIRMATION_FAILED"},
+            )
+        except Exception:
+            _phase2_force_failed_receipt(
+                database, evaluation_id, safe_failure, started_at, time.monotonic()
+            )
+        raise safe_failure from (compensation_exc or exc)
+
+
+def _phase2_techdoc_confirmation_result(
+    *, evaluation_id: str, project_id: str, solution_id: str, snapshot_id: str,
+    version: dict[str, Any],
+) -> Phase2SafeReceiptMetadata:
+    return Phase2SafeReceiptMetadata(
+        operation=PHASE2_TECHDOC_CONFIRM, evaluation_id=evaluation_id,
+        project_id=project_id, selected_solution_id=solution_id,
+        document_id=version["document_id"], version_id=version["id"],
+        snapshot_id=snapshot_id, status="completed",
+        counts={"confirmed": 1}, terminal_stage="TECHDOC_CONFIRMED",
+    )
 
 
 def _phase2_handoff_preflight(database: Database, project_id: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -580,6 +890,16 @@ def run_handoff_canary(
                                 surface="HANDOFF", participant=STAGE_B_PARTICIPANT,
                                 execution_mode="INSIGHTFORGE", retry_ordinal=0, receipt_store=store)
     started_at = time.monotonic()
+    ack_ids_before = {
+        row["id"] for row in database.fetch_all(
+            "SELECT id FROM handoff_unresolved_acknowledgements WHERE project_id=?", (project_id,)
+        )
+    }
+    handoff_run_ids_before = {
+        row["id"] for row in database.fetch_all(
+            "SELECT id FROM handoff_runs WHERE project_id=?", (project_id,)
+        )
+    }
     try:
         service = HandoffService(database)
         readiness = service.readiness(project_id)
@@ -621,12 +941,24 @@ def run_handoff_canary(
                                       solution=solution, prd=prd, techdoc=techdoc, safe=safe)
     except Exception as exc:
         safe_failure = StageBGuardError("PHASE2_HANDOFF_FAILED")
+        cleanup_exc = None
         try:
-            store.mark_failure(evaluation_id, error=safe_failure, started_at=started_at, response_timestamp=time.monotonic())
+            _phase2_cleanup_new_handoff_artifacts(database, project_id, ack_ids_before, handoff_run_ids_before)
+        except Exception as caught:
+            cleanup_exc = caught
+        failure_timestamp = time.monotonic()
+        try:
+            store.mark_failure(evaluation_id, error=safe_failure, started_at=started_at,
+                               response_timestamp=failure_timestamp)
+        except Exception:
+            _phase2_force_failed_receipt(database, evaluation_id, safe_failure, started_at, failure_timestamp)
+        try:
             store.write_artifact(evaluation_id, prompt=None, response={"kind": PHASE2_HANDOFF, "failure": "HANDOFF_FAILED"})
         except Exception:
-            store.mark_artifact_failure(evaluation_id)
-        raise safe_failure from exc
+            _phase2_force_failed_receipt(
+                database, evaluation_id, safe_failure, started_at, time.monotonic()
+            )
+        raise safe_failure from (cleanup_exc or exc)
 
 
 def _database_path() -> Path:
@@ -1056,13 +1388,14 @@ def _phase2_parser(command: str) -> argparse.ArgumentParser:
 def _run_phase2_canary_cli(args: argparse.Namespace, command: str) -> int:
     _operation, runner = _PHASE2_COMMANDS[command]
     kwargs = {"database": Database(args.database), "project_id": args.project_id, "actor": args.actor}
-    if command == "handoff-canary":
-        kwargs.update(
-            participant=os.environ.get("BETA_PARTICIPANT_ID", ""),
-            real_provider_stage_b=_env_bool("REAL_PROVIDER_STAGE_B"),
-            safe_fixture_mode=_env_bool("INSIGHTFORGE_SAFE_FIXTURE_MODE"),
-            accounts_enabled=_env_bool("INSIGHTFORGE_ACCOUNTS_ENABLED"),
-        )
+    guard_kwargs = {
+        "participant": os.environ.get("BETA_PARTICIPANT_ID", ""),
+        "real_provider_stage_b": _env_bool("REAL_PROVIDER_STAGE_B"),
+        "safe_fixture_mode": _env_bool("INSIGHTFORGE_SAFE_FIXTURE_MODE"),
+        "accounts_enabled": _env_bool("INSIGHTFORGE_ACCOUNTS_ENABLED"),
+    }
+    accepted = inspect.signature(runner).parameters
+    kwargs.update({key: value for key, value in guard_kwargs.items() if key in accepted})
     result = runner(**kwargs)
     print(json.dumps(sanitize_phase2_receipt_metadata(result), ensure_ascii=False, indent=2))
     return 0

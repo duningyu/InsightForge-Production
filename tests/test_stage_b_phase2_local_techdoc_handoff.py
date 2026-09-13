@@ -443,6 +443,104 @@ def test_local_techdoc_canary_does_not_require_confirmed_prd_before_receipt(tmp_
     )["n"] == 1
 
 
+def test_confirm_techdoc_canary_confirms_current_generated_version_with_safe_receipt(
+    tmp_path,
+) -> None:
+    database, project_id, _prd_version_id, solution_id, snapshot_id = _phase2_database(tmp_path)
+
+    generated = operator.run_local_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+    assert database.fetch_one(
+        "SELECT status FROM document_versions WHERE id=?", (generated.version_id,)
+    )["status"] == "draft"
+
+    result = operator.run_confirm_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+
+    assert result.operation == operator.PHASE2_TECHDOC_CONFIRM
+    assert result.project_id == project_id
+    assert result.selected_solution_id == solution_id
+    assert result.snapshot_id == snapshot_id
+    assert result.document_id == generated.document_id
+    assert result.version_id == generated.version_id
+    assert result.status == "completed"
+    assert result.counts == {"confirmed": 1}
+    assert result.terminal_stage == "TECHDOC_CONFIRMED"
+    assert database.fetch_one(
+        "SELECT status, approved_at FROM document_versions WHERE id=?", (generated.version_id,)
+    )["status"] == "approved"
+    receipt = StageBEvaluationReceiptStore(database=Database(database.path)).inspect(
+        result.evaluation_id
+    )
+    assert receipt["status"] == "SUCCEEDED"
+    assert receipt["dispatch_count"] == 0
+    assert receipt["transport_count"] == 0
+    artifact = json.loads(
+        (tmp_path / "private" / "stage_b_evaluation" / f"{sha256(result.evaluation_id.encode()).hexdigest()}.json").read_text()
+    )
+    assert artifact["response"]["content"] is True
+    assert artifact["response"]["version_id"] == generated.version_id
+    assert "prompt" in artifact and artifact["prompt"] is None
+
+
+def test_phase2_local_sequence_binds_each_step_and_reaches_handoff(tmp_path) -> None:
+    database, project_id, _prd_version_id, solution_id, snapshot_id = _phase2_database(tmp_path)
+
+    prd = operator.run_confirm_prd_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+    techdoc = operator.run_local_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+    confirmed_techdoc = operator.run_confirm_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+    handoff = operator.run_handoff_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+
+    assert prd.selected_solution_id == solution_id
+    assert techdoc.selected_solution_id == solution_id
+    assert confirmed_techdoc.selected_solution_id == solution_id
+    assert handoff.selected_solution_id == solution_id
+    assert all(item.snapshot_id == snapshot_id for item in (prd, techdoc, confirmed_techdoc, handoff))
+    assert database.fetch_one(
+        "SELECT status FROM document_versions WHERE id=?", (prd.version_id,)
+    )["status"] == "approved"
+    assert database.fetch_one(
+        "SELECT status FROM document_versions WHERE id=?", (techdoc.version_id,)
+    )["status"] == "approved"
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM handoff_runs WHERE project_id=?", (project_id,)
+    )["n"] == 1
+
+    receipts = database.fetch_all(
+        "SELECT evaluation_id, operation, dispatch_count, transport_count, status "
+        "FROM stage_b_evaluation_receipts WHERE idea_id=? ORDER BY evaluation_id",
+        (project_id,),
+    )
+    assert len(receipts) == 4
+    assert {row["operation"] for row in receipts} == {
+        operator.PHASE2_PRD_CONFIRM,
+        operator.PHASE2_TECHDOC_GENERATE,
+        operator.PHASE2_TECHDOC_CONFIRM,
+        operator.PHASE2_HANDOFF,
+    }
+    assert all(row["status"] == "SUCCEEDED" for row in receipts)
+    assert all(row["dispatch_count"] == 0 and row["transport_count"] == 0 for row in receipts)
+
+    for result in (prd, techdoc, confirmed_techdoc, handoff):
+        recovered = StageBEvaluationReceiptStore(database=Database(database.path)).inspect(
+            result.evaluation_id
+        )
+        assert recovered["idea_id"] == project_id
+        assert recovered["operation"] == result.operation
+        assert recovered["dispatch_count"] == 0
+        assert recovered["transport_count"] == 0
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -503,6 +601,278 @@ def test_phase2_operator_without_project_id_returns_rejection_status(
 ) -> None:
     assert operator.main(["local-techdoc-canary"]) == 2
     assert "--project-id" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("runner_name", "guard_kwargs", "message"),
+    [
+        ("run_confirm_prd_canary", {"participant": "wrong-participant"}, "STAGE_B_PARTICIPANT_REQUIRED"),
+        ("run_local_techdoc_canary", {"safe_fixture_mode": True}, "SAFE_FIXTURE_MUST_BE_OFF"),
+        ("run_confirm_techdoc_canary", {"accounts_enabled": True}, "ACCOUNTS_MUST_BE_DISABLED"),
+    ],
+)
+def test_phase2_document_canaries_enforce_stage_b_guard_before_preflight(
+    tmp_path, runner_name, guard_kwargs, message
+) -> None:
+    database, project_id, _version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
+    runner = getattr(operator, runner_name)
+
+    with pytest.raises(StageBGuardError, match=message):
+        runner(
+            database=database,
+            project_id=project_id,
+            actor="phase2-test-operator",
+            **guard_kwargs,
+        )
+
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM stage_b_evaluation_receipts WHERE idea_id=?",
+        (project_id,),
+    )["n"] == 0
+
+
+def test_confirm_techdoc_replay_reuses_success_receipt_without_draft_lookup(
+    tmp_path, monkeypatch
+) -> None:
+    database, project_id, _prd_version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
+    generated = operator.run_local_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+    first = operator.run_confirm_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+
+    original_fetch_all = database.fetch_all
+
+    def reject_draft_lookup(sql, params=()):
+        if "status='draft'" in sql:
+            raise AssertionError("successful replay must not query for a draft TechDoc")
+        return original_fetch_all(sql, params)
+
+    monkeypatch.setattr(database, "fetch_all", reject_draft_lookup)
+    second = operator.run_confirm_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+
+    assert second == first
+    assert second.version_id == generated.version_id
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_TECHDOC_CONFIRM,),
+    )["n"] == 1
+
+
+def test_confirm_failure_after_document_mutation_rolls_back_approval_and_marks_receipt_failed(
+    tmp_path, monkeypatch
+) -> None:
+    database, project_id, version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
+
+    original_mark_success = operator.StageBEvaluationReceiptStore.mark_success
+
+    def fail_after_confirm(self, *args, **kwargs):
+        raise RuntimeError("injected post-confirm receipt failure")
+
+    monkeypatch.setattr(operator.StageBEvaluationReceiptStore, "mark_success", fail_after_confirm)
+
+    with pytest.raises(StageBGuardError, match="CONFIRMATION_FAILED"):
+        operator.run_confirm_prd_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    assert database.fetch_one(
+        "SELECT status, approved_at FROM document_versions WHERE id=?", (version_id,)
+    ) == {"status": "draft", "approved_at": None}
+    receipt = database.fetch_one(
+        "SELECT status FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_PRD_CONFIRM,),
+    )
+    assert receipt == {"status": "FAILED"}
+    monkeypatch.setattr(operator.StageBEvaluationReceiptStore, "mark_success", original_mark_success)
+
+
+def test_local_techdoc_post_persistence_failure_removes_version_and_fails_receipt(
+    tmp_path, monkeypatch
+) -> None:
+    database, project_id, _prd_version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
+
+    def fail_after_techdoc_persistence(self, *args, **kwargs):
+        raise RuntimeError("injected post-persistence receipt failure")
+
+    monkeypatch.setattr(
+        operator.StageBEvaluationReceiptStore, "mark_success", fail_after_techdoc_persistence
+    )
+
+    with pytest.raises(StageBGuardError, match="TECHDOC_GENERATION_FAILED"):
+        operator.run_local_techdoc_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM document_versions WHERE project_id=? AND doc_type='techdoc'",
+        (project_id,),
+    ) == {"n": 0}
+    assert database.fetch_one(
+        "SELECT status FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_TECHDOC_GENERATE,),
+    ) == {"status": "FAILED"}
+
+
+def test_handoff_post_persistence_failure_removes_ack_and_run_and_fails_receipt(
+    tmp_path, monkeypatch
+) -> None:
+    database, project_id, prd_version_id, _solution_id, snapshot_id = _phase2_database(tmp_path)
+    _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)
+
+    def fail_after_handoff_persistence(self, *args, **kwargs):
+        raise RuntimeError("injected post-persistence receipt failure")
+
+    monkeypatch.setattr(
+        operator.StageBEvaluationReceiptStore, "mark_success", fail_after_handoff_persistence
+    )
+
+    with pytest.raises(StageBGuardError, match="HANDOFF_FAILED"):
+        operator.run_handoff_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM handoff_unresolved_acknowledgements WHERE project_id=?",
+        (project_id,),
+    ) == {"n": 0}
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM handoff_runs WHERE project_id=? AND target_client='generic'",
+        (project_id,),
+    ) == {"n": 0}
+    assert database.fetch_one(
+        "SELECT status FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_HANDOFF,),
+    ) == {"status": "FAILED"}
+
+
+def test_local_techdoc_cleanup_failure_still_fails_receipt(tmp_path, monkeypatch) -> None:
+    database, project_id, _prd_version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
+
+    monkeypatch.setattr(
+        operator.StageBEvaluationReceiptStore, "mark_success",
+        lambda self, *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected receipt failure")),
+    )
+    monkeypatch.setattr(
+        operator, "_phase2_cleanup_new_techdoc_artifacts",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected cleanup failure")),
+    )
+    monkeypatch.setattr(
+        operator.StageBEvaluationReceiptStore, "mark_failure",
+        lambda self, *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected mark failure")),
+    )
+
+    with pytest.raises(StageBGuardError, match="TECHDOC_GENERATION_FAILED"):
+        operator.run_local_techdoc_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    assert database.fetch_one(
+        "SELECT status FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_TECHDOC_GENERATE,),
+    ) == {"status": "FAILED"}
+
+
+def test_handoff_cleanup_failure_still_fails_receipt(tmp_path, monkeypatch) -> None:
+    database, project_id, prd_version_id, _solution_id, snapshot_id = _phase2_database(tmp_path)
+    _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)
+
+    monkeypatch.setattr(
+        operator.StageBEvaluationReceiptStore, "mark_success",
+        lambda self, *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected receipt failure")),
+    )
+    monkeypatch.setattr(
+        operator, "_phase2_cleanup_new_handoff_artifacts",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected cleanup failure")),
+    )
+    monkeypatch.setattr(
+        operator.StageBEvaluationReceiptStore, "mark_failure",
+        lambda self, *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected mark failure")),
+    )
+
+    with pytest.raises(StageBGuardError, match="HANDOFF_FAILED"):
+        operator.run_handoff_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    assert database.fetch_one(
+        "SELECT status FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_HANDOFF,),
+    ) == {"status": "FAILED"}
+
+
+def test_confirmation_compensation_failure_is_fail_closed_and_marks_receipt_failed(
+    tmp_path, monkeypatch
+) -> None:
+    database, project_id, version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
+
+    original_mark_success = operator.StageBEvaluationReceiptStore.mark_success
+
+    def fail_after_confirm(self, *args, **kwargs):
+        raise RuntimeError("injected post-confirm receipt failure")
+
+    def fail_compensation(*args, **kwargs):
+        raise RuntimeError("injected compensation failure")
+
+    monkeypatch.setattr(operator.StageBEvaluationReceiptStore, "mark_success", fail_after_confirm)
+    monkeypatch.setattr(operator, "_phase2_compensate_confirmation", fail_compensation)
+
+    with pytest.raises(StageBGuardError, match="COMPENSATION_FAILED"):
+        operator.run_confirm_prd_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    receipt = database.fetch_one(
+        "SELECT status FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_PRD_CONFIRM,),
+    )
+    assert receipt == {"status": "FAILED"}
+    assert database.fetch_one(
+        "SELECT status FROM document_versions WHERE id=?", (version_id,)
+    ) == {"status": "approved"}
+    monkeypatch.setattr(operator.StageBEvaluationReceiptStore, "mark_success", original_mark_success)
+
+
+@pytest.mark.parametrize("confirmation", ["prd", "techdoc"])
+def test_confirmation_cleanup_and_mark_failure_failure_still_fails_receipt(
+    tmp_path, monkeypatch, confirmation
+) -> None:
+    database, project_id, _version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
+    if confirmation == "techdoc":
+        operator.run_local_techdoc_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    monkeypatch.setattr(
+        operator.StageBEvaluationReceiptStore, "mark_success",
+        lambda self, *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected receipt failure")),
+    )
+    monkeypatch.setattr(
+        operator, "_phase2_compensate_confirmation",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected compensation failure")),
+    )
+    monkeypatch.setattr(
+        operator.StageBEvaluationReceiptStore, "mark_failure",
+        lambda self, *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected mark failure")),
+    )
+
+    runner = (
+        operator.run_confirm_prd_canary
+        if confirmation == "prd" else operator.run_confirm_techdoc_canary
+    )
+    with pytest.raises(StageBGuardError, match="COMPENSATION_FAILED"):
+        runner(database=database, project_id=project_id, actor="phase2-test-operator")
+
+    operation = (
+        operator.PHASE2_PRD_CONFIRM
+        if confirmation == "prd" else operator.PHASE2_TECHDOC_CONFIRM
+    )
+    assert database.fetch_one(
+        "SELECT status FROM stage_b_evaluation_receipts WHERE operation=?", (operation,)
+    ) == {"status": "FAILED"}
 
 
 @pytest.mark.parametrize("document_state", ["missing", "unconfirmed", "stale"])

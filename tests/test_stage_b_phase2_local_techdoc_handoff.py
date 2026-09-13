@@ -234,6 +234,31 @@ def test_confirm_prd_canary_fails_closed_without_a_current_validation_passed_prd
     )["n"] == 0
 
 
+def test_confirm_prd_canary_does_not_initialize_or_migrate_schema_before_preflight(
+    tmp_path, monkeypatch
+) -> None:
+    database, project_id, _version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
+
+    def forbidden_schema_initialization() -> None:
+        raise AssertionError("Phase 2 canary must not initialize or migrate schema")
+
+    monkeypatch.setattr(database, "init_schema", forbidden_schema_initialization)
+    database.execute(
+        "UPDATE document_versions SET validation_status='needs_human_review' WHERE project_id=?",
+        (project_id,),
+    )
+
+    with pytest.raises(StageBGuardError, match="PRD"):
+        operator.run_confirm_prd_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_PRD_CONFIRM,),
+    )["n"] == 0
+
+
 @pytest.mark.parametrize(
     "command",
     [

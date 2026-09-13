@@ -179,7 +179,6 @@ def _phase2_prd_result(
 
 
 def run_confirm_prd_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
-    database.init_schema()
     project, snapshot, solution, prd = _phase2_prd_preflight(database, project_id)
     idempotency_key = "stage-b-phase2:prd-confirm:" + hashlib.sha256(
         f"{project_id}:{snapshot['id']}:{prd['id']}".encode("utf-8")

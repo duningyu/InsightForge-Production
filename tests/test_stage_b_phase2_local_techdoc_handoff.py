@@ -346,11 +346,10 @@ def test_local_techdoc_canary_reads_back_receipt_before_local_document_loop(
     assert observed["generator_type"] is LocalGenerator
 
 
-def test_local_techdoc_canary_uses_isolated_local_loop_and_binds_confirmed_prd(
+def test_local_techdoc_canary_uses_selected_solution_snapshot_without_prd_binding(
     tmp_path, monkeypatch
 ) -> None:
     database, project_id, version_id, solution_id, snapshot_id = _phase2_database(tmp_path)
-    database.execute("UPDATE document_versions SET status='approved' WHERE id=?", (version_id,))
     database.execute(
         "UPDATE project_canvas SET problem=?, target_users=? WHERE project_id=?",
         (json.dumps("problem"), json.dumps(["target users"]), project_id),
@@ -374,10 +373,10 @@ def test_local_techdoc_canary_uses_isolated_local_loop_and_binds_confirmed_prd(
     assert techdoc["validation_status"] == "passed"
     assert techdoc["status"] == "draft"
     assert database.fetch_one(
-        """SELECT dependency_id, dependency_version FROM artifact_dependencies
+        """SELECT 1 FROM artifact_dependencies
            WHERE artifact_type='document_version' AND artifact_id=? AND dependency_type='prd_version'""",
         (techdoc["id"],),
-    ) == {"dependency_id": version_id, "dependency_version": "1"}
+    ) is None
     receipt = StageBEvaluationReceiptStore(database=Database(database.path)).inspect(result.evaluation_id)
     assert receipt["status"] == "SUCCEEDED"
     assert receipt["dispatch_count"] == 0
@@ -393,22 +392,18 @@ def test_local_techdoc_canary_uses_isolated_local_loop_and_binds_confirmed_prd(
     ) == result
 
 
-def test_local_techdoc_canary_requires_confirmed_prd_before_receipt(tmp_path) -> None:
+def test_local_techdoc_canary_does_not_require_confirmed_prd_before_receipt(tmp_path) -> None:
     database, project_id, _version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
 
-    with pytest.raises(StageBGuardError, match="CONFIRMED_PRD"):
-        operator.run_local_techdoc_canary(
-            database=database, project_id=project_id, actor="phase2-test-operator"
-        )
+    result = operator.run_local_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
 
-    assert database.fetch_one(
-        "SELECT COUNT(*) AS n FROM stage_b_evaluation_receipts WHERE operation=?",
-        (operator.PHASE2_TECHDOC_GENERATE,),
-    )["n"] == 0
+    assert result.status == "completed"
     assert database.fetch_one(
         "SELECT COUNT(*) AS n FROM document_versions WHERE project_id=? AND doc_type='techdoc'",
         (project_id,),
-    )["n"] == 0
+    )["n"] == 1
 
 
 @pytest.mark.parametrize(

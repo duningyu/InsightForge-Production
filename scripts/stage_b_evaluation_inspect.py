@@ -180,6 +180,46 @@ def _phase2_prd_result(
     )
 
 
+def _phase2_techdoc_preflight(database: Database, project_id: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validate the selected-solution/project-snapshot TechDoc input contract."""
+    project = database.fetch_one(
+        "SELECT id, project_origin, exclude_from_beta_metrics, current_snapshot_id FROM projects WHERE id=?",
+        (project_id,),
+    )
+    if project is None:
+        raise KeyError("project not found")
+    if project["project_origin"] not in {"demo", "qa"} or not bool(project["exclude_from_beta_metrics"]):
+        raise StageBGuardError("STAGE_B_SYNTHETIC_PROJECT_REQUIRED")
+    snapshot_id = project.get("current_snapshot_id")
+    snapshot = database.fetch_one(
+        "SELECT id, project_id, confirmed_at FROM project_snapshots WHERE id=? AND project_id=?",
+        (snapshot_id, project_id),
+    ) if snapshot_id else None
+    if snapshot is None or not snapshot["confirmed_at"]:
+        raise StageBGuardError("PHASE2_TECHDOC_CURRENT_SNAPSHOT_REQUIRED")
+    snapshot_health = database.fetch_one(
+        "SELECT health_status FROM artifact_health WHERE artifact_type='project_snapshot' AND artifact_id=?",
+        (snapshot_id,),
+    )
+    if snapshot_health is None or snapshot_health["health_status"] != "current":
+        raise StageBGuardError("PHASE2_TECHDOC_SNAPSHOT_NOT_CURRENT")
+    selected = database.fetch_all(
+        """
+        SELECT candidate.id AS selected_solution_id
+        FROM snapshot_decision_links AS link
+        JOIN project_decisions AS decision ON decision.id=link.decision_id
+        JOIN solution_candidates AS candidate ON candidate.id=decision.selected_option_id
+        WHERE link.snapshot_id=? AND link.role='current_solution'
+          AND decision.project_id=? AND decision.status='confirmed'
+          AND candidate.project_id=?
+        """,
+        (snapshot_id, project_id, project_id),
+    )
+    if len(selected) != 1:
+        raise StageBGuardError("PHASE2_TECHDOC_SELECTED_SOLUTION_AMBIGUOUS")
+    return project, snapshot, selected[0]
+
+
 def run_confirm_prd_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
     project, snapshot, solution, prd = _phase2_prd_preflight(database, project_id)
     idempotency_key = "stage-b-phase2:prd-confirm:" + hashlib.sha256(
@@ -269,12 +309,10 @@ def run_confirm_prd_canary(*, database: Database, project_id: str, actor: str) -
 
 
 def run_local_techdoc_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
-    project, snapshot, solution, prd = _phase2_prd_preflight(database, project_id)
-    if prd["status"] != "approved":
-        raise StageBGuardError("PHASE2_TECHDOC_CONFIRMED_PRD_REQUIRED")
+    project, snapshot, solution = _phase2_techdoc_preflight(database, project_id)
 
     idempotency_key = "stage-b-phase2:techdoc-generate:" + hashlib.sha256(
-        f"{project_id}:{snapshot['id']}:{solution['selected_solution_id']}:{prd['id']}".encode("utf-8")
+        f"{project_id}:{snapshot['id']}:{solution['selected_solution_id']}".encode("utf-8")
     ).hexdigest()
     context = Phase2OperatorContext(PHASE2_TECHDOC_GENERATE, project_id, actor, idempotency_key)
     evaluation_id = "phase2-techdoc-generate-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:24]
@@ -340,13 +378,6 @@ def run_local_techdoc_canary(*, database: Database, project_id: str, actor: str)
         )
         if version is None or version["validation_status"] != "passed":
             raise StageBGuardError("PHASE2_TECHDOC_GENERATION_RESULT_INVALID")
-        database.execute(
-            """INSERT OR IGNORE INTO artifact_dependencies(
-                   artifact_type, artifact_id, dependency_type, dependency_id,
-                   dependency_version, created_at
-               ) VALUES ('document_version', ?, 'prd_version', ?, ?, ?)""",
-            (version["id"], prd["id"], prd["version"], version["created_at"]),
-        )
         safe_response = {
             "content": True, "kind": PHASE2_TECHDOC_GENERATE,
             "project_id": project_id, "document_id": version["document_id"],

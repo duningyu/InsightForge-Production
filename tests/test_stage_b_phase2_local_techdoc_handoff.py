@@ -69,8 +69,10 @@ def _phase2_database(tmp_path):
     snapshot_id = "snapshot_phase2"
     snapshot_fields = [
         snapshot_id, project_id, brief["id"], decision_id, "Selected", "one liner",
-        "target", "problem", "solution", "mvp", "flow", "inputs", "outputs",
-        "technical", "unknowns", "next", now, now, "test", sha256(b"snapshot").hexdigest(),
+        json.dumps("target"), json.dumps("problem"), json.dumps("solution"),
+        json.dumps("mvp"), json.dumps("flow"), json.dumps("inputs"),
+        json.dumps("outputs"), json.dumps("technical"), json.dumps("unknowns"),
+        json.dumps("next"), now, now, "test", sha256(b"snapshot").hexdigest(),
     ]
     database.execute(
         """INSERT INTO project_snapshots(
@@ -256,6 +258,156 @@ def test_confirm_prd_canary_does_not_initialize_or_migrate_schema_before_preflig
     assert database.fetch_one(
         "SELECT COUNT(*) AS n FROM stage_b_evaluation_receipts WHERE operation=?",
         (operator.PHASE2_PRD_CONFIRM,),
+    )["n"] == 0
+
+
+def test_local_techdoc_canary_reads_back_receipt_before_local_document_loop(
+    tmp_path, monkeypatch
+) -> None:
+    database, project_id, _version_id, solution_id, snapshot_id = _phase2_database(tmp_path)
+    database.execute(
+        "UPDATE document_versions SET status='approved' WHERE id=?",
+        (_version_id,),
+    )
+    observed: dict[str, object] = {}
+
+    class LocalGenerator:
+        pass
+
+    class DocumentLoop:
+        def __init__(self, db, *, generator):
+            observed["database_path"] = db.path
+            observed["generator_type"] = type(generator)
+
+        def run(self, requested_project_id, doc_type, **kwargs):
+            rows = database.fetch_all(
+                "SELECT * FROM stage_b_evaluation_receipts WHERE operation=?",
+                (operator.PHASE2_TECHDOC_GENERATE,),
+            )
+            assert len(rows) == 1
+            receipt = StageBEvaluationReceiptStore(database=Database(database.path)).inspect(
+                rows[0]["evaluation_id"]
+            )
+            observed.update(
+                evaluation_id=receipt["evaluation_id"],
+                status=receipt["status"],
+                project_id=receipt["idea_id"],
+                doc_type=doc_type,
+                requested_project_id=requested_project_id,
+                idempotency_key=kwargs["idempotency_key"],
+                require_snapshot=kwargs["require_snapshot"],
+                competitor_snapshot_id=kwargs["competitor_snapshot_id"],
+                use_competitor_snapshot=kwargs["use_competitor_snapshot"],
+            )
+            assert receipt["status"] == "CREATED"
+            assert receipt["dispatch_count"] == 0
+            assert receipt["transport_count"] == 0
+            assert receipt["transport_attempted"] == 0
+            database.execute(
+                "INSERT INTO documents(id, project_id, doc_type, title, created_at) VALUES (?, ?, 'techdoc', 'TechDoc', ?)",
+                ("document_phase2_techdoc", requested_project_id, utc_now()),
+            )
+            database.execute(
+                """INSERT INTO document_versions(
+                       id, document_id, project_id, doc_type, version, canvas_version,
+                       status, content, citations_json, validation_status, idempotency_key, created_at
+                   ) VALUES (?, ?, ?, 'techdoc', 1, 1, 'draft', ?, '[]', 'passed', ?, ?)""",
+                (
+                    "version_phase2_techdoc", "document_phase2_techdoc", requested_project_id,
+                    "# TechDoc\nfixture", kwargs["idempotency_key"], utc_now(),
+                ),
+            )
+            return {
+                "project_id": requested_project_id,
+                "doc_type": "techdoc",
+                "document_id": "document_phase2_techdoc",
+                "version_id": "version_phase2_techdoc",
+                "snapshot_id": snapshot_id,
+                "selected_solution_id": solution_id,
+                "rounds": 1,
+                "citations": [],
+                "claims": [],
+            }
+
+    monkeypatch.setattr(operator, "DocumentLoop", DocumentLoop, raising=False)
+    monkeypatch.setattr(operator, "LocalDocumentGenerator", LocalGenerator, raising=False)
+
+    result = operator.run_local_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+
+    assert result.operation == operator.PHASE2_TECHDOC_GENERATE
+    assert result.project_id == project_id
+    assert result.selected_solution_id == solution_id
+    assert result.snapshot_id == snapshot_id
+    assert result.document_id == "document_phase2_techdoc"
+    assert result.version_id == "version_phase2_techdoc"
+    assert result.status == "completed"
+    assert observed["generator_type"] is LocalGenerator
+
+
+def test_local_techdoc_canary_uses_isolated_local_loop_and_binds_confirmed_prd(
+    tmp_path, monkeypatch
+) -> None:
+    database, project_id, version_id, solution_id, snapshot_id = _phase2_database(tmp_path)
+    database.execute("UPDATE document_versions SET status='approved' WHERE id=?", (version_id,))
+    database.execute(
+        "UPDATE project_canvas SET problem=?, target_users=? WHERE project_id=?",
+        (json.dumps("problem"), json.dumps(["target users"]), project_id),
+    )
+
+    result = operator.run_local_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    )
+
+    assert result.status == "completed"
+    assert result.selected_solution_id == solution_id
+    assert result.snapshot_id == snapshot_id
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM document_versions WHERE project_id=? AND doc_type='techdoc'",
+        (project_id,),
+    )["n"] == 1
+    techdoc = database.fetch_one(
+        "SELECT * FROM document_versions WHERE project_id=? AND doc_type='techdoc'",
+        (project_id,),
+    )
+    assert techdoc["validation_status"] == "passed"
+    assert techdoc["status"] == "draft"
+    assert database.fetch_one(
+        """SELECT dependency_id, dependency_version FROM artifact_dependencies
+           WHERE artifact_type='document_version' AND artifact_id=? AND dependency_type='prd_version'""",
+        (techdoc["id"],),
+    ) == {"dependency_id": version_id, "dependency_version": "1"}
+    receipt = StageBEvaluationReceiptStore(database=Database(database.path)).inspect(result.evaluation_id)
+    assert receipt["status"] == "SUCCEEDED"
+    assert receipt["dispatch_count"] == 0
+    assert receipt["transport_count"] == 0
+    artifact = json.loads(
+        (tmp_path / "private" / "stage_b_evaluation" / f"{sha256(result.evaluation_id.encode()).hexdigest()}.json").read_text()
+    )
+    assert artifact["response"]["content"] is True
+    assert "prompt" in artifact and artifact["prompt"] is None
+    monkeypatch.setattr(operator, "DocumentLoop", lambda *args, **kwargs: pytest.fail("idempotent rerun must not invoke loop"))
+    assert operator.run_local_techdoc_canary(
+        database=database, project_id=project_id, actor="phase2-test-operator"
+    ) == result
+
+
+def test_local_techdoc_canary_requires_confirmed_prd_before_receipt(tmp_path) -> None:
+    database, project_id, _version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
+
+    with pytest.raises(StageBGuardError, match="CONFIRMED_PRD"):
+        operator.run_local_techdoc_canary(
+            database=database, project_id=project_id, actor="phase2-test-operator"
+        )
+
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM stage_b_evaluation_receipts WHERE operation=?",
+        (operator.PHASE2_TECHDOC_GENERATE,),
+    )["n"] == 0
+    assert database.fetch_one(
+        "SELECT COUNT(*) AS n FROM document_versions WHERE project_id=? AND doc_type='techdoc'",
+        (project_id,),
     )["n"] == 0
 
 

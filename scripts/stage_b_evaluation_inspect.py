@@ -22,6 +22,8 @@ from typing import Any, Callable, Literal
 
 from app.db import Database
 from app.services.document_versions import DocumentVersionService
+from app.services.generation import LocalDocumentGenerator
+from app.services.loop import DocumentLoop
 from app.services.stage_b_evaluation import (
     DEFAULT_STAGE_B_TRANSPORT_BUDGET,
     CONTEXT_VERSION,
@@ -267,7 +269,126 @@ def run_confirm_prd_canary(*, database: Database, project_id: str, actor: str) -
 
 
 def run_local_techdoc_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
-    return _phase2_unimplemented(Phase2OperatorContext(PHASE2_TECHDOC_GENERATE, project_id, actor, ""))
+    project, snapshot, solution, prd = _phase2_prd_preflight(database, project_id)
+    if prd["status"] != "approved":
+        raise StageBGuardError("PHASE2_TECHDOC_CONFIRMED_PRD_REQUIRED")
+
+    idempotency_key = "stage-b-phase2:techdoc-generate:" + hashlib.sha256(
+        f"{project_id}:{snapshot['id']}:{solution['selected_solution_id']}:{prd['id']}".encode("utf-8")
+    ).hexdigest()
+    context = Phase2OperatorContext(PHASE2_TECHDOC_GENERATE, project_id, actor, idempotency_key)
+    evaluation_id = "phase2-techdoc-generate-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:24]
+    store = StageBEvaluationReceiptStore(database=database)
+    existing_rows = database.fetch_all(
+        "SELECT evaluation_id, status FROM stage_b_evaluation_receipts WHERE operation=? AND idea_id=?",
+        (context.operation, project_id),
+    )
+    if len(existing_rows) > 1 or (existing_rows and existing_rows[0]["evaluation_id"] != evaluation_id):
+        raise StageBGuardError("PHASE2_TECHDOC_GENERATION_RECEIPT_AMBIGUOUS")
+    existing = existing_rows[0] if existing_rows else None
+    if existing is not None:
+        if existing["status"] != "SUCCEEDED":
+            raise StageBGuardError("PHASE2_TECHDOC_GENERATION_PREVIOUSLY_FAILED")
+        version = database.fetch_one(
+            "SELECT * FROM document_versions WHERE idempotency_key=? AND project_id=? AND doc_type='techdoc'",
+            (idempotency_key, project_id),
+        )
+        if version is None:
+            raise StageBGuardError("PHASE2_TECHDOC_GENERATION_RESULT_MISMATCH")
+        return _phase2_techdoc_result(
+            evaluation_id=evaluation_id, project_id=project_id,
+            solution_id=solution["selected_solution_id"], snapshot_id=snapshot["id"], version=version,
+        )
+
+    store.create(
+        evaluation_id=evaluation_id, execution_id=evaluation_id, idea_id=project_id,
+        evaluation_type=PHASE2_TECHDOC_GENERATE, execution_mode="INSIGHTFORGE",
+        participant=STAGE_B_PARTICIPANT, provider=STAGE_B_PROVIDER, model=STAGE_B_MODEL,
+        operation=PHASE2_TECHDOC_GENERATE, prompt_version=INSIGHTFORGE_PROMPT_VERSION,
+        context_version=CONTEXT_VERSION, retry_ordinal=0,
+        budget_before=DEFAULT_STAGE_B_TRANSPORT_BUDGET,
+        prompt=None,
+    )
+    readback = StageBEvaluationReceiptStore(database=Database(database.path)).inspect(evaluation_id)
+    if not (
+        readback["status"] == "CREATED"
+        and readback["idea_id"] == context.project_id
+        and readback["operation"] == context.operation
+        and readback["dispatch_count"] == 0
+        and readback["transport_count"] == 0
+        and not readback["transport_attempted"]
+    ):
+        raise StageBGuardError("PHASE2_TECHDOC_PRE_MUTATION_READBACK_FAILED")
+    # Keep the explicit evaluation context local to this operation.  The
+    # DocumentLoop contract carries the same identity through its idempotency
+    # key and snapshot binding; it has no provider context parameter.
+    _ = StageBEvaluationContext(
+        evaluation_id=evaluation_id, evaluation_type=PHASE2_TECHDOC_GENERATE,
+        surface="TECHDOC", participant=STAGE_B_PARTICIPANT,
+        execution_mode="INSIGHTFORGE", retry_ordinal=0, receipt_store=store,
+    )
+    started_at = time.monotonic()
+    try:
+        result = DocumentLoop(database, generator=LocalDocumentGenerator()).run(
+            project_id, "techdoc", idempotency_key=idempotency_key,
+            require_snapshot=True, competitor_snapshot_id=None,
+            use_competitor_snapshot=False,
+        )
+        version = database.fetch_one(
+            "SELECT * FROM document_versions WHERE id=? AND project_id=? AND doc_type='techdoc'",
+            (result["version_id"], project_id),
+        )
+        if version is None or version["validation_status"] != "passed":
+            raise StageBGuardError("PHASE2_TECHDOC_GENERATION_RESULT_INVALID")
+        database.execute(
+            """INSERT OR IGNORE INTO artifact_dependencies(
+                   artifact_type, artifact_id, dependency_type, dependency_id,
+                   dependency_version, created_at
+               ) VALUES ('document_version', ?, 'prd_version', ?, ?, ?)""",
+            (version["id"], prd["id"], prd["version"], version["created_at"]),
+        )
+        safe_response = {
+            "content": True, "kind": PHASE2_TECHDOC_GENERATE,
+            "project_id": project_id, "document_id": version["document_id"],
+            "version_id": version["id"], "snapshot_id": snapshot["id"],
+            "status": version["status"],
+        }
+        store.mark_success(
+            evaluation_id, response=safe_response,
+            started_at=started_at, response_timestamp=time.monotonic(),
+        )
+        store.write_artifact(evaluation_id, prompt=None, response=safe_response)
+        return _phase2_techdoc_result(
+            evaluation_id=evaluation_id, project_id=project_id,
+            solution_id=solution["selected_solution_id"], snapshot_id=snapshot["id"], version=version,
+        )
+    except Exception as exc:
+        safe_failure = StageBGuardError("PHASE2_TECHDOC_GENERATION_FAILED")
+        try:
+            store.mark_failure(
+                evaluation_id, error=safe_failure,
+                started_at=started_at, response_timestamp=time.monotonic(),
+            )
+            store.write_artifact(
+                evaluation_id, prompt=None,
+                response={"kind": PHASE2_TECHDOC_GENERATE, "failure": "GENERATION_FAILED"},
+            )
+        except Exception:
+            store.mark_artifact_failure(evaluation_id)
+        raise safe_failure from exc
+
+
+def _phase2_techdoc_result(
+    *, evaluation_id: str, project_id: str, solution_id: str, snapshot_id: str,
+    version: dict[str, Any],
+) -> Phase2SafeReceiptMetadata:
+    return Phase2SafeReceiptMetadata(
+        operation=PHASE2_TECHDOC_GENERATE, evaluation_id=evaluation_id,
+        project_id=project_id, selected_solution_id=solution_id,
+        document_id=version["document_id"], version_id=version["id"],
+        snapshot_id=snapshot_id, status="completed",
+        counts={"generated": 1}, terminal_stage="TECHDOC_GENERATED",
+    )
 
 
 def run_confirm_techdoc_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:

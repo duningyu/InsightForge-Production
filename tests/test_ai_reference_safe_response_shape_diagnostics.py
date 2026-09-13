@@ -73,7 +73,7 @@ def test_shape_metadata_is_durable_and_body_free(tmp_path):
         provider="openai", model="test-model", api_key="fake-test-key",
         client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(
             200,
-            json={"choices": [{"message": {"content": json.dumps({"possible_target_users": ["secret"]})}}]},
+            json={"choices": [{"message": {"content": json.dumps({"references": [{"category": "possible_target_users", "content": "secret"}]})}}]},
         ))),
         attempt_observer=db.insert_provider_attempt,
     )
@@ -83,6 +83,10 @@ def test_shape_metadata_is_durable_and_body_free(tmp_path):
     inspected = inspect_provider_attempt(Database(tmp_path / "shape.sqlite3"), attempt_id)
     shape = inspected["safe_response_shape"]
     assert shape["provider_response_shape"]["message_content_present"] is True
+    parsed = shape["parsed_payload_shape"]
+    assert parsed["top_level_keys"] == ["references"]
+    assert parsed["recognized_reference_fields_nonempty"] == ["possible_target_users"]
+    assert parsed["unknown_reference_categories"] == []
     assert "secret" not in json.dumps(inspected)
 
 
@@ -91,7 +95,7 @@ def test_provider_adapter_shape_diagnostic_has_no_content_values():
     records = []
 
     def handler(request):
-        payload = {"possible_target_users": [marker]}
+        payload = {"references": [{"category": "possible_target_users", "content": marker}]}
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": json.dumps(payload)}}]},
@@ -117,7 +121,7 @@ def test_provider_attempt_inspector_returns_only_safe_shape(tmp_path):
         provider="openai", model="test-model", api_key="fake-test-key",
         client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(
             200,
-            json={"choices": [{"message": {"content": json.dumps({"unexpected_advice": "secret"})}}]},
+            json={"choices": [{"message": {"content": json.dumps({"references": [{"category": "unexpected_advice", "content": "secret"}]})}}]},
         ))),
         attempt_observer=lambda record: (records.append(record), db.insert_provider_attempt(record)),
     )
@@ -125,5 +129,26 @@ def test_provider_attempt_inspector_returns_only_safe_shape(tmp_path):
         adapter.generate_ai_reference({"idea": "synthetic"})
     inspected = inspect_provider_attempt(Database(tmp_path / "inspector.sqlite3"), adapter._last_attempt_id)
     shape = inspected["safe_response_shape"]
-    assert shape["parsed_payload_shape"]["unknown_top_level_keys"] == ["unexpected_advice"]
+    assert shape["parsed_payload_shape"]["unknown_top_level_keys"] == []
+    assert shape["parsed_payload_shape"]["unknown_reference_categories"] == ["unexpected_advice"]
+    assert shape["parsed_payload_shape"]["recognized_reference_fields_nonempty"] == []
     assert "secret" not in json.dumps(inspected)
+
+
+def test_provider_envelope_shape_reports_nested_reference_fields_without_values():
+    payload = {
+        "references": [
+            {"category": "mvp_thoughts", "content": "synthetic secret marker"},
+            {"category": "questions_to_validate", "content": "另一个建议"},
+        ],
+        "uncertainty_notice": "仍需验证。",
+    }
+    result = safe_reference_shape(_envelope(json.dumps(payload, ensure_ascii=False)), payload)
+    parsed = result["parsed_payload_shape"]
+    assert parsed["top_level_keys"] == ["references", "uncertainty_notice"]
+    assert parsed["reference_item_count"] == 2
+    assert parsed["reference_categories"] == ["mvp_thoughts", "questions_to_validate"]
+    assert parsed["recognized_reference_fields_present"] == ["mvp_thoughts", "questions_to_validate"]
+    assert parsed["recognized_reference_fields_nonempty"] == ["mvp_thoughts", "questions_to_validate"]
+    assert parsed["unknown_top_level_keys"] == []
+    assert "synthetic secret marker" not in json.dumps(result, ensure_ascii=False)

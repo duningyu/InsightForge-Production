@@ -4,7 +4,11 @@ import asyncio
 
 import httpx
 
-from app.services.generation_contracts import REFERENCE_FIELDS
+from app.services.generation_contracts import (
+    AIReferenceProviderEnvelope,
+    AIReferenceProviderReference,
+    REFERENCE_FIELDS,
+)
 
 
 def test_ai_reference_generation_prompt_requires_substantive_reference_output(monkeypatch):
@@ -12,14 +16,21 @@ def test_ai_reference_generation_prompt_requires_substantive_reference_output(mo
 
     sync_prompts: list[str] = []
     async_prompts: list[str] = []
+    output_models: list[type] = []
 
     def capture_sync(_adapter, *, output_model, system, user):
         sync_prompts.append(system)
-        return object()
+        output_models.append(output_model)
+        return AIReferenceProviderEnvelope(
+            references=[AIReferenceProviderReference(category="mvp_thoughts", content="synthetic")]
+        )
 
     async def capture_async(_adapter, *, output_model, system, user):
         async_prompts.append(system)
-        return object()
+        output_models.append(output_model)
+        return AIReferenceProviderEnvelope(
+            references=[AIReferenceProviderReference(category="mvp_thoughts", content="synthetic")]
+        )
 
     monkeypatch.setattr(ModelAdapter, "_generate", capture_sync)
     monkeypatch.setattr(AsyncModelAdapter, "_generate_async", capture_async)
@@ -42,6 +53,7 @@ def test_ai_reference_generation_prompt_requires_substantive_reference_output(mo
     asyncio.run(exercise_async())
 
     assert len(sync_prompts) == len(async_prompts) == 1
+    assert output_models == [AIReferenceProviderEnvelope, AIReferenceProviderEnvelope]
     for prompt in (*sync_prompts, *async_prompts):
         lowered = prompt.casefold()
         assert "at least one" in lowered

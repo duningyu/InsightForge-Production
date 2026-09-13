@@ -9,7 +9,7 @@ import json
 import re
 from typing import Any, Awaitable, Callable, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.errors import StructuredOutputContractError, public_recovery_payload
 from app.schemas import AIReferenceDraft, EvidenceGuidanceDraft, SolutionCandidateDraft
@@ -37,6 +37,48 @@ AI_REFERENCE_GENERATION_INSTRUCTION = (
     "or possible product directions based on the supplied idea and context. Label them as unverified; "
     "never present them as research findings, market facts, statistics, sources, or user interviews."
 )
+
+
+class AIReferenceProviderReference(BaseModel):
+    """Provider-facing item; categories are mapped into the unchanged domain draft."""
+
+    model_config = ConfigDict(extra="forbid")
+    category: str
+    content: str = Field(min_length=1)
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, value: str) -> str:
+        if value not in REFERENCE_FIELDS:
+            raise ValueError("unknown AI Reference category")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("AI Reference content must be substantive")
+        return value
+
+
+class AIReferenceProviderEnvelope(BaseModel):
+    """Explicit structured-output contract used only at the provider boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+    references: list[AIReferenceProviderReference] = Field(min_length=1, max_length=20)
+    uncertainty_notice: str | None = Field(default=None, max_length=2000)
+
+
+def map_ai_reference_provider_envelope(
+    envelope: AIReferenceProviderEnvelope,
+) -> AIReferenceDraft:
+    """Deterministically project provider items into the existing domain model."""
+    payload: dict[str, Any] = {field: [] for field in REFERENCE_FIELDS}
+    for item in envelope.references:
+        payload[item.category].append(item.content)
+    if envelope.uncertainty_notice is not None:
+        payload["uncertainty_notice"] = envelope.uncertainty_notice
+    return AIReferenceDraft.model_validate(payload)
 
 
 def _safe_shape_type(value: Any) -> str:
@@ -70,7 +112,8 @@ def safe_reference_shape(
     provider_response: Any,
     parsed_payload: Any = None,
     *,
-    model: AIReferenceDraft | None = None,
+    model: BaseModel | None = None,
+    schema_pass: bool | None = None,
 ) -> dict[str, Any]:
     """Return structure-only AI Reference diagnostics; never retain field values."""
     choices = provider_response.get("choices") if isinstance(provider_response, dict) else None
@@ -109,22 +152,53 @@ def safe_reference_shape(
         "recognized_reference_fields_present": [],
         "recognized_reference_fields_nonempty": [],
         "unknown_top_level_keys": [],
+        "reference_item_count": 0,
+        "reference_categories": [],
+        "unknown_reference_categories": [],
     }
     if isinstance(parsed, dict):
         keys, types, lengths = _safe_shape_fields(parsed)
-        recognized = [key for key in keys if key in REFERENCE_FIELDS]
-        nonempty = [key for key in recognized if bool(parsed.get(key))]
+        is_provider_envelope = isinstance(parsed.get("references"), list)
+        if is_provider_envelope:
+            # The provider contract nests substantive fields under references.
+            # Inspect only category names and content shape; never retain values.
+            categories: set[str] = set()
+            nonempty_categories: set[str] = set()
+            unknown_categories: set[str] = set()
+            for item in parsed["references"]:
+                if not isinstance(item, dict):
+                    continue
+                category = item.get("category")
+                if not isinstance(category, str):
+                    continue
+                categories.add(category)
+                if category not in REFERENCE_FIELDS:
+                    unknown_categories.add(category)
+                elif isinstance(item.get("content"), str) and item["content"].strip():
+                    nonempty_categories.add(category)
+            recognized = sorted(categories.intersection(REFERENCE_FIELDS))
+            nonempty = sorted(nonempty_categories)
+            unknown_top_level = [key for key in keys if key not in {"references", "uncertainty_notice"}]
+            parsed_shape.update(
+                reference_item_count=len(parsed["references"]),
+                reference_categories=sorted(categories),
+                unknown_reference_categories=sorted(unknown_categories),
+            )
+        else:
+            recognized = [key for key in keys if key in REFERENCE_FIELDS]
+            nonempty = [key for key in recognized if bool(parsed.get(key))]
+            unknown_top_level = [key for key in keys if key not in REFERENCE_FIELDS]
         parsed_shape.update(
             top_level_keys=keys,
             field_types=types,
             field_lengths=lengths,
             recognized_reference_fields_present=recognized,
             recognized_reference_fields_nonempty=nonempty,
-            unknown_top_level_keys=[key for key in keys if key not in REFERENCE_FIELDS],
+            unknown_top_level_keys=unknown_top_level,
         )
 
     schema_attempted = parsed is not None
-    schema_pass = False
+    schema_succeeded = False
     completeness_pass = False
     normalized_shape: dict[str, Any] = {
         "top_level_keys": [], "field_types": {}, "field_lengths": {},
@@ -135,13 +209,15 @@ def safe_reference_shape(
         except (ValidationError, TypeError):
             model = None
     if isinstance(model, AIReferenceDraft):
-        schema_pass = True
+        schema_succeeded = True
         normalized = {field: getattr(model, field, None) for field in AIReferenceDraft.model_fields}
         keys, types, lengths = _safe_shape_fields(normalized)
         normalized_shape = {"top_level_keys": keys, "field_types": types, "field_lengths": lengths}
         completeness_pass = bool(any(getattr(model, key) for key in REFERENCE_FIELDS)) and all(
             _items(getattr(model, key), required=False) for key in REFERENCE_FIELDS
         )
+    if schema_pass is not None:
+        schema_succeeded = schema_pass
     return {
         "provider_response_shape": {
             "choices_count": choices_count,
@@ -154,10 +230,10 @@ def safe_reference_shape(
         "normalized_ai_reference_shape": normalized_shape,
         "schema_stage": {
             "ai_reference_schema_attempted": schema_attempted,
-            "ai_reference_schema_pass": schema_pass,
+            "ai_reference_schema_pass": schema_succeeded,
         },
         "completeness_stage": {
-            "completeness_attempted": schema_pass,
+            "completeness_attempted": schema_succeeded,
             "completeness_pass": completeness_pass,
         },
         "reference_fields": list(REFERENCE_FIELDS),

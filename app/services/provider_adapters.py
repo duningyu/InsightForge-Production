@@ -28,7 +28,12 @@ from app.schemas import (
 from app.services.capability_probe import CapabilityProbe, CapabilityReport, CapabilityStatus
 from app.services.model_providers import ProviderConfigurationError, ProviderRegistry
 from app.services.dispatch_control import DispatchControlContext
-from app.services.generation_contracts import AI_REFERENCE_GENERATION_INSTRUCTION, safe_reference_shape
+from app.services.generation_contracts import (
+    AI_REFERENCE_GENERATION_INSTRUCTION,
+    AIReferenceProviderEnvelope,
+    map_ai_reference_provider_envelope,
+    safe_reference_shape,
+)
 
 
 class ProviderCallError(RuntimeError):
@@ -654,17 +659,21 @@ class ModelAdapter:
         )
 
     def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
-        return self._generate(
-            output_model=AIReferenceDraft,
+        envelope = self._generate(
+            output_model=AIReferenceProviderEnvelope,
             system=(
                 "Provide conservative brainstorming suggestions for a product idea. "
                 "Return only structured JSON. Do not invent research, official facts, "
                 "statistics, sources, URLs, or user interviews; keep every suggestion "
                 "as an unverified hypothesis. "
+                "Return an object with a non-empty references array. Each item must use "
+                "one of the allowed category names and contain substantive content. "
+                "uncertainty_notice is supplemental and cannot be the only output. "
                 + AI_REFERENCE_GENERATION_INSTRUCTION
             ),
             user=json.dumps(context, ensure_ascii=False),
         )
+        return map_ai_reference_provider_envelope(envelope)
 
     def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
         return self._generate(
@@ -758,8 +767,11 @@ class ModelAdapter:
             validated = output_model.model_validate(parsed)
         except ValidationError:
             pass
+        normalized_model = validated
+        if isinstance(validated, AIReferenceProviderEnvelope):
+            normalized_model = map_ai_reference_provider_envelope(validated)
         self.last_safe_diagnostic["safe_response_shape"] = safe_reference_shape(
-            body, parsed, model=validated
+            body, parsed, model=normalized_model, schema_pass=validated is not None
         )
         self._refresh_attempt_shape()
         if validated is None:
@@ -906,17 +918,21 @@ class AsyncModelAdapter(ModelAdapter):
         )
 
     async def generate_ai_reference_async(self, context: dict[str, Any]) -> AIReferenceDraft:
-        return await self._generate_async(
-            output_model=AIReferenceDraft,
+        envelope = await self._generate_async(
+            output_model=AIReferenceProviderEnvelope,
             system=(
                 "Provide conservative brainstorming suggestions for a product idea. "
                 "Return only structured JSON. Do not invent research, official facts, "
                 "statistics, sources, URLs, or user interviews; keep every suggestion "
                 "as an unverified hypothesis. "
+                "Return an object with a non-empty references array. Each item must use "
+                "one of the allowed category names and contain substantive content. "
+                "uncertainty_notice is supplemental and cannot be the only output. "
                 + AI_REFERENCE_GENERATION_INSTRUCTION
             ),
             user=json.dumps(context, ensure_ascii=False),
         )
+        return map_ai_reference_provider_envelope(envelope)
 
     async def generate_evidence_guidance_async(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
         return await self._generate_async(

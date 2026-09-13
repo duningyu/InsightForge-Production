@@ -22,7 +22,11 @@ from app.schemas import (
 )
 from app.services.provider_adapters import AsyncModelAdapter, DEFAULT_PROVIDER_TIMEOUT, ModelAdapter, ProviderCallError
 from app.services.dispatch_control import DispatchControlContext
-from app.services.generation_contracts import AI_REFERENCE_GENERATION_INSTRUCTION
+from app.services.generation_contracts import (
+    AI_REFERENCE_GENERATION_INSTRUCTION,
+    AIReferenceProviderEnvelope,
+    map_ai_reference_provider_envelope,
+)
 from app.services.stage_b_evaluation import StageBEvaluationContext
 
 RuntimeMode = Literal["llm_structured", "deterministic_demo", "managed_qwen"]
@@ -404,14 +408,14 @@ class OpenAIStructuredRuntime:
                     {"role": "system", "content": system},
                     {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
                 ],
-                text_format=AIReferenceDraft,
+                text_format=AIReferenceProviderEnvelope,
             )
             parsed = response.output_parsed
         except Exception as exc:  # pragma: no cover - live adapter
             raise StructuredRuntimeUnavailableError(f"STRUCTURED_LLM_CALL_FAILED: {exc}") from exc
         if parsed is None:
             raise StructuredRuntimeUnavailableError("STRUCTURED_LLM_EMPTY_OUTPUT")
-        return parsed
+        return map_ai_reference_provider_envelope(parsed)
 
     def generate_evidence_guidance(self, context: dict[str, Any]) -> EvidenceGuidanceDraft:
         self.model_rounds_used = 1

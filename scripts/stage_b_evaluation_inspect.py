@@ -511,7 +511,19 @@ def _phase2_handoff_result(*, evaluation_id: str, project_id: str, snapshot: dic
     )
 
 
-def run_handoff_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
+def run_handoff_canary(
+    *, database: Database, project_id: str, actor: str,
+    participant: str = STAGE_B_PARTICIPANT,
+    real_provider_stage_b: bool = True,
+    safe_fixture_mode: bool = False,
+    accounts_enabled: bool = False,
+) -> Phase2SafeReceiptMetadata:
+    evaluate_stage_b_guard(
+        real_provider_stage_b=real_provider_stage_b,
+        safe_fixture_mode=safe_fixture_mode,
+        accounts_enabled=accounts_enabled,
+        participant_id=participant,
+    )
     project, snapshot, solution, prd, techdoc, preflight_readiness = _phase2_handoff_preflight(database, project_id)
     idempotency_key = "stage-b-phase2:handoff:" + hashlib.sha256(
         f"{project_id}:{snapshot['id']}:{solution['selected_solution_id']}:{prd['id']}:{techdoc['id']}:generic".encode()
@@ -1043,7 +1055,15 @@ def _phase2_parser(command: str) -> argparse.ArgumentParser:
 
 def _run_phase2_canary_cli(args: argparse.Namespace, command: str) -> int:
     _operation, runner = _PHASE2_COMMANDS[command]
-    result = runner(database=Database(args.database), project_id=args.project_id, actor=args.actor)
+    kwargs = {"database": Database(args.database), "project_id": args.project_id, "actor": args.actor}
+    if command == "handoff-canary":
+        kwargs.update(
+            participant=os.environ.get("BETA_PARTICIPANT_ID", ""),
+            real_provider_stage_b=_env_bool("REAL_PROVIDER_STAGE_B"),
+            safe_fixture_mode=_env_bool("INSIGHTFORGE_SAFE_FIXTURE_MODE"),
+            accounts_enabled=_env_bool("INSIGHTFORGE_ACCOUNTS_ENABLED"),
+        )
+    result = runner(**kwargs)
     print(json.dumps(sanitize_phase2_receipt_metadata(result), ensure_ascii=False, indent=2))
     return 0
 

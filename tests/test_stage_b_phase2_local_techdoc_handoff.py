@@ -543,6 +543,29 @@ def test_handoff_canary_rejects_missing_unconfirmed_or_stale_techdoc_before_muta
     )["n"] == 0
 
 
+@pytest.mark.parametrize(
+    ("guard_kwargs", "message"),
+    [
+        ({"participant": "wrong-participant"}, "STAGE_B_PARTICIPANT_REQUIRED"),
+        ({"safe_fixture_mode": True}, "SAFE_FIXTURE_MUST_BE_OFF"),
+        ({"accounts_enabled": True}, "ACCOUNTS_MUST_BE_DISABLED"),
+        ({"real_provider_stage_b": False}, "REAL_PROVIDER_STAGE_B_REQUIRED"),
+    ],
+)
+def test_handoff_canary_enforces_stage_b_guard_before_execution_boundary(
+    tmp_path, guard_kwargs, message
+) -> None:
+    database, project_id, _prd_version_id, _solution_id, _snapshot_id = _phase2_database(tmp_path)
+
+    with pytest.raises(StageBGuardError, match=message):
+        operator.run_handoff_canary(
+            database=database,
+            project_id=project_id,
+            actor="phase2-test-operator",
+            **guard_kwargs,
+        )
+
+
 def test_handoff_canary_valid_prepared_project_reaches_local_assembly(tmp_path) -> None:
     database, project_id, prd_version_id, _solution_id, snapshot_id = _phase2_database(tmp_path)
     _prepare_confirmed_handoff_documents(database, project_id, prd_version_id, snapshot_id)

@@ -15,8 +15,9 @@ import os
 import sys
 import time
 import uuid
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from app.db import Database
 from app.services.stage_b_evaluation import (
@@ -36,6 +37,78 @@ from app.services.stage_b_synthetic_seed import (
     STAGE_B_PHASE1A_PARTICIPANT,
     StageBPhase1ASyntheticProjectSeedService,
 )
+
+
+PHASE2_PRD_CONFIRM = "PHASE2_PRD_CONFIRM"
+PHASE2_TECHDOC_GENERATE = "PHASE2_TECHDOC_GENERATE"
+PHASE2_TECHDOC_CONFIRM = "PHASE2_TECHDOC_CONFIRM"
+PHASE2_HANDOFF = "PHASE2_HANDOFF"
+PHASE2_OPERATIONS = (
+    PHASE2_PRD_CONFIRM,
+    PHASE2_TECHDOC_GENERATE,
+    PHASE2_TECHDOC_CONFIRM,
+    PHASE2_HANDOFF,
+)
+
+
+@dataclass(frozen=True)
+class Phase2OperatorContext:
+    """Typed identity passed between the future Phase 2 operator stages."""
+
+    operation: Literal[
+        "PHASE2_PRD_CONFIRM",
+        "PHASE2_TECHDOC_GENERATE",
+        "PHASE2_TECHDOC_CONFIRM",
+        "PHASE2_HANDOFF",
+    ]
+    project_id: str
+    actor: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
+class Phase2SafeReceiptMetadata:
+    """Allowlisted Phase 2 receipt fields; never carries document content."""
+
+    operation: str
+    evaluation_id: str | None = None
+    project_id: str | None = None
+    selected_solution_id: str | None = None
+    document_id: str | None = None
+    version_id: str | None = None
+    snapshot_id: str | None = None
+    acknowledgement_id: str | None = None
+    acknowledgement_content_sha256: str | None = None
+    handoff_run_id: str | None = None
+    package_sha256: str | None = None
+    status: str | None = None
+    counts: dict[str, int] | None = None
+    terminal_stage: str | None = None
+
+
+def sanitize_phase2_receipt_metadata(metadata: Phase2SafeReceiptMetadata) -> dict[str, object]:
+    """Serialize only the typed, non-content Phase 2 receipt metadata."""
+    return {key: value for key, value in asdict(metadata).items() if value is not None}
+
+
+def _phase2_unimplemented(context: Phase2OperatorContext) -> Phase2SafeReceiptMetadata:
+    raise StageBGuardError(f"{context.operation}_NOT_IMPLEMENTED")
+
+
+def run_confirm_prd_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
+    return _phase2_unimplemented(Phase2OperatorContext(PHASE2_PRD_CONFIRM, project_id, actor, ""))
+
+
+def run_local_techdoc_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
+    return _phase2_unimplemented(Phase2OperatorContext(PHASE2_TECHDOC_GENERATE, project_id, actor, ""))
+
+
+def run_confirm_techdoc_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
+    return _phase2_unimplemented(Phase2OperatorContext(PHASE2_TECHDOC_CONFIRM, project_id, actor, ""))
+
+
+def run_handoff_canary(*, database: Database, project_id: str, actor: str) -> Phase2SafeReceiptMetadata:
+    return _phase2_unimplemented(Phase2OperatorContext(PHASE2_HANDOFF, project_id, actor, ""))
 
 
 def _database_path() -> Path:
@@ -445,6 +518,30 @@ def _run_local_prd_canary_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+_PHASE2_COMMANDS = {
+    "confirm-prd-canary": (PHASE2_PRD_CONFIRM, run_confirm_prd_canary),
+    "local-techdoc-canary": (PHASE2_TECHDOC_GENERATE, run_local_techdoc_canary),
+    "confirm-techdoc-canary": (PHASE2_TECHDOC_CONFIRM, run_confirm_techdoc_canary),
+    "handoff-canary": (PHASE2_HANDOFF, run_handoff_canary),
+}
+
+
+def _phase2_parser(command: str) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=f"Run the internal Stage-B {command} operator")
+    parser.add_argument(command, nargs="?")
+    parser.add_argument("--database", type=Path, default=_database_path())
+    parser.add_argument("--project-id", required=True)
+    parser.add_argument("--actor", default="stage-b-operator")
+    return parser
+
+
+def _run_phase2_canary_cli(args: argparse.Namespace, command: str) -> int:
+    _operation, runner = _PHASE2_COMMANDS[command]
+    result = runner(database=Database(args.database), project_id=args.project_id, actor=args.actor)
+    print(json.dumps(sanitize_phase2_receipt_metadata(result), ensure_ascii=False, indent=2))
+    return 0
+
+
 def _run_seed_phase1a_project_cli(args: argparse.Namespace) -> int:
     database = Database(args.database)
     database.init_schema()
@@ -463,12 +560,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument(
             "command",
             nargs="?",
-            choices=("inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project"),
+            choices=("inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project", *_PHASE2_COMMANDS),
             help="operator command (the diagnostic command requires its own arguments)",
         )
         parser.print_help()
         return 0
-    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project"} else "inspect"
+    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project", *_PHASE2_COMMANDS} else "inspect"
     if command == "seed-phase1a-project":
         parser = argparse.ArgumentParser(description="Create the internal Stage-B Phase1A synthetic canary project")
         parser.add_argument("seed-phase1a-project", nargs="?")
@@ -490,6 +587,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         args = parser.parse_args(argv[1:])
         return _run_solutions_canary_cli(args) if command == "solutions-canary" else _run_local_prd_canary_cli(args)
+    if command in _PHASE2_COMMANDS:
+        parser = _phase2_parser(command)
+        if "--help" in argv[1:]:
+            parser.print_help()
+            return 0
+        args = parser.parse_args(argv[1:])
+        return _run_phase2_canary_cli(args, command)
     if command == "ai-reference-shape-canary":
         parser = argparse.ArgumentParser(description="Run the internal Stage-B AI Reference shape diagnostic")
         parser.add_argument("ai-reference-shape-canary", nargs="?")

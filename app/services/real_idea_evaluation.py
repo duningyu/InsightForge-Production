@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from app.db import Database, utc_now
+from app.services.decisions import DecisionService
 from app.services.projects import ProjectService
+from app.services.solution_design import SolutionDesignService
+from app.services.stage_b_evaluation import StageBExecutionPolicy
 from app.services.real_idea_budget import (
     BATCH_EARMARK,
     EXTENSION_CREDITS,
@@ -43,6 +47,23 @@ class SampleRecord:
     raw_idea_sha256: str
     state: str
     budget_allocation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SolutionsReviewResult:
+    sample_id: str
+    status: str
+    solution_count: int
+    transport_count: int
+    evaluation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SelectionReviewResult:
+    sample_id: str
+    selected_solution_id: str
+    selected_solution_ordinal: int
+    provider_transport_count: int
 
 
 class RealIdeaEvaluationService:
@@ -211,6 +232,103 @@ class RealIdeaEvaluationService:
             if cursor.rowcount != 1:
                 raise ValueError("batch state changed or not found")
             return self.read_batch(batch_id)
+
+    def run_solutions(self, sample_id: str, *, runtime: Any) -> SolutionsReviewResult:
+        """Run the real Solutions service for one sample under the one-shot policy.
+
+        ``runtime`` is dependency injection at the structured-runtime boundary;
+        production callers supply the configured runtime and tests supply an
+        isolated fake transport/runtime.  Brief lookup, parsing, validation and
+        persistence remain owned by SolutionDesignService.
+        """
+        sample = self.database.fetch_one(
+            "SELECT * FROM real_idea_samples WHERE sample_id = ?", (sample_id,)
+        )
+        if not sample:
+            raise KeyError(sample_id)
+        if sample["state"] != "AWAITING_BRIEF_REVIEW":
+            raise ValueError("sample is not ready for Solutions review")
+        brief = self.database.fetch_one(
+            "SELECT id FROM idea_briefs WHERE project_id = ? AND confirmation_status = 'confirmed' "
+            "ORDER BY version DESC LIMIT 1",
+            (sample["project_id"],),
+        )
+        if not brief:
+            raise ValueError("confirmed idea brief is required")
+        reservation = self.budget.reserve(sample["batch_id"], sample_id, "SOLUTIONS", 1)
+        dispatch_id = f"dispatch_{uuid.uuid4().hex}"
+        transport_id = f"transport_{uuid.uuid4().hex}"
+        self.budget.mark_attempted(
+            reservation.reservation_id, dispatch_id=dispatch_id, transport_id=transport_id
+        )
+        policy = StageBExecutionPolicy(
+            validation_regeneration_allowed=False,
+            max_provider_transports=1,
+        )
+        result = SolutionDesignService(self.database, runtime).generate(
+            sample["project_id"],
+            actor=self.actor,
+            execution_policy=policy,
+            use_competitor_snapshot=False,
+        )
+        candidates = result.get("candidates", [])
+        if len(candidates) != 3:
+            raise ValueError("REAL_IDEA_SOLUTIONS_REQUIRE_EXACTLY_THREE_CANDIDATES")
+        evaluation_id = result["run"]["id"]
+        transport_count = int(getattr(runtime, "provider_transport_attempts", 1))
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE real_idea_samples SET solutions_evaluation_id = ?, state = 'AWAITING_SOLUTION_REVIEW' WHERE sample_id = ? AND state = 'AWAITING_BRIEF_REVIEW'",
+                (evaluation_id, sample_id),
+            )
+        return SolutionsReviewResult(
+            sample_id=sample_id,
+            status="AWAITING_SOLUTION_REVIEW",
+            solution_count=len(candidates),
+            transport_count=transport_count,
+            evaluation_id=evaluation_id,
+        )
+
+    def record_selection(
+        self, sample_id: str, *, selected_ordinal: int, reason: str
+    ) -> SelectionReviewResult:
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("selection reason is required")
+        sentence_count = len([part for part in re.split(r"[.!?。！？]+", reason.strip()) if part.strip()])
+        if not 1 <= sentence_count <= 3:
+            raise ValueError("selection reason must contain 1 to 3 sentences")
+        sample = self.database.fetch_one(
+            "SELECT * FROM real_idea_samples WHERE sample_id = ?", (sample_id,)
+        )
+        if not sample or sample["state"] != "AWAITING_SOLUTION_REVIEW":
+            raise ValueError("sample is not awaiting solution review")
+        rows = self.database.fetch_all(
+            "SELECT * FROM solution_candidates WHERE run_id = ? ORDER BY created_at, id",
+            (sample["solutions_evaluation_id"],),
+        )
+        if selected_ordinal < 1 or selected_ordinal > len(rows):
+            raise ValueError("selected solution ordinal is not persisted")
+        selected = rows[selected_ordinal - 1]
+        with self.database.connect() as connection:
+            DecisionService().propose_solution_selection(
+                connection=connection,
+                project_id=sample["project_id"],
+                option_ids=[row["id"] for row in rows],
+                selected_option_id=selected["id"],
+                rationale=reason.strip(),
+                decision_payload={"sample_id": sample_id, "selected_ordinal": selected_ordinal},
+                actor=self.actor,
+            )
+            connection.execute(
+                "UPDATE real_idea_samples SET selected_solution_id = ?, state = 'AWAITING_SOLUTION_REVIEW' WHERE sample_id = ?",
+                (selected["id"], sample_id),
+            )
+        return SelectionReviewResult(
+            sample_id=sample_id,
+            selected_solution_id=selected["id"],
+            selected_solution_ordinal=selected_ordinal,
+            provider_transport_count=0,
+        )
 
     def read_project(self, project_id: str) -> dict[str, Any] | None:
         return self.database.fetch_one("SELECT * FROM projects WHERE id=?", (project_id,))

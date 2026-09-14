@@ -12,13 +12,18 @@ def test_real_idea_schema_is_versioned_and_isolated(tmp_path):
     assert db.table_names() >= {
         "real_idea_batches", "real_idea_samples",
         "real_idea_budget_allocations", "real_idea_transport_reservations",
-        "real_idea_feedback", "real_idea_annotations",
+        "real_idea_feedback", "real_idea_quality_evaluations", "real_idea_annotations",
     }
     assert db.public_project_schema_has_no_evaluation_identity_input()
 
 
 def _insert_batch_and_sample(db: Database, batch_id: str, sample_id: str, allocation_id: str):
+    project_id = f"project-{batch_id.rsplit('-', 1)[-1]}"
     with db.connect() as connection:
+        connection.execute(
+            "INSERT INTO projects(id,title,summary,created_at,updated_at) VALUES (?,?,?,?,?)",
+            (project_id, "Evaluation project", "Task 1 fixture", "now", "now"),
+        )
         connection.execute(
             "INSERT INTO real_idea_batches(batch_id,batch_key,status,manifest_sha256,source_commit,deployment_id,model,prompt_hash,schema_hash,completeness_contract_version,questionnaire_version,sample_count,provider_policy_version,created_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (batch_id, batch_id, "CREATED", "m", "c", "d", "model", "p", "s", "v", "q", 3, "policy", "now", "actor"),
@@ -28,8 +33,8 @@ def _insert_batch_and_sample(db: Database, batch_id: str, sample_id: str, alloca
             (allocation_id, batch_id, 6, 6, 2, 1, 1, "evaluation", "ACTIVE", "now", "actor"),
         )
         connection.execute(
-            "INSERT INTO real_idea_samples(sample_id,batch_id,sample_key,source_type,raw_idea_sha256,redaction_version,state,sample_manifest_sha256,budget_allocation_id,created_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (sample_id, batch_id, "REAL_IDEA_01", "user_input", "raw", "r1", "SLOT_CREATED", "manifest", allocation_id, "now", "actor"),
+            "INSERT INTO real_idea_samples(sample_id,batch_id,sample_key,source_type,project_id,raw_idea_sha256,redaction_version,state,sample_manifest_sha256,budget_allocation_id,created_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (sample_id, batch_id, "REAL_IDEA_01", "user_input", project_id, "raw", "r1", "SLOT_CREATED", "manifest", allocation_id, "now", "actor"),
         )
 
 
@@ -74,6 +79,25 @@ def test_malformed_same_named_feedback_schema_is_rejected(tmp_path, schema_versi
         with pytest.raises(RuntimeError, match="real_idea_feedback"):
             migration.apply(connection)
         assert connection.execute("PRAGMA user_version").fetchone()[0] == schema_version
+
+
+def test_quality_evaluation_envelope_and_annotation_relation_are_immutable(tmp_path):
+    db = Database(tmp_path / "quality-envelope.sqlite")
+    db.init_schema()
+    _insert_batch_and_sample(db, "batch-1", "sample-1", "allocation-1")
+
+    db.execute(
+        "INSERT INTO real_idea_quality_evaluations(quality_evaluation_id,batch_id,sample_id,project_id,artifact_type,artifact_version_id,upstream_version_ids,quality_layer,quality_revision,status,metric_payload,input_manifest_sha256,evidence_manifest_sha256,policy_version,quality_schema_version,evaluator_role,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("quality-1", "batch-1", "sample-1", "project-1", "PRD", "prd-1", "[]", "P0", 1, "PASS", "{}", "input", "evidence", "policy-v1", "schema-v1", "system", "now"),
+    )
+    db.execute(
+        "INSERT INTO real_idea_annotations(quality_evaluation_id,batch_id,sample_id,annotation_kind,target_type,target_id,payload_json,annotation_schema_version,policy_version,revision,input_sha256,evidence_sha256,created_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("quality-1", "batch-1", "sample-1", "claim", "solution", "claim-1", "{}", "v1", "p1", 1, "input", "evidence", "now", "actor"),
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("UPDATE real_idea_quality_evaluations SET status='FAIL' WHERE quality_evaluation_id='quality-1'")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("DELETE FROM real_idea_quality_evaluations WHERE quality_evaluation_id='quality-1'")
 
 
 def test_child_rows_cannot_cross_batch_or_allocation_binding(tmp_path):
@@ -126,8 +150,12 @@ def test_database_rejects_invalid_sample_key_and_immutable_audit_changes(tmp_pat
         db.execute("UPDATE real_idea_feedback SET accepted=0 WHERE feedback_id='feedback-1'")
 
     db.execute(
-        "INSERT INTO real_idea_annotations(annotation_id,batch_id,sample_id,annotation_kind,target_type,target_id,payload_json,annotation_schema_version,policy_version,revision,input_sha256,evidence_sha256,created_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("annotation-1", "batch-1", "sample-1", "claim", "solution", "claim-1", "{}", "v1", "p1", 1, "i", "e", "now", "actor"),
+        "INSERT INTO real_idea_quality_evaluations(quality_evaluation_id,batch_id,sample_id,project_id,artifact_type,artifact_version_id,upstream_version_ids,quality_layer,quality_revision,status,metric_payload,input_manifest_sha256,evidence_manifest_sha256,policy_version,quality_schema_version,evaluator_role,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("quality-1", "batch-1", "sample-1", "project-1", "PRD", "prd-1", "[]", "P0", 1, "PASS", "{}", "input", "evidence", "policy-v1", "schema-v1", "system", "now"),
+    )
+    db.execute(
+        "INSERT INTO real_idea_annotations(annotation_id,quality_evaluation_id,batch_id,sample_id,annotation_kind,target_type,target_id,payload_json,annotation_schema_version,policy_version,revision,input_sha256,evidence_sha256,created_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("annotation-1", "quality-1", "batch-1", "sample-1", "claim", "solution", "claim-1", "{}", "v1", "p1", 1, "i", "e", "now", "actor"),
     )
     with pytest.raises(sqlite3.IntegrityError):
         db.execute("DELETE FROM real_idea_annotations WHERE annotation_id='annotation-1'")

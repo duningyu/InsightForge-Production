@@ -124,8 +124,36 @@ CREATE TABLE IF NOT EXISTS real_idea_feedback (
         REFERENCES real_idea_samples(batch_id, sample_id)
 );
 
+CREATE TABLE IF NOT EXISTS real_idea_quality_evaluations (
+    quality_evaluation_id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES real_idea_batches(batch_id),
+    sample_id TEXT NOT NULL REFERENCES real_idea_samples(sample_id),
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    artifact_type TEXT NOT NULL CHECK(artifact_type IN ('SOLUTIONS', 'PRD', 'TECHDOC', 'HANDOFF')),
+    artifact_version_id TEXT NOT NULL,
+    selected_solution_id TEXT REFERENCES solution_candidates(id),
+    snapshot_id TEXT REFERENCES project_snapshots(id),
+    upstream_version_ids TEXT NOT NULL CHECK(json_valid(upstream_version_ids)),
+    quality_layer TEXT NOT NULL CHECK(quality_layer IN ('P0', 'P1', 'P2')),
+    quality_revision INTEGER NOT NULL CHECK(quality_revision >= 1),
+    status TEXT NOT NULL CHECK(status IN ('PASS', 'PARTIAL', 'FAIL')),
+    metric_payload TEXT NOT NULL CHECK(json_valid(metric_payload)),
+    input_manifest_sha256 TEXT NOT NULL,
+    evidence_manifest_sha256 TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    quality_schema_version TEXT NOT NULL,
+    evaluator_role TEXT NOT NULL CHECK(evaluator_role IN ('system', 'idea_provider', 'independent_reviewer', 'llm_assist')),
+    created_at TEXT NOT NULL,
+    supersedes_quality_evaluation_id TEXT REFERENCES real_idea_quality_evaluations(quality_evaluation_id),
+    UNIQUE(batch_id, sample_id, artifact_type, artifact_version_id, quality_revision),
+    UNIQUE(quality_evaluation_id, batch_id, sample_id),
+    FOREIGN KEY (batch_id, sample_id)
+        REFERENCES real_idea_samples(batch_id, sample_id)
+);
+
 CREATE TABLE IF NOT EXISTS real_idea_annotations (
     annotation_id TEXT PRIMARY KEY,
+    quality_evaluation_id TEXT NOT NULL REFERENCES real_idea_quality_evaluations(quality_evaluation_id),
     batch_id TEXT NOT NULL REFERENCES real_idea_batches(batch_id),
     sample_id TEXT NOT NULL REFERENCES real_idea_samples(sample_id),
     annotation_kind TEXT NOT NULL CHECK(annotation_kind IN ('requirement', 'claim', 'decision', 'inheritance')),
@@ -141,6 +169,8 @@ CREATE TABLE IF NOT EXISTS real_idea_annotations (
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL,
     UNIQUE(sample_id, annotation_kind, target_id, revision),
+    FOREIGN KEY (quality_evaluation_id, batch_id, sample_id)
+        REFERENCES real_idea_quality_evaluations(quality_evaluation_id, batch_id, sample_id),
     FOREIGN KEY (batch_id, sample_id)
         REFERENCES real_idea_samples(batch_id, sample_id)
 );
@@ -157,6 +187,12 @@ CREATE INDEX IF NOT EXISTS idx_real_idea_reservations_sample
     ON real_idea_transport_reservations(sample_id, stage);
 CREATE INDEX IF NOT EXISTS idx_real_idea_feedback_sample
     ON real_idea_feedback(batch_id, sample_id, stage);
+CREATE INDEX IF NOT EXISTS idx_real_idea_quality_batch
+    ON real_idea_quality_evaluations(batch_id, sample_id);
+CREATE INDEX IF NOT EXISTS idx_real_idea_quality_artifact_status
+    ON real_idea_quality_evaluations(artifact_type, status);
+CREATE INDEX IF NOT EXISTS idx_real_idea_quality_evidence
+    ON real_idea_quality_evaluations(evidence_manifest_sha256);
 CREATE INDEX IF NOT EXISTS idx_real_idea_annotations_sample_kind
     ON real_idea_annotations(sample_id, annotation_kind);
 
@@ -206,6 +242,18 @@ CREATE TRIGGER IF NOT EXISTS trg_real_idea_feedback_no_delete
 BEFORE DELETE ON real_idea_feedback
 BEGIN
     SELECT RAISE(ABORT, 'real idea feedback is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_real_idea_quality_evaluation_immutable
+BEFORE UPDATE ON real_idea_quality_evaluations
+BEGIN
+    SELECT RAISE(ABORT, 'real idea quality evaluation is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_real_idea_quality_evaluation_no_delete
+BEFORE DELETE ON real_idea_quality_evaluations
+BEGIN
+    SELECT RAISE(ABORT, 'real idea quality evaluation is immutable');
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_real_idea_annotation_immutable
@@ -287,19 +335,29 @@ _EXPECTED_COLUMNS = {
         "accepted", "score_payload", "raw_feedback_text", "feedback_attestation",
         "feedback_schema_version", "created_by",
     },
+    "real_idea_quality_evaluations": {
+        "quality_evaluation_id", "batch_id", "sample_id", "project_id", "artifact_type",
+        "artifact_version_id", "selected_solution_id", "snapshot_id", "upstream_version_ids",
+        "quality_layer", "quality_revision", "status", "metric_payload", "input_manifest_sha256",
+        "evidence_manifest_sha256", "policy_version", "quality_schema_version", "evaluator_role",
+        "created_at", "supersedes_quality_evaluation_id",
+    },
     "real_idea_annotations": {
-        "annotation_id", "batch_id", "sample_id", "annotation_kind", "target_type", "target_id",
+        "annotation_id", "quality_evaluation_id", "batch_id", "sample_id", "annotation_kind", "target_type", "target_id",
         "payload_json", "annotation_schema_version", "policy_version", "revision", "input_sha256",
         "evidence_sha256", "supersedes_annotation_id", "created_at", "created_by",
     },
 }
 
-_EXPECTED_PRIMARY_KEYS = {table: ("batch_id" if table == "real_idea_batches" else
-    "sample_id" if table == "real_idea_samples" else
-    "allocation_id" if table == "real_idea_budget_allocations" else
-    "reservation_id" if table == "real_idea_transport_reservations" else
-    "feedback_id" if table == "real_idea_feedback" else "annotation_id",)
-    for table in _EXPECTED_COLUMNS}
+_EXPECTED_PRIMARY_KEYS = {
+    "real_idea_batches": ("batch_id",),
+    "real_idea_samples": ("sample_id",),
+    "real_idea_budget_allocations": ("allocation_id",),
+    "real_idea_transport_reservations": ("reservation_id",),
+    "real_idea_feedback": ("feedback_id",),
+    "real_idea_quality_evaluations": ("quality_evaluation_id",),
+    "real_idea_annotations": ("annotation_id",),
+}
 
 _EXPECTED_UNIQUES = {
     "real_idea_batches": {("batch_key",)},
@@ -307,6 +365,10 @@ _EXPECTED_UNIQUES = {
     "real_idea_budget_allocations": {("batch_id",), ("batch_id", "allocation_id")},
     "real_idea_transport_reservations": {("idempotency_key",), ("batch_id", "sample_id", "stage", "ordinal")},
     "real_idea_feedback": set(),
+    "real_idea_quality_evaluations": {
+        ("batch_id", "sample_id", "artifact_type", "artifact_version_id", "quality_revision"),
+        ("quality_evaluation_id", "batch_id", "sample_id"),
+    },
     "real_idea_annotations": {("sample_id", "annotation_kind", "target_id", "revision")},
 }
 
@@ -327,6 +389,13 @@ _EXPECTED_CHECKS = {
     "real_idea_feedback": (
         "CHECK(submitted_by='idea_provider')", "CHECK(acceptedIN(0,1))",
         "CHECK(json_valid(score_payload))", "CHECK(feedback_attestation=1)",
+    ),
+    "real_idea_quality_evaluations": (
+        "CHECK(artifact_typeIN('SOLUTIONS','PRD','TECHDOC','HANDOFF'))",
+        "CHECK(json_valid(upstream_version_ids))", "CHECK(quality_layerIN('P0','P1','P2'))",
+        "CHECK(quality_revision>=1)", "CHECK(statusIN('PASS','PARTIAL','FAIL'))",
+        "CHECK(json_valid(metric_payload))",
+        "CHECK(evaluator_roleIN('system','idea_provider','independent_reviewer','llm_assist'))",
     ),
     "real_idea_annotations": (
         "CHECK(annotation_kindIN('requirement','claim','decision','inheritance'))",
@@ -359,11 +428,22 @@ _EXPECTED_FOREIGN_KEYS = {
         ("real_idea_samples", ("sample_id",), ("sample_id",)),
         ("real_idea_samples", ("batch_id", "sample_id"), ("batch_id", "sample_id")),
     },
+    "real_idea_quality_evaluations": {
+        ("real_idea_batches", ("batch_id",), ("batch_id",)),
+        ("real_idea_samples", ("sample_id",), ("sample_id",)),
+        ("projects", ("project_id",), ("id",)),
+        ("solution_candidates", ("selected_solution_id",), ("id",)),
+        ("project_snapshots", ("snapshot_id",), ("id",)),
+        ("real_idea_samples", ("batch_id", "sample_id"), ("batch_id", "sample_id")),
+        ("real_idea_quality_evaluations", ("supersedes_quality_evaluation_id",), ("quality_evaluation_id",)),
+    },
     "real_idea_annotations": {
+        ("real_idea_quality_evaluations", ("quality_evaluation_id",), ("quality_evaluation_id",)),
         ("real_idea_batches", ("batch_id",), ("batch_id",)),
         ("real_idea_samples", ("sample_id",), ("sample_id",)),
         ("real_idea_samples", ("batch_id", "sample_id"), ("batch_id", "sample_id")),
         ("real_idea_annotations", ("supersedes_annotation_id",), ("annotation_id",)),
+        ("real_idea_quality_evaluations", ("quality_evaluation_id", "batch_id", "sample_id"), ("quality_evaluation_id", "batch_id", "sample_id")),
     },
 }
 
@@ -376,6 +456,11 @@ _EXPECTED_INDEXES = {
     "real_idea_budget_allocations": {"idx_real_idea_allocations_batch": ("batch_id",)},
     "real_idea_transport_reservations": {"idx_real_idea_reservations_sample": ("sample_id", "stage")},
     "real_idea_feedback": {"idx_real_idea_feedback_sample": ("batch_id", "sample_id", "stage")},
+    "real_idea_quality_evaluations": {
+        "idx_real_idea_quality_batch": ("batch_id", "sample_id"),
+        "idx_real_idea_quality_artifact_status": ("artifact_type", "status"),
+        "idx_real_idea_quality_evidence": ("evidence_manifest_sha256",),
+    },
     "real_idea_annotations": {"idx_real_idea_annotations_sample_kind": ("sample_id", "annotation_kind")},
 }
 
@@ -388,6 +473,9 @@ _EXPECTED_TRIGGERS = {
     "real_idea_budget_allocations": {"trg_real_idea_allocation_audit_immutable"},
     "real_idea_transport_reservations": {"trg_real_idea_reservation_identity_immutable"},
     "real_idea_feedback": {"trg_real_idea_feedback_immutable", "trg_real_idea_feedback_no_delete"},
+    "real_idea_quality_evaluations": {
+        "trg_real_idea_quality_evaluation_immutable", "trg_real_idea_quality_evaluation_no_delete",
+    },
     "real_idea_annotations": {"trg_real_idea_annotation_immutable", "trg_real_idea_annotation_no_delete"},
 }
 

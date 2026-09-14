@@ -42,6 +42,9 @@ Approved architecture source: `08114cd5193b9db43fe2a551067f555018ddf1cc`; origin
 | CREATE | `tests/test_real_idea_batch_state.py` | State-machine and finalization tests |
 | CREATE | `tests/test_real_idea_feedback_and_documents.py` | Review, acknowledgement, feedback tests |
 | CREATE | `tests/test_real_idea_quality_metrics.py` | Quality metric tests |
+| CREATE | `tests/test_real_idea_artifact_quality.py` | Immutable ArtifactQualityEvaluation and P0/P1/P2 contract tests |
+| CREATE | `tests/test_real_idea_quality_negative.py` | Cross-artifact, leakage, stale-binding, factuality, and integrity negative matrix |
+| CREATE | `tests/test_real_idea_quality_reporting.py` | Per-sample Batch 01 reporting and safe monitoring tests |
 | CREATE | `tests/test_real_idea_operator.py` | CLI and public-boundary tests |
 | CREATE | `tests/test_real_idea_e2e.py` | Isolated three-sample fake E2E tests |
 
@@ -75,6 +78,9 @@ Create:
 - `tests/test_real_idea_batch_state.py` — batch/sample state transitions and atomicity.
 - `tests/test_real_idea_feedback_and_documents.py` — human review, selection, document review, acknowledgement, and artifact bindings.
 - `tests/test_real_idea_quality_metrics.py` — gold set, recall, factuality, differentiation, inheritance, contradiction, and reporting metrics.
+- `tests/test_real_idea_artifact_quality.py` — immutable quality revisions, exact artifact/version/project/sample binding, and P0/P1/P2 boundaries.
+- `tests/test_real_idea_quality_negative.py` — negative/integrity matrix for leakage, stale bindings, placeholders, factuality, acknowledgement, package, budget, and Search failures.
+- `tests/test_real_idea_quality_reporting.py` — safe monitoring projections and per-sample Batch 01 reporting without n=3 statistical claims.
 - `tests/test_real_idea_operator.py` — CLI/inspector contracts and zero-call behavior.
 - `tests/test_real_idea_e2e.py` — isolated fake three-sample partial/PASS flows and integrity-failure flows.
 
@@ -131,6 +137,92 @@ class RealIdeaEvaluationService:
 ```
 
 The service returns safe identifiers, statuses, counts, fingerprints, reservation states, and hashes; it never returns Provider secrets, raw Provider payloads, full document bodies, or unredacted user input from an ordinary receipt.
+
+### Reconciled artifact-quality interfaces
+
+The following interfaces are load-bearing implementation contracts. They are
+conceptual Python shapes; the implementation may use repository-native models
+provided that the field semantics and invariants remain identical.
+
+```python
+@dataclass(frozen=True)
+class ArtifactQualityEvaluation:
+    quality_evaluation_id: str
+    batch_id: str
+    sample_id: str
+    project_id: str
+    artifact_type: Literal["SOLUTIONS", "PRD", "TECHDOC", "HANDOFF"]
+    artifact_version_id: str
+    selected_solution_id: str | None
+    snapshot_id: str | None
+    upstream_version_ids: tuple[str, ...]
+    quality_layer: Literal["P0", "P1", "P2"]
+    quality_revision: int
+    status: Literal["PASS", "PARTIAL", "FAIL"]
+    metric_payload: dict[str, object]
+    input_manifest_sha256: str
+    evidence_manifest_sha256: str
+    policy_version: str
+    evaluator_role: Literal["system", "idea_provider", "independent_reviewer", "llm_assist"]
+    created_at: str
+    supersedes_quality_evaluation_id: str | None
+
+class QualityEvaluationService:
+    def evaluate_p0(self, binding: ArtifactBinding) -> ArtifactQualityEvaluation: ...
+    def enqueue_p1(self, quality_evaluation_id: str) -> str: ...
+    def record_p2_review(self, quality_evaluation_id: str, review: HumanReview) -> ArtifactQualityEvaluation: ...
+    def revise(self, quality_evaluation_id: str, correction: QualityCorrection) -> ArtifactQualityEvaluation: ...
+```
+
+Every quality revision is append-only. `revise` creates a new immutable row
+and evidence hash with an explicit supersession link; it never updates the
+old row. The binding includes the exact project, batch, sample, artifact
+version, selected solution, snapshot, upstream document versions, and policy
+version. `PASS` requires all applicable P0 gates plus required review
+evidence, `PARTIAL` is allowed only for an operational/review-evidence gap
+without a P0 violation, and `FAIL` is terminal for any P0 integrity failure.
+
+Storage is deliberately minimal: Task 1 creates one immutable
+`real_idea_quality_evaluations` envelope and one typed annotation/evidence
+relation (or one schema-validated JSON payload inside that envelope when the
+repository's migration style makes that safer). It must not duplicate the
+same facts in five independent tables and JSON. Uniqueness and indexes cover
+artifact/sample/revision, batch, artifact type, status, and evidence hashes.
+
+The quality layer is split explicitly:
+
+- P0 deterministic gates: structure, required sections, placeholder/empty
+  critical content, project/sample isolation, exact IDs and hashes, package
+  integrity, claim-safety hard checks, and critical inheritance/version
+  contradictions.
+- P1 structured evaluation: requirement Gold Set mappings, Brief and Solution
+  Recall, Requirement Alignment Precision, factuality, decision dimensions,
+  pairwise differentiation, completeness, actionability, inheritance, and
+  contradiction metrics.
+- P2 human audit: provider intent/selection/ratings, independent reviewer
+  annotations, and LLM-assisted candidates that can never become sole truth.
+
+The required metric keys are defined before implementation. Solutions must
+include Brief Critical/Overall Requirement Recall, Solution Set and Selected
+Solution Recall (critical variants), Requirement Alignment Precision,
+Decision Dimension Coverage, Pairwise Differentiation, Factual Precision, and
+Unsupported Claim Rate. PRD must include requirement/critical coverage,
+selected-solution inheritance, scope consistency, mandatory sections,
+acceptance-criteria testability, completeness, actionability, unsupported
+claim rate, and critical contradiction rate. TechDoc must include PRD
+Traceability Recall, critical technical and NFR coverage, implementation
+actionability, feasibility accuracy, selected-solution/snapshot inheritance,
+technical unsupported-claim rate, critical contradiction rate, and
+completeness. Handoff must include exact version binding, artifact
+completeness, unresolved-item coverage, evidence-limitation visibility,
+decision binding, and package integrity.
+
+Requirement Recall is requirement understanding, not retrieval Recall@K; no
+generic open-ended-model Accuracy is published. Zero-source factuality uses
+`SUPPORTED_FACT`, `USER_INPUT`, `MODEL_HYPOTHESIS`, `UNVERIFIED_CLAIM`, and
+`UNSUPPORTED_FACTUAL_ASSERTION`; a verified-fact assertion without support is
+P0 FAIL. The first batch reports per-sample rows first and only descriptive
+macro summaries at n=3.
 
 ## Task 1: Add Versioned Evaluation Schema and Migration
 
@@ -655,3 +747,222 @@ Review checklist:
 Commit after review: `git add -- app scripts tests docs/superpowers/plans/2026-09-14-stage-b-real-idea-evaluation-batch.md; git commit -m "docs: plan stage-b real idea evaluation batch"`.
 
 No command in this plan deploys, pushes, calls a real Provider/Search service, extends budget authorization, or executes the real three-sample batch. The legal endpoint after this plan is implementation authorization, not batch execution.
+
+## Reconciliation Amendment: Artifact-Quality Task Expansion
+
+The quality paragraphs in the original Tasks 8–12 remain useful foundations,
+but the following four tasks are load-bearing and supersede any generic
+quality implementation or verification wording above. They are part of the
+approved implementation order, so the effective plan contains 16 independent
+TDD tasks. Each task must complete RED → observed failure → minimal GREEN →
+targeted regression → fresh review → commit before the next task begins.
+
+### Task 13: Implement ArtifactQualityEvaluation and Four Artifact Contracts
+
+This task has four independently reviewable TDD slices; no slice may be
+silently omitted:
+
+**13A — PRD quality contract.** Define and test Requirement Coverage Recall,
+Critical Requirement Coverage, Selected-Solution Inheritance, Scope
+Consistency, Mandatory Section Coverage, Acceptance Criteria Testability,
+Completeness, Actionability, Unsupported Claim Rate, and Critical
+Contradiction Rate. Bind every result to the exact PRD version, project,
+sample, selected solution, snapshot, Gold Set, policy version, and immutable
+quality revision. Wrong version, missing mandatory structure, placeholder
+critical content, or critical contradiction is a P0 `FAIL`.
+
+**13B — TechDoc quality contract.** Define and test PRD Traceability Recall,
+Critical Technical Coverage, NFR Coverage, Implementation Actionability,
+Feasibility Accuracy, selected-solution/snapshot inheritance, Unsupported
+Technical Claim Rate, Critical Contradiction Rate, and Completeness. Bind to
+the exact TechDoc version and its actual upstream dependencies; do not invent
+a PRD dependency if the production document architecture does not have one.
+Stale snapshot or wrong upstream version is a P0 `FAIL`.
+
+**13C — Handoff quality contract.** Define and test Exact Version Binding
+Accuracy, Artifact Completeness, Unresolved-item Coverage, Evidence
+Limitation Visibility, Decision Binding Accuracy, and Package Integrity.
+Recompute package hash/byte count from the safe artifact metadata. Record
+acknowledged versus externally verified as distinct states; silent
+acknowledgement is a P0 `FAIL`.
+
+**13D — Cross-artifact contract.** Define and test structural identity
+correctness separately from semantic inheritance for Solution→PRD,
+PRD/Snapshot→TechDoc, and PRD+TechDoc→Handoff. Create a Selected Solution
+Decision Set containing target user, problem framing, positioning/approach,
+core interaction, MVP scope, and trade-offs. Define Critical Contradiction
+Rate as critical upstream decisions contradicted downstream divided by
+critical decisions checked. Any wrong project/sample/solution/snapshot/
+version binding is a hard P0 failure even when semantic scores are high.
+
+Files:
+
+- Modify `app/services/real_idea_metrics.py` and only the existing evaluation
+  projection service needed to expose exact bindings.
+- Create `tests/test_real_idea_artifact_quality.py`.
+- Create `tests/test_real_idea_prd_quality.py`.
+- Create `tests/test_real_idea_techdoc_quality.py`.
+- Create `tests/test_real_idea_handoff_quality.py`.
+- Create `tests/test_real_idea_cross_artifact_quality.py`.
+
+RED requirements:
+
+- Gold Set finalization before idea-provider review raises a typed failure.
+- A quality row with a mismatched artifact/version/project/sample is rejected.
+- Updating an existing revision is rejected; correction creates a new
+  superseding revision with new input/evidence hashes.
+- Each artifact evaluator initially lacks its required metric payload and
+  fails the corresponding contract test.
+
+GREEN requirements:
+
+- `ArtifactQualityEvaluation` contains the required identity, layer,
+  revision, status, metric payload, hash, role, policy, and supersession
+  fields.
+- `PASS`, `PARTIAL`, and `FAIL` semantics are deterministic: a P0 violation
+  can never be downgraded to `PARTIAL` or `PASS`.
+- Only idea-provider review can finalize the Requirement Gold Set;
+  independent review can annotate it; LLM-as-judge can propose candidates
+  but cannot establish ground truth.
+
+Run targeted tests:
+
+```powershell
+python -m pytest -q tests/test_real_idea_artifact_quality.py tests/test_real_idea_prd_quality.py tests/test_real_idea_techdoc_quality.py tests/test_real_idea_handoff_quality.py tests/test_real_idea_cross_artifact_quality.py
+```
+
+Review gate: verify requirement Recall is not retrieval Recall@K, no generic
+open-ended-model Accuracy is emitted, no document body is stored in ordinary
+quality evidence, and structural binding is not confused with semantic
+quality.
+
+### Task 14: Implement P0/P1/P2 Orchestration, Status, and Production Reporting
+
+Implement the `QualityEvaluationService` orchestration specified in the
+Architecture Spec:
+
+- `evaluate_p0()` runs deterministic hard gates for isolation, required
+  structure, placeholder/empty critical content, exact IDs/hashes, package
+  integrity, claim safety, and critical inheritance/version integrity.
+- `enqueue_p1()` records structured Recall, Precision, Coverage, Factuality,
+  Inheritance, Contradiction, Completeness, and Actionability evaluation.
+- `record_p2_review()` records idea-provider and independent-reviewer
+  decisions, ratings, and audit annotations; LLM assistance is explicitly
+  non-authoritative.
+- `revise()` is append-only and hash-linked; historical revisions remain
+  immutable.
+
+RED tests must prove P0 violations fail, P1 operational/reviewer gaps can be
+`PARTIAL` only when no P0 violation exists, and P2 missing human evidence
+cannot be reported as a completed human audit. GREEN must expose only safe
+monitoring fields: counts, statuses, ratios, revision IDs, hashes, policy
+versions, latency/error classes, and artifact/version identifiers. It must
+not expose PII, raw idea text, claim text, document bodies, Provider payloads,
+or acknowledgement prose.
+
+Batch 01 reporting is per-sample first. Macro values are exploratory
+descriptive summaries only; the implementation must forbid statistical
+superiority claims at n=3. Existing user-rating PASS gates remain intact and
+new quality metrics are diagnostic until later validation batches establish
+distributions.
+
+Files:
+
+- Modify `app/services/real_idea_evaluation.py` and
+  `app/services/real_idea_metrics.py`.
+- Create `tests/test_real_idea_quality_orchestration.py` and
+  `tests/test_real_idea_quality_reporting.py`.
+
+Run:
+
+```powershell
+python -m pytest -q tests/test_real_idea_quality_orchestration.py tests/test_real_idea_quality_reporting.py
+```
+
+Review gate: confirm `PARTIAL` cannot become `PASS` through report merging,
+failed finalization does not rewrite receipts or release attempted
+reservations, and reports do not become a second unbound source of truth.
+
+### Task 15: Implement Isolated Fake E2E and the Complete Negative Matrix
+
+Exercise the complete stack in fresh temporary SQLite/filesystem roots with a
+fake transport at the lowest Provider adapter boundary only. Do not mock the
+ProjectService, QuickStart service, structured runtime, parser, validator,
+repair/retry/fallback controller, confirmation, Solutions service, document
+services, or quality evaluators.
+
+The matrix must include all-success and operationally-incomplete flows plus
+fail-closed cases for:
+
+- cross-project/sample leakage;
+- wrong selected solution or ordinal;
+- wrong snapshot, PRD, TechDoc, or Handoff version;
+- empty/placeholder critical content;
+- missing mandatory artifact sections;
+- unsupported factual assertion presented as verified fact;
+- critical semantic contradiction;
+- silent acknowledgement or `acknowledged == externally_verified`;
+- stale quality revision, mismatched input/evidence hash, or duplicate
+  revision;
+- package corruption or incomplete Handoff evidence;
+- Provider/Search/budget violation;
+- raw PII or document/Provider payload leakage in receipts/monitoring.
+
+Each case must distinguish logical generation, dispatch, transport, retry,
+repair, regeneration, fallback, quality layer, and terminal status. All fake
+cases must prove real Stage B data, Provider credentials, Search, and budget
+remain untouched.
+
+Files:
+
+- Create `tests/test_real_idea_e2e.py` and
+  `tests/test_real_idea_quality_negative.py`.
+- Create a static manifest fixture only if the repository fixture convention
+  requires one.
+
+Run:
+
+```powershell
+python -m pytest -q tests/test_real_idea_e2e.py tests/test_real_idea_quality_negative.py
+```
+
+Review gate: verify the fake seam cannot accidentally reach real credentials
+or network, every case has fresh state, and no synthetic demo seed or direct
+SQL shortcut is used as real-user evidence.
+
+### Task 16: Whole-Branch Quality Review and Final Verification Matrix
+
+This is the final implementation gate. A fresh reviewer must inspect the
+entire branch and record a matrix with these rows:
+
+| Area | Required evidence | Hard outcome |
+| --- | --- | --- |
+| Engineering foundation | migration, ledger, state machine, wrapper, idempotency, crash recovery | PASS/FAIL |
+| Provider controls | QuickStart/Solutions one-shot, reservations, budget, dispatch/transport accounting | FAIL on violation |
+| Solutions quality | Gold Set, brief recall, set/selected recall, precision, dimensions, factuality | PASS/PARTIAL/FAIL |
+| PRD quality | coverage, inheritance, scope, sections, testability, completeness, actionability, factuality, contradictions | PASS/PARTIAL/FAIL |
+| TechDoc quality | traceability, critical technical/NFR coverage, feasibility, actionability, inheritance, factuality, contradictions | PASS/PARTIAL/FAIL |
+| Handoff quality | exact bindings, completeness, unresolved/evidence limits, decision binding, package integrity | FAIL on mismatch |
+| Cross-artifact integrity | structural identity plus semantic inheritance and contradiction audit | FAIL on P0 violation |
+| P0/P1/P2 | boundaries, roles, statuses, immutable revisions, safe monitoring | PASS/FAIL |
+| Negative matrix | all leakage, stale-binding, placeholder, factuality, ack, package, budget, Search cases | FAIL if any escapes |
+| Batch 01 reporting | per-sample metrics, descriptive macro only, no n=3 superiority claim | PASS/FAIL |
+| Boundary safety | public API unchanged, ordinary routes unchanged, no frontend/Stage A/beta changes | FAIL on drift |
+
+Fresh verification must include all targeted quality tests, all existing
+Real Idea tests, related Stage B/Phase 1A/Phase 2 regressions, full backend
+regression with the established 12 baseline node IDs/signatures, compileall,
+JavaScript syntax, diff check, secret scan, and clean tracked worktree.
+The final review must explicitly report:
+
+```text
+production_code_modified=false for this reconciliation task
+real_provider_requests=0
+real_search_requests=0
+real_stage_b_data_modified=false
+```
+
+No Railway deployment, push, real budget extension, or real batch execution
+is permitted by this plan. The legal endpoint remains explicit authorization
+for implementation execution after the docs are approved; it is not batch
+execution authorization.

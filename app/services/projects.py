@@ -180,6 +180,34 @@ class ProjectService:
             "updated_at": now,
         }
 
+    def create_real_idea_evaluation_project_tx(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        project_id: str,
+        title: str,
+        summary: str,
+        actor: str,
+        audit_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create the fixed-identity project used by the internal evaluator.
+
+        The public project route does not expose evaluation identity controls.  Keeping
+        this wrapper internal makes the metrics exclusion and user-origin contract
+        explicit at creation time, rather than relying on a later mutation.
+        """
+        return self.create_project_tx(
+            connection,
+            project_id=project_id,
+            title=title,
+            summary=summary,
+            actor=actor,
+            project_origin="user",
+            exclude_from_beta_metrics=True,
+            audit_action="real_idea_evaluation_project_created",
+            audit_payload=audit_payload,
+        )
+
     def move_to_trash(self, project_id: str, *, actor: str) -> dict[str, Any]:
         project = self.get_project(project_id)
         if project["status"] == "trashed":

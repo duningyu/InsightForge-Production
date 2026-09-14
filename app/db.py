@@ -971,6 +971,9 @@ class Database:
         with self.connect() as connection:
             connection.executescript(SCHEMA_SQL)
             self._migrate_schema(connection)
+            from app.migrations.real_idea_evaluation_v1 import apply
+
+            apply(connection)
             connection.execute(
                 """
                 INSERT OR IGNORE INTO project_canvas_versions(
@@ -982,6 +985,28 @@ class Database:
                 FROM project_canvas
                 """
             )
+
+    def schema_version(self) -> int:
+        with self.connect() as connection:
+            return int(connection.execute("PRAGMA user_version").fetchone()[0])
+
+    def table_names(self) -> set[str]:
+        with self.connect() as connection:
+            return {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+
+    def public_project_schema_has_no_evaluation_identity_input(self) -> bool:
+        evaluation_identity_columns = {
+            "batch_id", "sample_id", "batch_key", "sample_key",
+            "evaluation_id", "evaluation_batch_id",
+        }
+        with self.connect() as connection:
+            columns = self._table_columns(connection, "projects")
+        return columns.isdisjoint(evaluation_identity_columns)
 
     def insert_provider_attempt(self, record: dict[str, Any]) -> str:
         """Persist only the provider-attempt safe metadata contract."""

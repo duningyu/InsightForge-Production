@@ -273,6 +273,159 @@ If the current SQLite migration mechanism cannot provide these as normalized rel
 
 These metrics preserve InsightForge principles: Recall/Citation Precision applies where retrieval exists; requirement recall is separate; unsupported claim rate remains explicit; project isolation is a hard safety failure; rule plus human review is required; and real-user validation is required before market-value claims.
 
+## 11A. Artifact quality evaluation architecture
+
+The batch must evaluate the quality of every load-bearing artifact, not merely
+whether a file or version was produced. The canonical quality interface is an
+immutable `ArtifactQualityEvaluation` envelope. It is an evaluation record,
+not a replacement for a product artifact and not a public API object.
+
+The envelope contains safe, explicitly bound fields equivalent to:
+
+`quality_evaluation_id`, `batch_id`, `sample_id`, `project_id`,
+`artifact_type` (`SOLUTIONS`, `PRD`, `TECHDOC`, or `HANDOFF`),
+`artifact_version_id` (or the exact Solutions set identity),
+`selected_solution_id`, `snapshot_id`, upstream version IDs, `quality_layer`
+(`P0`, `P1`, or `P2`), `quality_revision`, `status`, `metric_payload`,
+`evidence_manifest_sha256`, `input_snapshot_sha256`, `policy_version`,
+`evaluator_role`, `created_at`, and `supersedes_quality_evaluation_id`.
+
+The record is append-only. A correction creates a new revision with a new ID,
+new evidence hash, and an explicit supersession link; no prior evaluation,
+metric, annotation, or evidence hash is updated in place. Every revision is
+bound to exactly one batch, sample, project, artifact/version, and applicable
+snapshot. A quality result from one sample or artifact cannot be reused by
+another through a latest-row lookup.
+
+### P0, P1, and P2 boundaries
+
+- **P0 Online / deterministic hard gate:** validate schema and required
+  structure, non-empty critical content, project/sample isolation, exact
+  solution/snapshot/document-version bindings, no placeholder artifacts,
+  required-section presence, package integrity, unsupported verified-fact
+  safety, and critical inheritance/version contradictions. P0 executes before
+  an artifact is accepted by the next state-machine transition. Any P0
+  failure is a terminal integrity `FAIL`; it cannot be downgraded to a
+  descriptive quality score.
+- **P1 Structured / asynchronous evaluation:** evaluate requirement mappings,
+  recall, alignment precision, factuality, decision dimensions, pairwise
+  differentiation, completeness, actionability, semantic inheritance, and
+  contradiction. P1 may use candidate extraction or matching from an LLM, but
+  final labels require the approved human roles. Missing P1 evidence makes a
+  result incomplete/`PARTIAL`, not silently `PASS`.
+- **P2 Human audit support:** the idea provider is authoritative for intent,
+  brief accept/edit, selection, user ratings, and final fidelity feedback;
+  an independent human reviewer audits mappings, claims, contradictions,
+  inheritance, completeness, and actionability. LLM-as-judge can assist with
+  candidates only and is never sole Ground Truth or sole final evaluator.
+
+Overall quality status has one shared meaning: `PASS` means all applicable P0
+gates pass and all required review evidence for the declared stage is present;
+`PARTIAL` means no P0 integrity violation occurred but an operational or
+review-evidence gap prevents a complete claim; `FAIL` means any P0 hard
+failure, cross-sample contamination, wrong identity/version binding, silent
+acknowledgement, unsupported verified fact, critical contradiction, or
+Provider/Search/budget violation. Batch 01 reports P1/P2 values per sample
+descriptively and does not invent statistical thresholds at `n=3`.
+
+### Artifact-specific production quality contracts
+
+**Solutions.** In addition to the Requirement Gold Set metrics already defined,
+the contract records Brief Critical/Overall Requirement Recall, Solution Set
+Recall and Critical Recall over the union of all three solutions, Selected
+Solution Recall and Critical Recall, Requirement Alignment Precision (an
+alignment-quality equivalent rather than generic model accuracy), Decision
+Dimension Coverage, Pairwise Differentiation, Factual Precision when its
+denominator is meaningful, and Unsupported Claim Rate. A Selected Solution
+Decision Set must include target user, problem framing, positioning/approach,
+core interaction, MVP scope, and important trade-offs.
+
+**PRD.** The PRD quality evaluation is bound to the exact selected solution,
+snapshot, and PRD version. It records Requirement Coverage Recall, Critical
+Requirement Coverage, Selected-Solution Inheritance, Scope Consistency,
+Mandatory Section Coverage, Acceptance Criteria Testability, Completeness,
+Actionability, Unsupported Claim Rate, and Critical Contradiction Rate. A
+successful file alone is not a PRD quality pass.
+
+**TechDoc.** The TechDoc evaluation is bound to the exact PRD version,
+selected-solution context, snapshot, and TechDoc version. It records PRD
+Traceability Recall, Critical Technical Coverage, NFR Coverage, Implementation
+Actionability, Feasibility Accuracy, selected-solution/snapshot inheritance,
+Unsupported Technical Claim Rate, Critical Contradiction Rate, and
+Completeness. It must not infer a PRD dependency that the actual product
+contract does not provide; structural binding and semantic inheritance are
+reported separately.
+
+**Handoff.** The Handoff evaluation records Exact Version Binding Accuracy,
+Artifact Completeness, Unresolved-item Coverage, Evidence Limitation
+Visibility, Decision Binding Accuracy, and Package Integrity. It must bind the
+exact project, selected-solution snapshot, confirmed PRD version, confirmed
+TechDoc version, acknowledgement state, package hash, and byte count. An
+acknowledgement is never treated as external verification.
+
+### Cross-artifact quality and factuality rules
+
+Requirement Recall is requirement understanding and must never be named or
+reported as retrieval `Recall@K`. No generic model “accuracy” is published
+because open-ended generation has no natural true-negative universe.
+
+Claim classes remain `SUPPORTED_FACT`, `USER_INPUT`, `MODEL_HYPOTHESIS`,
+`UNVERIFIED_CLAIM`, and `UNSUPPORTED_FACTUAL_ASSERTION`. Clearly disclosed
+hypotheses are not factual errors; an unsupported factual assertion presented
+as a verified fact is a hard P0 failure and, in the zero-source batch, must
+have count zero. The factuality metrics are Unsupported Claim Rate and,
+where meaningful, Factual Precision.
+
+Structural identity correctness (IDs and hashes) is a hard 100% invariant.
+Semantic inheritance is evaluated independently from identity binding. The
+critical contradiction formula is:
+
+`critical upstream decisions contradicted downstream / critical decisions checked`.
+
+No critical contradiction caused by selecting the wrong solution, snapshot,
+or version may be represented as an ordinary low score.
+
+### Evidence, storage, monitoring, and negative matrix
+
+Every quality revision stores only safe evidence references, metric values,
+reviewer role, policy/annotation version, and SHA-256 hashes of its input
+manifest and evidence manifest. It must not store raw Provider payloads, full
+document bodies, acknowledgement prose, PII, or a ZIP body in an ordinary
+receipt. The implementation must choose the smallest normalized SQLite
+representation: one immutable quality-evaluation envelope plus typed
+annotation/evidence rows or a single schema-validated JSON payload with
+foreign-key-equivalent IDs. It must not duplicate the same facts in both
+tables and JSON. The migration must define uniqueness for artifact/sample/
+revision identity and indexes for batch, sample, artifact type, and status.
+
+The inspector/reporting contract exposes only safe IDs, status, layer, metric
+summaries, hashes, and counts. Batch monitoring reports per-sample metrics
+first, then exploratory macro descriptions, quality-layer completeness,
+hard-gate failures, evidence revision counts, and quality-status trends. It
+must never claim statistical superiority from three samples. Production
+monitoring must distinguish P0 failure rate, P1/P2 evaluation completeness,
+unsupported-verified-fact incidents, binding failures, contradiction alerts,
+and operational incompleteness.
+
+The implementation test matrix must include negative cases for: cross-project
+or cross-sample evidence, wrong selected solution, wrong snapshot, wrong PRD/
+TechDoc/Handoff version, placeholder or missing required sections, incomplete
+critical content, unsupported verified facts, critical inheritance
+contradiction, stale quality revision, hash mismatch, package corruption,
+missing acknowledgement, acknowledgement-as-verification, and leakage of
+raw content. Each must fail closed without mutating the prior quality
+revision.
+
+### Batch 01 reporting boundary
+
+The first-batch report includes one row per sample and artifact for the full
+quality metric set, plus user ratings and P0/P1/P2 status. Macro values are
+exploratory descriptive statistics only. The approved existing user-rating
+PASS gate and PASS/PARTIAL/FAIL semantics remain in force; new diagnostic
+quality metrics do not acquire post-hoc thresholds from Batch 01. This keeps
+quality evidence useful without turning `n=3` into a claim of generalization,
+commercial superiority, or statistical significance.
+
 ## 12. Budget extension, earmark, and reservation discipline
 
 Current durable budget is 6 and current conservative safe ceiling is 5. Before the extension exists, the batch cannot claim additional capacity.

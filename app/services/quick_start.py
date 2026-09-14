@@ -10,6 +10,7 @@ from app.db import Database, utc_now
 from app.errors import ConflictError, StructuredRuntimeRecoveryError
 from app.schemas import IdeaBriefDraft, IdeaBriefRefineRequest, QuickStartRequest
 from app.services.ai_runtime import StructuredAIRuntime, build_ai_trace_payload
+from app.services.evaluation_policy import EvaluationExecutionPolicy
 from app.services.projects import ProjectService
 
 
@@ -105,14 +106,29 @@ class QuickStartService:
             payload={"project_id": project_id, "note": note, "market_validation": False},
         )
 
-    def quick_start(self, payload: QuickStartRequest, *, actor: str) -> dict[str, Any]:
+    def quick_start(
+        self,
+        payload: QuickStartRequest,
+        *,
+        actor: str,
+        evaluation_policy: EvaluationExecutionPolicy | None = None,
+    ) -> dict[str, Any]:
+        if evaluation_policy is not None and evaluation_policy.stage != "QUICKSTART":
+            raise ValueError("QuickStart requires a QUICKSTART evaluation policy")
         project = self.projects.create_project(
             title=self._title_from_idea(payload.idea),
             summary=payload.idea.strip(),
             actor=actor,
         )
         resolver = getattr(self.runtime, "for_project", None)
-        runtime = resolver(project["id"]) if callable(resolver) else self.runtime
+        if callable(resolver):
+            runtime = (
+                resolver(project["id"], evaluation_policy=evaluation_policy)
+                if evaluation_policy is not None
+                else resolver(project["id"])
+            )
+        else:
+            runtime = self.runtime
         started = time.perf_counter()
         try:
             draft = runtime.interpret_idea(payload)
@@ -134,7 +150,17 @@ class QuickStartService:
                 entity_id=project["id"],
                 payload=trace,
             )
-            return exc.as_payload(preserved_input=payload)
+            result = exc.as_payload(preserved_input=payload)
+            if evaluation_policy is not None:
+                transport_count = int(getattr(runtime, "provider_transport_attempts", 0))
+                result.update(
+                    {
+                        "status": "OPERATIONAL_INCOMPLETE",
+                        "brief_confirmed": False,
+                        "provider_transport_count": transport_count,
+                    }
+                )
+            return result
         except Exception:
             # The project row intentionally remains as the user's captured Idea; no fake brief is written.
             raise
@@ -147,6 +173,29 @@ class QuickStartService:
             component_version=self.INTERPRETER_VERSION,
         )
         trace["interpreter_version"] = trace.pop("component_version")
+        if evaluation_policy is not None:
+            transport_count = int(getattr(runtime, "provider_transport_attempts", 0))
+            completeness = draft.validate_substantive_completeness()
+            if not completeness.complete:
+                self.db.insert_audit(
+                    actor=actor,
+                    action="idea_brief_incomplete",
+                    entity_type="project",
+                    entity_id=project["id"],
+                    payload={
+                        "missing_fields": list(completeness.missing_fields),
+                        "provider_transport_count": transport_count,
+                    },
+                )
+                return {
+                    "project_id": project["id"],
+                    "status": "OPERATIONAL_INCOMPLETE",
+                    "brief_confirmed": False,
+                    "missing_fields": list(completeness.missing_fields),
+                    "clarification_required": completeness.clarification_required,
+                    "provider_transport_count": transport_count,
+                    "runtime_mode": runtime.mode,
+                }
         with self.db.connect() as connection:
             brief_id = self._insert_brief_tx(
                 connection,
@@ -164,8 +213,20 @@ class QuickStartService:
                 payload=trace,
             )
         brief = self.get_brief(project["id"])
+        evaluation_fields = (
+            {
+                "status": "AWAITING_BRIEF_REVIEW",
+                "brief_confirmed": False,
+                "provider_transport_count": int(
+                    getattr(runtime, "provider_transport_attempts", 0)
+                ),
+            }
+            if evaluation_policy is not None
+            else {}
+        )
         return {
             "project_id": project["id"],
+            **evaluation_fields,
             "idea_brief": brief,
             "clarification_required": brief["clarification_required"],
             "clarification_question": brief.get("clarification_question"),

@@ -22,6 +22,7 @@ from app.schemas import (
 )
 from app.services.ai_runtime import StructuredAIRuntime
 from app.services.credential_store import CredentialBackendUnavailable
+from app.services.evaluation_policy import EvaluationExecutionPolicy, EvaluationTransportGuard
 from app.services.model_profiles import ModelProfileService
 from app.services.provider_adapters import ModelAdapter, ProviderCallError
 
@@ -216,6 +217,7 @@ class _ProfileStructuredRuntime:
         before_provider_call: BeforeProviderCall | None = None,
         after_provider_failure: AfterProviderFailure | None = None,
         after_provider_success: Callable[[str, Any], Any] | None = None,
+        evaluation_policy: EvaluationExecutionPolicy | None = None,
     ) -> None:
         self.provider = profile["provider"]
         self.model = profile["model_id"]
@@ -224,13 +226,25 @@ class _ProfileStructuredRuntime:
         self._profile = profile
         self._profile_service = profile_service
         self._adapter_factory = adapter_factory
-        self.max_model_rounds = max_model_rounds
+        self.evaluation_policy = evaluation_policy
+        self.max_model_rounds = 1 if evaluation_policy is not None else max_model_rounds
         self.max_tool_rounds = max_tool_rounds
         self.model_rounds_used = 0
         self._before_provider_call = before_provider_call
         self._after_provider_failure = after_provider_failure
         self._after_provider_success = after_provider_success
         self._pending_reservation: tuple[str, Any] | None = None
+        self._transport_guard = (
+            EvaluationTransportGuard(evaluation_policy.max_provider_transports)
+            if evaluation_policy is not None
+            else None
+        )
+
+    @property
+    def provider_transport_attempts(self) -> int:
+        """Return the locally observed provider transport attempts."""
+
+        return self._transport_guard.attempted if self._transport_guard is not None else 0
 
     def _remember_reservation(self, operation: str | None, reservation: Any) -> None:
         if operation is not None and reservation is not None:
@@ -287,6 +301,13 @@ class _ProfileStructuredRuntime:
         args: tuple[Any, ...] = (),
         kwargs: dict[str, Any] | None = None,
     ) -> Any:
+        if self._transport_guard is not None and self._transport_guard.attempted >= self._transport_guard.max_provider_transports:
+            raise StructuredRuntimeRecoveryError(
+                error_code="EVALUATION_TRANSPORT_LIMIT_REACHED",
+                message="评估 Provider transport 已达到安全上限；系统已停止。",
+                recovery_actions=["转为人工复核"],
+                preserved_input=_input_payload(preserved_input),
+            )
         api_key = self._credential(preserved_input)
         try:
             adapter = self._adapter_factory(
@@ -316,6 +337,16 @@ class _ProfileStructuredRuntime:
                 self.model_rounds_used += 1
                 operation = PROVIDER_USAGE_OPERATIONS.get(method)
                 reservation = None
+                if self._transport_guard is not None:
+                    try:
+                        self._transport_guard.before_attempt()
+                    except RuntimeError:
+                        raise StructuredRuntimeRecoveryError(
+                            error_code="EVALUATION_TRANSPORT_LIMIT_REACHED",
+                            message="评估 Provider transport 已达到安全上限；系统已停止。",
+                            recovery_actions=["转为人工复核"],
+                            preserved_input=_input_payload(preserved_input),
+                        ) from None
                 if operation is not None and self._before_provider_call is not None:
                     # This is deliberately after all local profile/credential/adapter
                     # validation and immediately before the real provider dispatch.
@@ -343,7 +374,10 @@ class _ProfileStructuredRuntime:
                 except ProviderCallError as error:
                     if operation is not None and self._after_provider_failure is not None:
                         self._release_reservation(operation, reservation)
-                    can_retry = error.code in SCHEMA_ERROR_CODES or error.retryable
+                    can_retry = (
+                        self.evaluation_policy is None
+                        and (error.code in SCHEMA_ERROR_CODES or error.retryable)
+                    )
                     if can_retry and self.model_rounds_used < self.max_model_rounds:
                         continue
                     raise _recovery_for_provider_error(
@@ -486,7 +520,13 @@ class HybridStructuredRuntime:
             """
         )
 
-    def for_project(self, project_id: str | None, managed_selection: Any | None = None) -> StructuredAIRuntime:
+    def for_project(
+        self,
+        project_id: str | None,
+        managed_selection: Any | None = None,
+        *,
+        evaluation_policy: EvaluationExecutionPolicy | None = None,
+    ) -> StructuredAIRuntime:
         if self.fixture_runtime is not None:
             return self.fixture_runtime
         if self.managed_runtime_factory is not None and managed_selection is not None:
@@ -509,6 +549,7 @@ class HybridStructuredRuntime:
             before_provider_call=self.before_provider_call,
             after_provider_failure=self.after_provider_failure,
             after_provider_success=self.after_provider_success,
+            evaluation_policy=evaluation_policy,
         )
 
     def analyze_evidence(

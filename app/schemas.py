@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
@@ -431,6 +432,15 @@ class SolutionSelectRequest(StrictModel):
         return self
 
 
+@dataclass(frozen=True)
+class IdeaBriefCompleteness:
+    """Deterministic semantic-completeness result for evaluation gates."""
+
+    complete: bool
+    missing_fields: tuple[str, ...]
+    clarification_required: bool
+
+
 class IdeaBriefDraft(StrictModel):
     original_idea: str
     target_user: str
@@ -449,6 +459,22 @@ class IdeaBriefDraft(StrictModel):
         if self.clarification_required and not (self.clarification_question or "").strip():
             raise ValueError("clarification_question is required when clarification_required=true")
         return self
+
+    def validate_substantive_completeness(self) -> IdeaBriefCompleteness:
+        required = (
+            ("original_idea", self.original_idea),
+            ("target_user", self.target_user),
+            ("problem", self.problem),
+            ("desired_outcome", self.desired_outcome),
+        )
+        missing = tuple(name for name, value in required if not value.strip())
+        if self.clarification_required and "clarification_required" not in missing:
+            missing = (*missing, "clarification_required")
+        return IdeaBriefCompleteness(
+            complete=not missing,
+            missing_fields=missing,
+            clarification_required=self.clarification_required,
+        )
 
 
 class SolutionCandidateDraft(StrictModel):

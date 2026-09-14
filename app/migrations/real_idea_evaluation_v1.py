@@ -147,8 +147,16 @@ CREATE TABLE IF NOT EXISTS real_idea_annotations (
 
 CREATE INDEX IF NOT EXISTS idx_real_idea_samples_batch
     ON real_idea_samples(batch_id);
+CREATE INDEX IF NOT EXISTS idx_real_idea_batches_batch_key
+    ON real_idea_batches(batch_key);
+CREATE INDEX IF NOT EXISTS idx_real_idea_samples_project
+    ON real_idea_samples(project_id);
+CREATE INDEX IF NOT EXISTS idx_real_idea_allocations_batch
+    ON real_idea_budget_allocations(batch_id);
 CREATE INDEX IF NOT EXISTS idx_real_idea_reservations_sample
     ON real_idea_transport_reservations(sample_id, stage);
+CREATE INDEX IF NOT EXISTS idx_real_idea_feedback_sample
+    ON real_idea_feedback(batch_id, sample_id, stage);
 CREATE INDEX IF NOT EXISTS idx_real_idea_annotations_sample_kind
     ON real_idea_annotations(sample_id, annotation_kind);
 
@@ -249,22 +257,204 @@ def _migration_statements() -> tuple[str, ...]:
     return tuple(statements)
 
 
-_REQUIRED_COLUMNS = {
-    "real_idea_batches": {"batch_id", "batch_key", "finalized_at", "created_at", "created_by"},
-    "real_idea_samples": {"sample_id", "batch_id", "sample_key", "project_id", "budget_allocation_id"},
-    "real_idea_budget_allocations": {"allocation_id", "batch_id", "created_at", "created_by"},
-    "real_idea_transport_reservations": {"reservation_id", "batch_id", "sample_id", "ordinal"},
-    "real_idea_feedback": {"feedback_id", "batch_id", "sample_id", "feedback_attestation"},
-    "real_idea_annotations": {"annotation_id", "batch_id", "sample_id", "annotation_kind", "payload_json"},
+_EXPECTED_COLUMNS = {
+    "real_idea_batches": {
+        "batch_id", "batch_key", "status", "created_at", "started_at", "finished_at",
+        "finalized_at", "manifest_sha256", "source_commit", "deployment_id", "model",
+        "prompt_hash", "schema_hash", "completeness_contract_version", "questionnaire_version",
+        "sample_count", "search_allowed", "provider_policy_version", "batch_version_split",
+        "failure_classification", "safe_counts_json", "created_by",
+    },
+    "real_idea_samples": {
+        "sample_id", "batch_id", "sample_key", "source_type", "project_id", "raw_idea_sha256",
+        "redaction_version", "state", "withdrawal_reason", "brief_version_id",
+        "solutions_evaluation_id", "selected_solution_id", "snapshot_id", "prd_version_id",
+        "techdoc_version_id", "handoff_run_id", "sample_manifest_sha256", "budget_allocation_id",
+        "created_at", "terminal_at", "terminal_reason", "created_by",
+    },
+    "real_idea_budget_allocations": {
+        "allocation_id", "batch_id", "authorized_total", "batch_earmark", "sample_cap",
+        "quickstart_cap", "solutions_cap", "purpose", "state", "created_at", "released_at",
+        "release_count", "created_by",
+    },
+    "real_idea_transport_reservations": {
+        "reservation_id", "batch_id", "sample_id", "stage", "ordinal", "idempotency_key",
+        "state", "reserved_at", "attempted_at", "dispatch_id", "transport_id", "released_at",
+        "failure_classification", "created_by",
+    },
+    "real_idea_feedback": {
+        "feedback_id", "batch_id", "sample_id", "stage", "submitted_by", "submitted_at",
+        "accepted", "score_payload", "raw_feedback_text", "feedback_attestation",
+        "feedback_schema_version", "created_by",
+    },
+    "real_idea_annotations": {
+        "annotation_id", "batch_id", "sample_id", "annotation_kind", "target_type", "target_id",
+        "payload_json", "annotation_schema_version", "policy_version", "revision", "input_sha256",
+        "evidence_sha256", "supersedes_annotation_id", "created_at", "created_by",
+    },
+}
+
+_EXPECTED_PRIMARY_KEYS = {table: ("batch_id" if table == "real_idea_batches" else
+    "sample_id" if table == "real_idea_samples" else
+    "allocation_id" if table == "real_idea_budget_allocations" else
+    "reservation_id" if table == "real_idea_transport_reservations" else
+    "feedback_id" if table == "real_idea_feedback" else "annotation_id",)
+    for table in _EXPECTED_COLUMNS}
+
+_EXPECTED_UNIQUES = {
+    "real_idea_batches": {("batch_key",)},
+    "real_idea_samples": {("batch_id", "sample_key"), ("project_id",), ("batch_id", "sample_id")},
+    "real_idea_budget_allocations": {("batch_id",), ("batch_id", "allocation_id")},
+    "real_idea_transport_reservations": {("idempotency_key",), ("batch_id", "sample_id", "stage", "ordinal")},
+    "real_idea_feedback": set(),
+    "real_idea_annotations": {("sample_id", "annotation_kind", "target_id", "revision")},
+}
+
+_EXPECTED_CHECKS = {
+    "real_idea_batches": (
+        "CHECK(sample_count=3)", "CHECK(search_allowed=0)",
+        "CHECK(batch_version_splitIN(0,1))", "CHECK(started_atISNULLORfinished_atISNULLORfinished_at>=started_at)",
+        "CHECK(finished_atISNULLORfinalized_atISNULLORfinalized_at>=finished_at)",
+    ),
+    "real_idea_samples": ("CHECK(sample_keyIN('REAL_IDEA_01','REAL_IDEA_02','REAL_IDEA_03'))",),
+    "real_idea_budget_allocations": (
+        "CHECK(authorized_total>=0)", "CHECK(batch_earmark>=0)", "CHECK(sample_cap>=0)",
+        "CHECK(quickstart_cap>=0)", "CHECK(solutions_cap>=0)", "CHECK(release_countIN(0,1))",
+    ),
+    "real_idea_transport_reservations": (
+        "CHECK(ordinal=1)", "CHECK(stateIN('RESERVED','ATTEMPTED','RELEASED'))",
+    ),
+    "real_idea_feedback": (
+        "CHECK(submitted_by='idea_provider')", "CHECK(acceptedIN(0,1))",
+        "CHECK(json_valid(score_payload))", "CHECK(feedback_attestation=1)",
+    ),
+    "real_idea_annotations": (
+        "CHECK(annotation_kindIN('requirement','claim','decision','inheritance'))",
+        "CHECK(json_valid(payload_json))", "CHECK(revision>=1)",
+    ),
+}
+
+_EXPECTED_FOREIGN_KEYS = {
+    "real_idea_batches": set(),
+    "real_idea_samples": {
+        ("real_idea_batches", ("batch_id",), ("batch_id",)),
+        ("projects", ("project_id",), ("id",)),
+        ("project_snapshots", ("snapshot_id",), ("id",)),
+        ("document_versions", ("prd_version_id",), ("id",)),
+        ("document_versions", ("techdoc_version_id",), ("id",)),
+        ("real_idea_budget_allocations", ("batch_id", "budget_allocation_id"), ("batch_id", "allocation_id")),
+        ("idea_briefs", ("brief_version_id",), ("id",)),
+        ("solution_runs", ("solutions_evaluation_id",), ("id",)),
+        ("solution_candidates", ("selected_solution_id",), ("id",)),
+        ("handoff_runs", ("handoff_run_id",), ("id",)),
+    },
+    "real_idea_budget_allocations": {("real_idea_batches", ("batch_id",), ("batch_id",))},
+    "real_idea_transport_reservations": {
+        ("real_idea_batches", ("batch_id",), ("batch_id",)),
+        ("real_idea_samples", ("sample_id",), ("sample_id",)),
+        ("real_idea_samples", ("batch_id", "sample_id"), ("batch_id", "sample_id")),
+    },
+    "real_idea_feedback": {
+        ("real_idea_batches", ("batch_id",), ("batch_id",)),
+        ("real_idea_samples", ("sample_id",), ("sample_id",)),
+        ("real_idea_samples", ("batch_id", "sample_id"), ("batch_id", "sample_id")),
+    },
+    "real_idea_annotations": {
+        ("real_idea_batches", ("batch_id",), ("batch_id",)),
+        ("real_idea_samples", ("sample_id",), ("sample_id",)),
+        ("real_idea_samples", ("batch_id", "sample_id"), ("batch_id", "sample_id")),
+        ("real_idea_annotations", ("supersedes_annotation_id",), ("annotation_id",)),
+    },
+}
+
+_EXPECTED_INDEXES = {
+    "real_idea_batches": {"idx_real_idea_batches_batch_key": ("batch_key",)},
+    "real_idea_samples": {
+        "idx_real_idea_samples_batch": ("batch_id",),
+        "idx_real_idea_samples_project": ("project_id",),
+    },
+    "real_idea_budget_allocations": {"idx_real_idea_allocations_batch": ("batch_id",)},
+    "real_idea_transport_reservations": {"idx_real_idea_reservations_sample": ("sample_id", "stage")},
+    "real_idea_feedback": {"idx_real_idea_feedback_sample": ("batch_id", "sample_id", "stage")},
+    "real_idea_annotations": {"idx_real_idea_annotations_sample_kind": ("sample_id", "annotation_kind")},
+}
+
+_EXPECTED_TRIGGERS = {
+    "real_idea_batches": {
+        "trg_real_idea_batch_finalize_immutable", "trg_real_idea_batch_finalize_no_delete",
+        "trg_real_idea_batch_audit_immutable",
+    },
+    "real_idea_samples": {"trg_real_idea_sample_binding_immutable"},
+    "real_idea_budget_allocations": {"trg_real_idea_allocation_audit_immutable"},
+    "real_idea_transport_reservations": {"trg_real_idea_reservation_identity_immutable"},
+    "real_idea_feedback": {"trg_real_idea_feedback_immutable", "trg_real_idea_feedback_no_delete"},
+    "real_idea_annotations": {"trg_real_idea_annotation_immutable", "trg_real_idea_annotation_no_delete"},
 }
 
 
+def _normalized_sql(sql: str) -> str:
+    return "".join(sql.lower().split())
+
+
+def _foreign_keys(connection: sqlite3.Connection, table: str) -> set[tuple[str, tuple[str, ...], tuple[str, ...]]]:
+    grouped: dict[int, list[tuple[int, str, str, str]]] = {}
+    for row in connection.execute(f"PRAGMA foreign_key_list({table})"):
+        grouped.setdefault(row[0], []).append((row[1], row[2], row[3], row[4]))
+    return {
+        (rows[0][1], tuple(row[2] for row in sorted(rows)), tuple(row[3] for row in sorted(rows)))
+        for rows in grouped.values()
+    }
+
+
+def _unique_indexes(connection: sqlite3.Connection, table: str) -> set[tuple[str, ...]]:
+    uniques: set[tuple[str, ...]] = set()
+    for row in connection.execute(f"PRAGMA index_list({table})"):
+        if row[2]:
+            uniques.add(tuple(info[2] for info in connection.execute(f"PRAGMA index_info({row[1]})")))
+    return uniques
+
+
 def _validate_schema(connection: sqlite3.Connection) -> None:
-    for table, required in _REQUIRED_COLUMNS.items():
-        columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
-        if not required <= columns:
-            missing = ", ".join(sorted(required - columns))
-            raise RuntimeError(f"real idea schema {table} is missing columns: {missing}")
+    for table, expected_columns in _EXPECTED_COLUMNS.items():
+        table_info = list(connection.execute(f"PRAGMA table_info({table})"))
+        if not table_info:
+            raise RuntimeError(f"real idea schema {table} is missing")
+        columns = {row[1] for row in table_info}
+        if columns != expected_columns:
+            missing = ", ".join(sorted(expected_columns - columns))
+            extra = ", ".join(sorted(columns - expected_columns))
+            detail = f"missing columns: {missing}" if missing else f"unexpected columns: {extra}"
+            raise RuntimeError(f"real idea schema {table} has invalid columns: {detail}")
+
+        primary_key = tuple(row[1] for row in sorted(table_info, key=lambda row: row[5]) if row[5])
+        if primary_key != _EXPECTED_PRIMARY_KEYS[table]:
+            raise RuntimeError(f"real idea schema {table} has invalid primary key")
+        if not _EXPECTED_UNIQUES[table] <= _unique_indexes(connection, table):
+            raise RuntimeError(f"real idea schema {table} is missing unique constraints")
+        sql = _normalized_sql(connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()[0])
+        for check in _EXPECTED_CHECKS[table]:
+            if _normalized_sql(check) not in sql:
+                raise RuntimeError(f"real idea schema {table} is missing check constraint")
+        if _foreign_keys(connection, table) != _EXPECTED_FOREIGN_KEYS[table]:
+            raise RuntimeError(f"real idea schema {table} has invalid foreign keys")
+        for index_name, expected_index_columns in _EXPECTED_INDEXES[table].items():
+            row = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (index_name,)
+            ).fetchone()
+            actual_index_columns = tuple(
+                info[2] for info in connection.execute(f"PRAGMA index_info({index_name})")
+            ) if row else ()
+            if actual_index_columns != expected_index_columns:
+                raise RuntimeError(f"real idea schema {table} is missing index {index_name}")
+        trigger_names = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=?", (table,)
+            )
+        }
+        if not _EXPECTED_TRIGGERS[table] <= trigger_names:
+            raise RuntimeError(f"real idea schema {table} is missing immutability trigger")
 
 
 def apply(connection: sqlite3.Connection) -> None:

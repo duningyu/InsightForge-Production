@@ -51,6 +51,31 @@ def test_failed_migration_rolls_back_tables_and_version(tmp_path, monkeypatch):
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("schema_version", [0, 1])
+def test_malformed_same_named_feedback_schema_is_rejected(tmp_path, schema_version):
+    from app.migrations import real_idea_evaluation_v1 as migration
+
+    path = tmp_path / f"malformed-feedback-v{schema_version}.sqlite"
+    db = Database(path)
+    db.init_schema()
+    feedback_columns = """
+        feedback_id TEXT, batch_id TEXT, sample_id TEXT, stage TEXT,
+        submitted_by TEXT, submitted_at TEXT, accepted INTEGER,
+        score_payload TEXT, raw_feedback_text TEXT, feedback_attestation INTEGER,
+        feedback_schema_version TEXT, created_by TEXT
+    """
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("DROP TABLE real_idea_feedback")
+        connection.execute(f"CREATE TABLE real_idea_feedback ({feedback_columns})")
+        connection.execute(f"PRAGMA user_version = {schema_version}")
+
+    with sqlite3.connect(path) as connection:
+        with pytest.raises(RuntimeError, match="real_idea_feedback"):
+            migration.apply(connection)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == schema_version
+
+
 def test_child_rows_cannot_cross_batch_or_allocation_binding(tmp_path):
     db = Database(tmp_path / "bindings.sqlite")
     db.init_schema()

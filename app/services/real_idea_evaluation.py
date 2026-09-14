@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from app.services.decisions import DecisionService
 from app.services.projects import ProjectService
 from app.services.solution_design import SolutionDesignService
 from app.services.stage_b_evaluation import StageBExecutionPolicy
+from app.services.handoff import HandoffService
 from app.services.real_idea_budget import (
     BATCH_EARMARK,
     EXTENSION_CREDITS,
@@ -30,6 +32,10 @@ SAMPLE_KEYS = ("REAL_IDEA_01", "REAL_IDEA_02", "REAL_IDEA_03")
 
 class ExpectedSeedFailure(RuntimeError):
     """Testable failure point proving sample creation is atomic."""
+
+
+class ReviewGateError(ValueError):
+    """A required human review or exact artifact binding is missing."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,11 +72,31 @@ class SelectionReviewResult:
     provider_transport_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceAcknowledgement:
+    sample_id: str
+    acknowledgement_id: str
+    confirmed: bool
+    externally_verified: bool
+    provider_transport_count: int
+    prd_version_id: str
+    techdoc_version_id: str
+    snapshot_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class FeedbackAttestation:
+    sample_id: str
+    attested_by: str
+    used_as_requirement_ground_truth: bool
+    provider_transport_count: int
+
+
 class RealIdeaEvaluationService:
     """Internal, isolated lifecycle for a real-idea evaluation sample.
 
-    This service owns only evaluation state and project birth.  It does not expose an
-    HTTP route and it never creates briefs, solutions, documents, or Provider calls.
+    This service owns evaluation state, project birth, bounded Solutions review,
+    and human review attestations.  It does not expose an HTTP route.
     """
 
     def __init__(self, database: Database, *, durable_budget: int, actor: str = "real_idea_evaluation"):
@@ -327,6 +353,85 @@ class RealIdeaEvaluationService:
             sample_id=sample_id,
             selected_solution_id=selected["id"],
             selected_solution_ordinal=selected_ordinal,
+            provider_transport_count=0,
+        )
+
+    def acknowledge_evidence(
+        self, sample_id: str, *, explicit: bool, note: str = ""
+    ) -> EvidenceAcknowledgement:
+        """Record explicit evidence acknowledgement through the formal handoff contract.
+
+        Exact sample bindings are checked before the official acknowledgement service is
+        called.  The acknowledgement deliberately does not imply external verification.
+        """
+        if not explicit:
+            raise ReviewGateError("explicit acknowledgement is required")
+        sample = self.database.fetch_one(
+            "SELECT * FROM real_idea_samples WHERE sample_id=?", (sample_id,)
+        )
+        if not sample:
+            raise ReviewGateError("sample not found")
+        required = (sample["snapshot_id"], sample["prd_version_id"], sample["techdoc_version_id"])
+        if any(not value for value in required):
+            raise ReviewGateError("exact snapshot, PRD, and TechDoc versions are required")
+        project = self.database.fetch_one(
+            "SELECT current_snapshot_id FROM projects WHERE id=?", (sample["project_id"],)
+        )
+        if not project or project["current_snapshot_id"] != sample["snapshot_id"]:
+            raise ReviewGateError("sample snapshot is not the current snapshot")
+        for version_id, doc_type in (
+            (sample["prd_version_id"], "prd"), (sample["techdoc_version_id"], "techdoc")
+        ):
+            version = self.database.fetch_one(
+                "SELECT project_id, doc_type, status, validation_status FROM document_versions WHERE id=?",
+                (version_id,),
+            )
+            if not version or version["project_id"] != sample["project_id"] or version["doc_type"] != doc_type:
+                raise ReviewGateError("document version binding is invalid")
+            if version["status"] != "approved" or version["validation_status"] != "passed":
+                raise ReviewGateError("confirmed approved document versions are required")
+        result = HandoffService(self.database).acknowledge_unresolved(
+            sample["project_id"], actor=self.actor, confirmed=True, note=note
+        )
+        return EvidenceAcknowledgement(
+            sample_id=sample_id,
+            acknowledgement_id=result["id"],
+            confirmed=True,
+            externally_verified=False,
+            provider_transport_count=0,
+            prd_version_id=sample["prd_version_id"],
+            techdoc_version_id=sample["techdoc_version_id"],
+            snapshot_id=sample["snapshot_id"],
+        )
+
+    def record_feedback(
+        self, sample_id: str, *, ratings: dict[str, Any]
+    ) -> FeedbackAttestation:
+        """Persist only an idea-provider attestation and safe structured ratings."""
+        sample = self.database.fetch_one(
+            "SELECT batch_id, state FROM real_idea_samples WHERE sample_id=?", (sample_id,)
+        )
+        if not sample:
+            raise ReviewGateError("sample not found")
+        if sample["state"] not in {"AWAITING_SOLUTION_REVIEW", "COMPLETED", "PARTIAL"}:
+            raise ReviewGateError("required solution review is incomplete")
+        if not isinstance(ratings, dict):
+            raise ValueError("ratings must be an object")
+        feedback_id = f"feedback_{uuid.uuid4().hex}"
+        now = utc_now()
+        self.database.execute(
+            """INSERT INTO real_idea_feedback(
+                feedback_id,batch_id,sample_id,stage,submitted_by,submitted_at,
+                accepted,score_payload,raw_feedback_text,feedback_attestation,
+                feedback_schema_version,created_by
+            ) VALUES (?,?,?,'SOLUTION_REVIEW','idea_provider',?,?,?,NULL,1,'v1',?)""",
+            (feedback_id, sample["batch_id"], sample_id, now, 1,
+             json.dumps(ratings, ensure_ascii=False, sort_keys=True), self.actor),
+        )
+        return FeedbackAttestation(
+            sample_id=sample_id,
+            attested_by="idea_provider",
+            used_as_requirement_ground_truth=False,
             provider_transport_count=0,
         )
 

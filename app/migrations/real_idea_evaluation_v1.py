@@ -87,6 +87,17 @@ CREATE TABLE IF NOT EXISTS real_idea_budget_allocations (
     UNIQUE(batch_id, allocation_id)
 );
 
+CREATE TABLE IF NOT EXISTS real_idea_budget_extensions (
+    extension_id TEXT PRIMARY KEY,
+    authorized_credits INTEGER NOT NULL CHECK(authorized_credits > 0),
+    state TEXT NOT NULL CHECK(state IN ('AUTHORIZED', 'BOUND', 'RELEASED')),
+    created_at TEXT NOT NULL,
+    bound_batch_id TEXT REFERENCES real_idea_batches(batch_id),
+    released_at TEXT,
+    created_by TEXT NOT NULL,
+    UNIQUE(bound_batch_id)
+);
+
 CREATE TABLE IF NOT EXISTS real_idea_transport_reservations (
     reservation_id TEXT PRIMARY KEY,
     batch_id TEXT NOT NULL REFERENCES real_idea_batches(batch_id),
@@ -276,7 +287,6 @@ WHEN OLD.batch_id IS NOT NEW.batch_id
   OR OLD.ordinal IS NOT NEW.ordinal
   OR OLD.idempotency_key IS NOT NEW.idempotency_key
   OR OLD.reserved_at IS NOT NEW.reserved_at
-  OR OLD.created_at IS NOT NEW.created_at
   OR OLD.created_by IS NOT NEW.created_by
 BEGIN
     SELECT RAISE(ABORT, 'real idea reservation identity is immutable');
@@ -287,6 +297,22 @@ BEFORE UPDATE ON real_idea_budget_allocations
 WHEN NEW.created_at IS NOT OLD.created_at OR NEW.created_by IS NOT OLD.created_by
 BEGIN
     SELECT RAISE(ABORT, 'real idea allocation audit fields are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_real_idea_budget_extension_audit_immutable
+BEFORE UPDATE ON real_idea_budget_extensions
+WHEN NEW.extension_id IS NOT OLD.extension_id
+  OR NEW.authorized_credits IS NOT OLD.authorized_credits
+  OR NEW.created_at IS NOT OLD.created_at
+  OR NEW.created_by IS NOT OLD.created_by
+BEGIN
+    SELECT RAISE(ABORT, 'real idea budget extension authorization is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_real_idea_budget_extension_no_delete
+BEFORE DELETE ON real_idea_budget_extensions
+BEGIN
+    SELECT RAISE(ABORT, 'real idea budget extension authorization is immutable');
 END;
 """
 
@@ -325,6 +351,10 @@ _EXPECTED_COLUMNS = {
         "quickstart_cap", "solutions_cap", "purpose", "state", "created_at", "released_at",
         "release_count", "created_by",
     },
+    "real_idea_budget_extensions": {
+        "extension_id", "authorized_credits", "state", "created_at",
+        "bound_batch_id", "released_at", "created_by",
+    },
     "real_idea_transport_reservations": {
         "reservation_id", "batch_id", "sample_id", "stage", "ordinal", "idempotency_key",
         "state", "reserved_at", "attempted_at", "dispatch_id", "transport_id", "released_at",
@@ -353,6 +383,7 @@ _EXPECTED_PRIMARY_KEYS = {
     "real_idea_batches": ("batch_id",),
     "real_idea_samples": ("sample_id",),
     "real_idea_budget_allocations": ("allocation_id",),
+    "real_idea_budget_extensions": ("extension_id",),
     "real_idea_transport_reservations": ("reservation_id",),
     "real_idea_feedback": ("feedback_id",),
     "real_idea_quality_evaluations": ("quality_evaluation_id",),
@@ -363,6 +394,7 @@ _EXPECTED_UNIQUES = {
     "real_idea_batches": {("batch_key",)},
     "real_idea_samples": {("batch_id", "sample_key"), ("project_id",), ("batch_id", "sample_id")},
     "real_idea_budget_allocations": {("batch_id",), ("batch_id", "allocation_id")},
+    "real_idea_budget_extensions": {("bound_batch_id",)},
     "real_idea_transport_reservations": {("idempotency_key",), ("batch_id", "sample_id", "stage", "ordinal")},
     "real_idea_feedback": set(),
     "real_idea_quality_evaluations": {
@@ -383,6 +415,7 @@ _EXPECTED_CHECKS = {
         "CHECK(authorized_total>=0)", "CHECK(batch_earmark>=0)", "CHECK(sample_cap>=0)",
         "CHECK(quickstart_cap>=0)", "CHECK(solutions_cap>=0)", "CHECK(release_countIN(0,1))",
     ),
+    "real_idea_budget_extensions": ("CHECK(authorized_credits>0)", "CHECK(stateIN('AUTHORIZED','BOUND','RELEASED'))"),
     "real_idea_transport_reservations": (
         "CHECK(ordinal=1)", "CHECK(stateIN('RESERVED','ATTEMPTED','RELEASED'))",
     ),
@@ -418,6 +451,7 @@ _EXPECTED_FOREIGN_KEYS = {
         ("handoff_runs", ("handoff_run_id",), ("id",)),
     },
     "real_idea_budget_allocations": {("real_idea_batches", ("batch_id",), ("batch_id",))},
+    "real_idea_budget_extensions": {("real_idea_batches", ("bound_batch_id",), ("batch_id",))},
     "real_idea_transport_reservations": {
         ("real_idea_batches", ("batch_id",), ("batch_id",)),
         ("real_idea_samples", ("sample_id",), ("sample_id",)),
@@ -454,6 +488,7 @@ _EXPECTED_INDEXES = {
         "idx_real_idea_samples_project": ("project_id",),
     },
     "real_idea_budget_allocations": {"idx_real_idea_allocations_batch": ("batch_id",)},
+    "real_idea_budget_extensions": {},
     "real_idea_transport_reservations": {"idx_real_idea_reservations_sample": ("sample_id", "stage")},
     "real_idea_feedback": {"idx_real_idea_feedback_sample": ("batch_id", "sample_id", "stage")},
     "real_idea_quality_evaluations": {
@@ -471,6 +506,10 @@ _EXPECTED_TRIGGERS = {
     },
     "real_idea_samples": {"trg_real_idea_sample_binding_immutable"},
     "real_idea_budget_allocations": {"trg_real_idea_allocation_audit_immutable"},
+    "real_idea_budget_extensions": {
+        "trg_real_idea_budget_extension_audit_immutable",
+        "trg_real_idea_budget_extension_no_delete",
+    },
     "real_idea_transport_reservations": {"trg_real_idea_reservation_identity_immutable"},
     "real_idea_feedback": {"trg_real_idea_feedback_immutable", "trg_real_idea_feedback_no_delete"},
     "real_idea_quality_evaluations": {

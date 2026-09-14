@@ -71,3 +71,62 @@ def test_rollback_sample_start_removes_only_the_new_isolated_sample(evaluation_s
     assert evaluation_service.read_project(first.project_id) is None
     assert evaluation_service.read_sample(second.sample_id).project_id == second.project_id
     assert evaluation_service.read_project(second.project_id)["project_origin"] == "user"
+
+
+def _terminal_sample(service, key_index: int, state: str):
+    sample = service.start_sample("batch-1", f"{RAW_IDEA} {key_index}")
+    if state == "COMPLETED":
+        service.transition_sample(
+            sample.sample_id,
+            from_state="QUICKSTART_PENDING",
+            to_state="AWAITING_BRIEF_REVIEW",
+        )
+        service.transition_sample(
+            sample.sample_id,
+            from_state="AWAITING_BRIEF_REVIEW",
+            to_state="AWAITING_SOLUTION_REVIEW",
+        )
+        service.transition_sample(
+            sample.sample_id,
+            from_state="AWAITING_SOLUTION_REVIEW",
+            to_state="COMPLETED",
+        )
+    else:
+        service.transition_sample(
+            sample.sample_id,
+            from_state="QUICKSTART_PENDING",
+            to_state=state,
+        )
+    return sample
+
+
+def test_three_sample_batch_is_partial_when_one_operationally_incomplete(evaluation_service):
+    _terminal_sample(evaluation_service, 1, "COMPLETED")
+    _terminal_sample(evaluation_service, 2, "COMPLETED")
+    _terminal_sample(evaluation_service, 3, "OPERATIONAL_INCOMPLETE")
+
+    result = evaluation_service.finalize_batch("batch-1")
+
+    assert result.status == "PARTIAL"
+    assert result.sample_statuses == {
+        "REAL_IDEA_01": "COMPLETED",
+        "REAL_IDEA_02": "COMPLETED",
+        "REAL_IDEA_03": "OPERATIONAL_INCOMPLETE",
+    }
+
+
+@pytest.mark.parametrize(
+    "violation",
+    [
+        "cross_sample_binding",
+        "wrong_version",
+        "budget_overrun",
+        "search_attempt",
+        "silent_ack",
+        "unsupported_verified_fact",
+    ],
+)
+def test_integrity_violation_is_fail(evaluation_service, violation):
+    evaluation_service.inject_integrity_violation("batch-1", violation)
+
+    assert evaluation_service.finalize_batch("batch-1").status == "FAIL"

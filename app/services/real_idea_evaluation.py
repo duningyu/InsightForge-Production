@@ -92,6 +92,15 @@ class FeedbackAttestation:
     provider_transport_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class BatchFinalization:
+    status: str
+    reasons: tuple[str, ...]
+    sample_statuses: dict[str, str]
+    budget_summary: dict[str, Any]
+    integrity_summary: dict[str, Any]
+
+
 class RealIdeaEvaluationService:
     """Internal, isolated lifecycle for a real-idea evaluation sample.
 
@@ -104,6 +113,7 @@ class RealIdeaEvaluationService:
         self.actor = actor
         self.projects = ProjectService(database)
         self.budget = RealIdeaBudgetService(database, durable_budget=durable_budget)
+        self._integrity_violations: dict[str, set[str]] = {}
 
     def start_batch(self, batch_id: str | Any, actor: str | None = None) -> BatchRecord:
         if not isinstance(batch_id, str) or not batch_id.strip():
@@ -455,6 +465,57 @@ class RealIdeaEvaluationService:
     def count_samples(self, batch_id: str) -> int:
         row = self.database.fetch_one("SELECT COUNT(*) AS count FROM real_idea_samples WHERE batch_id=?", (batch_id,))
         return int(row["count"])
+
+    def inject_integrity_violation(self, batch_id: str, violation: str) -> None:
+        """Test-only hook for exercising terminal integrity gates.
+
+        Production callers have no public route to this service; keeping the hook
+        in the service also avoids mutating receipts or product data in tests.
+        """
+        if not violation or not isinstance(violation, str):
+            raise ValueError("violation is required")
+        self._integrity_violations.setdefault(batch_id, set()).add(violation)
+
+    def finalize_batch(self, batch_id: str) -> BatchFinalization:
+        """Derive a descriptive batch result without rewriting lifecycle evidence."""
+        self.read_batch(batch_id)
+        rows = self.database.fetch_all(
+            "SELECT sample_key, state FROM real_idea_samples WHERE batch_id=? ORDER BY sample_key",
+            (batch_id,),
+        )
+        sample_statuses = {row["sample_key"]: row["state"] for row in rows}
+        reasons: list[str] = []
+        violations = self._integrity_violations.get(batch_id, set())
+        hard_violations = {
+            "cross_sample_binding", "wrong_version", "budget_overrun",
+            "search_attempt", "silent_ack", "unsupported_verified_fact",
+            "critical_inheritance_failure",
+        }
+        for violation in sorted(violations & hard_violations):
+            reasons.append(violation)
+        if not rows:
+            reasons.append("no_samples")
+        if any(state in {"FAILED", "STOPPED"} for state in sample_statuses.values()):
+            reasons.append("sample_failure")
+
+        if reasons:
+            status = "FAIL"
+        elif len(rows) == len(SAMPLE_KEYS) and all(
+            state == "COMPLETED" for state in sample_statuses.values()
+        ):
+            status = "PASS"
+        else:
+            status = "PARTIAL"
+            if any(state != "COMPLETED" for state in sample_statuses.values()):
+                reasons.append("not_all_samples_completed")
+
+        return BatchFinalization(
+            status=status,
+            reasons=tuple(reasons),
+            sample_statuses=sample_statuses,
+            budget_summary={"attempted_reservations_are_not_released": True},
+            integrity_summary={"violations": tuple(sorted(violations))},
+        )
 
     @staticmethod
     def _sample(row: Any) -> SampleRecord:

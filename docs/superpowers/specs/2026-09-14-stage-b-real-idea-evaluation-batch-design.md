@@ -189,7 +189,91 @@ For zero-source or unresolved content, the idea provider gives an explicit ackno
 
 The final Handoff receipt stores safe state, IDs, hashes, timestamps, package SHA and byte count. It must not store full document bodies, raw Provider payloads, acknowledgement prose, or ZIP content in an ordinary receipt.
 
-## 11. Budget extension, earmark, and reservation discipline
+## 11. Requirement Gold Set and quality-evaluation contract
+
+### Requirement Gold Set
+
+Each sample receives a Requirement Gold Set only after the idea provider has reviewed the semantically complete QuickStart brief. Its source is the raw user idea plus the reviewed brief and the provider’s explicit `ACCEPT_AS_IS` or `EDIT_AND_ACCEPT` decision. The gold set is not created from an unreviewed model draft.
+
+Each gold item has safe equivalents of:
+
+`requirement_id`, `sample_id`, `canonical_text`, `importance`, `source`, and `confirmed_by`.
+
+`importance` is `CRITICAL` or `SECONDARY`; `source` is `RAW_IDEA`, `USER_CONFIRMED_BRIEF`, or `USER_EDIT`; and `confirmed_by` is `idea_provider`. A model-generated requirement can propose a candidate mapping, but cannot become Ground Truth without human confirmation. Canonical text must follow the privacy/redaction rules and must not contain unnecessary PII.
+
+### Requirement coverage metrics
+
+Evaluation uses requirement understanding, not retrieval metrics. These metrics must never be labelled Recall@K and must not be compared with retrieval Recall@K.
+
+- **Brief Critical Requirement Recall** = correctly represented CRITICAL requirements / total CRITICAL requirements.
+- **Brief Overall Requirement Recall** = correctly represented requirements / total gold requirements.
+- **Solution Set Recall** = unique gold requirements correctly covered by at least one of the three Solutions / total gold requirements.
+- **Solution Set Critical Recall** = unique CRITICAL gold requirements correctly covered by the union of the three Solutions / total CRITICAL gold requirements.
+- **Selected Solution Recall** and **Selected Solution Critical Recall** use only the actual solution selected by the idea provider. They distinguish “the set contained a good option” from “the option the user chose covered the important requirements.”
+
+Coverage annotations must state whether a requirement is fully covered, partially covered, or not covered, and must link to the relevant solution/section evidence. Embedding distance alone is not evidence of coverage.
+
+### Factuality and claim classes
+
+Claims are classified as `SUPPORTED_FACT`, `USER_INPUT`, `MODEL_HYPOTHESIS`, `UNVERIFIED_CLAIM`, or `UNSUPPORTED_FACTUAL_ASSERTION`. In a zero-source Real Idea Batch, unsupported factual assertions presented as verified facts must equal zero.
+
+- **Unsupported Claim Rate** = unsupported factual assertions / factual assertions.
+- **Factual Precision**, when the factual-assertion denominator is meaningful, = supported factual assertions / factual assertions.
+
+Clearly disclosed hypotheses and unverified claims are not counted as factual errors merely because they are uncertain. They must remain visibly disclosed and must not be phrased as verified research, market data, interview findings, or external evidence.
+
+### Decision dimensions and differentiation
+
+For each three-Solution set, an independent reviewer evaluates meaningful alternatives on: core user interaction, automation level, user effort, MVP scope/implementation complexity, primary value path, and important trade-offs. **Decision Dimension Coverage** = dimensions with meaningful alternative differentiation / evaluated decision dimensions. Pairwise solution differentiation may be reported as supporting evidence, but embedding distance is never the sole criterion.
+
+### Decision inheritance and contradiction
+
+Create a Selected Solution Decision Set from the selected Solution with at least: target user, problem framing, product positioning/approach, core interaction/flow, MVP scope, and important trade-offs.
+
+Report separately:
+
+1. **Structural identity correctness:** selected solution ID, snapshot ID, PRD version ID, TechDoc version ID, and Handoff binding IDs match exactly. This remains a hard 100% invariant.
+2. **Semantic inheritance:** the meaning of the Selected Solution Decision Set remains aligned downstream.
+
+Required semantic metrics are:
+
+- **Solution → PRD Decision Inheritance Accuracy**;
+- **PRD/Snapshot → TechDoc Decision Inheritance Accuracy**;
+- **PRD + TechDoc → Handoff Decision Binding Accuracy**.
+
+**Critical Contradiction Rate** = critical upstream decisions contradicted downstream / critical decisions checked. A contradiction includes, for example, a selected Solution that excludes automatic recommendation from MVP while the PRD declares it an MVP core feature. A critical contradiction caused by wrong solution/version inheritance is an integrity failure, not an ordinary low score.
+
+### User-reported outcomes
+
+The existing user-reported fields remain: `solution_difference_score`, `continuation_value_score`, `decision_helpfulness_score`, `idea_fidelity_score`, `selection_inheritance_score`, `workload_reduction_score`, and `continued_use_intent_score`. They are outcome evidence and are not substitutes for requirement recall, factuality, structural binding, semantic inheritance, or contradiction metrics.
+
+### Annotation roles
+
+The **idea provider** is authoritative for intent, brief acceptance/edit, solution selection, user-reported scores, and final fidelity feedback. An **independent human reviewer** checks requirement mappings, claim classes, contradiction candidates, and semantic inheritance. An **LLM-as-judge** may assist with candidate extraction, matching, and contradiction detection, but it is never sole Ground Truth and never the sole final evaluator.
+
+### First-batch reporting and claim boundary
+
+Batch 01 must report metrics per sample before any aggregate. The report matrix contains:
+
+`sample_id`, `brief_critical_recall`, `brief_overall_recall`, `solution_set_recall`, `solution_set_critical_recall`, `selected_solution_recall`, `selected_solution_critical_recall`, `decision_dimension_coverage`, `unsupported_claim_rate`, `factual_precision` when meaningful, `solution_to_prd_inheritance`, `techdoc_inheritance`, `handoff_binding_accuracy`, `critical_contradiction_rate`, and all user ratings.
+
+Macro averages are exploratory descriptive statistics only. With `n=3`, the batch must not claim statistical superiority, general population performance, robustness, or market value. No generic “model accuracy” is published because open-ended generation has no natural true-negative universe. Requirement alignment, factual precision, unsupported claim rate, decision inheritance, contradiction rate, and user outcomes are the permitted dimensions.
+
+### Minimal normalized storage recommendation
+
+The evaluation ledger should add no redundant table if its existing structured payload can preserve immutable auditability. The minimal normalized representation is:
+
+- one immutable `requirement_gold_items` collection keyed by `sample_id` and `requirement_id`;
+- one `requirement_mappings` collection keyed by gold item, artifact/stage, and target item/section;
+- one `claim_annotations` collection keyed by artifact and claim ID;
+- one `decision_annotations` collection keyed by sample, solution/artifact, and decision dimension;
+- one `inheritance_annotations` collection keyed by upstream decision, downstream artifact/version, and binding type.
+
+If the current SQLite migration mechanism cannot provide these as normalized relations, they may be stored as versioned, schema-validated JSON payloads inside the existing evaluation-only ledger, provided each payload has immutable hashes, stable IDs, reviewer role, annotation version, and cross-record foreign-key equivalents. Do not create both tables and duplicate JSON for the same facts. The implementation must choose the smallest auditable representation after inspecting the existing ledger implementation; this specification does not implement it.
+
+These metrics preserve InsightForge principles: Recall/Citation Precision applies where retrieval exists; requirement recall is separate; unsupported claim rate remains explicit; project isolation is a hard safety failure; rule plus human review is required; and real-user validation is required before market-value claims.
+
+## 12. Budget extension, earmark, and reservation discipline
 
 Current durable budget is 6 and current conservative safe ceiling is 5. Before the extension exists, the batch cannot claim additional capacity.
 
@@ -213,7 +297,7 @@ Reservation idempotency key is `batch_id + sample_id + stage + ordinal`, with or
 
 All real Provider transports are strictly serial. Samples may interleave only between completed stages, never concurrently at the Provider boundary. A global, batch, sample, and stage gate must all pass before a transport.
 
-## 12. Failure, stop, and outcome policy
+## 13. Failure, stop, and outcome policy
 
 One-shot Provider 503 or timeout is `OPERATIONAL_INCOMPLETE`: the sample stops without retry; other samples may continue; the batch can finish only as `PARTIAL`.
 
@@ -229,7 +313,15 @@ Failure recording must be fail closed. A secondary failure while writing `mark_f
 
 Sample replacement is permitted only before binding and must use the same `source_type`. After binding, withdrawal produces `SAMPLE_WITHDRAWN`; the sample is not silently replaced.
 
-## 13. Inspector and operator requirements
+## 14. Relationship between quality metrics and batch outcomes
+
+The new quality metrics are diagnostic/evaluation evidence for Batch 01; they do not silently add statistical thresholds to the approved outcome contract. The existing user-rating PASS gate remains unchanged. Later validation batches may use Batch 01 distributions to pre-register thresholds, but Batch 01 must not tune prompts, schemas, or selection rules against its own metrics.
+
+The following remain hard integrity gates and produce `FAIL`: any Provider, Search, budget, or transport-cap violation; cross-sample contamination; wrong solution/snapshot/document version binding; silent acknowledgement; acknowledgement represented as external verification; an unsupported factual assertion presented as a verified fact; or a critical semantic inheritance/version-integrity failure. A low requirement recall, low differentiation score, or low user rating is reported as evidence and is handled by the approved PASS/PARTIAL/FAIL policy, not by post-hoc rule changes.
+
+Zero-source does not mean “no factuality review.” It means there is no external evidence basis: user input and clearly labelled model hypotheses are allowed, while unsupported external factual assertions presented as verified facts are forbidden and must score zero in the hard claim-safety check.
+
+## 15. Inspector and operator requirements
 
 The future operator is internal/CLI-only. No public route is added and ordinary APIs remain unaware of evaluation tables, budget reservations, sample manifests, or Provider diagnostics.
 
@@ -237,13 +329,13 @@ Safe inspector metadata must include operation, batch/sample/project IDs, stage,
 
 The operator must support read-only inspection and dry checks. Help mode creates no batch, sample, reservation, evaluation, confirmation, document, acknowledgement, or Provider activity.
 
-## 14. Public boundary and ordinary compatibility
+## 16. Public boundary and ordinary compatibility
 
 `POST /api/projects` remains title/summary-only and cannot accept evaluation origin, metrics exclusion, sample ID, budget, or batch controls. Existing QuickStart, confirmation, Solutions, document, and Handoff product routes retain their ordinary semantics. The wrapper is not a public debug route and is not reachable from frontend navigation.
 
 `public_api_change_planned=false` for this architecture. Any implementation that changes public DTOs, exposes evaluation tables, or makes ordinary user flows one-shot by global configuration is out of scope and fails review.
 
-## 15. Acceptance criteria before any real batch authorization
+## 17. Acceptance criteria before any real batch authorization
 
 All of the following must be demonstrated in isolated tests and source review:
 
@@ -263,7 +355,7 @@ All of the following must be demonstrated in isolated tests and source review:
 14. Three isolated fake E2E samples prove PASS/PARTIAL/FAIL classification and no cross-sample contamination.
 15. No real batch execution, deployment, or persistent Stage B mutation occurs until a separate authorization is issued.
 
-## 16. Self-review and current blocker
+## 18. Self-review and current blocker
 
 This specification preserves the current source facts and does not claim that the current code already meets the target. Known blockers are explicit:
 

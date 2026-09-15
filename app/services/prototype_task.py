@@ -10,6 +10,7 @@ from typing import Any
 from app.db import utc_now
 from app.errors import ConflictError
 from app.services.build_slice import BuildSliceService
+from app.services.if_guide_m2_quality import evaluate_prototype_task
 
 
 _JSON_COLUMNS = {
@@ -101,6 +102,47 @@ class PrototypeTaskService:
             raise ConflictError(p0["codes"][0])
         return current
 
+    def _assert_current_task_binding(
+        self, connection: sqlite3.Connection, row: Any, *, actor: str
+    ) -> Any:
+        if row["owner_actor"] != actor:
+            raise PermissionError("prototype task belongs to another actor")
+        current_slice = connection.execute(
+            """SELECT * FROM build_slices
+               WHERE project_id = ?
+               ORDER BY revision DESC, updated_at DESC, slice_id DESC LIMIT 1""",
+            (row["project_id"],),
+        ).fetchone()
+        if (
+            current_slice is None
+            or current_slice["slice_id"] != row["slice_id"]
+            or int(current_slice["revision"]) != int(row["slice_revision"])
+        ):
+            raise ConflictError("PROTOTYPE_TASK_SLICE_STALE")
+        if current_slice["status"] != "CONFIRMED":
+            raise ConflictError("BUILD_SLICE_NOT_CONFIRMED")
+        return current_slice
+
+    def _assert_task(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        task_id: str,
+        *,
+        actor: str,
+        expected_revision: int | None = None,
+    ) -> Any:
+        self._project(connection, project_id)
+        row = self._row(connection, task_id)
+        if row["project_id"] != project_id:
+            raise PermissionError("prototype task belongs to another project")
+        if row["owner_actor"] != actor:
+            raise PermissionError("prototype task belongs to another actor")
+        if expected_revision is not None and int(row["revision"]) != int(expected_revision):
+            raise ConflictError("PROTOTYPE_TASK_REVISION_CONFLICT")
+        self._assert_current_task_binding(connection, row, actor=actor)
+        return row
+
     def get_current(self, project_id: str, *, actor: str) -> dict[str, Any] | None:
         with self.db.connect() as connection:
             self._project(connection, project_id)
@@ -178,3 +220,98 @@ class PrototypeTaskService:
                 ),
             )
             return self._public(self._row(connection, task_id))
+
+    def evaluate_p0(self, project_id: str, task_id: str, *, actor: str) -> dict[str, Any]:
+        """Evaluate the current task without writing a quality record."""
+        with self.db.connect() as connection:
+            row = self._assert_task(connection, project_id, task_id, actor=actor)
+            result = evaluate_prototype_task(self._public(row))
+            return {
+                "task_id": task_id,
+                "project_id": project_id,
+                "revision": int(row["revision"]),
+                "slice_id": row["slice_id"],
+                "slice_revision": int(row["slice_revision"]),
+                **result,
+            }
+
+    def update(
+        self,
+        project_id: str,
+        task_id: str,
+        *,
+        actor: str,
+        expected_revision: int,
+        updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        unknown = set(updates) - set(_JSON_COLUMNS)
+        if unknown:
+            raise ValueError(f"unsupported prototype task fields: {sorted(unknown)}")
+        with self.db.connect() as connection:
+            row = self._assert_task(
+                connection,
+                project_id,
+                task_id,
+                actor=actor,
+                expected_revision=expected_revision,
+            )
+            values = {
+                field: row[column]
+                for field, column in _JSON_COLUMNS.items()
+            }
+            for field, value in updates.items():
+                if not isinstance(value, list):
+                    raise ValueError(f"{field} must be a list")
+                values[field] = _encode(value)
+            now = utc_now()
+            connection.execute(
+                """UPDATE prototype_tasks SET
+                    scope_json=?, inputs_json=?, outputs_json=?, existing_behaviors_json=?,
+                    non_goals_json=?, known_context_json=?, unknown_dependencies_json=?,
+                    implementation_tasks_json=?, acceptance_steps_json=?, failure_recovery_json=?,
+                    required_evidence_json=?, permission_risk_json=?, revision=?, status='DRAFT',
+                    confirmed_at=NULL, updated_at=?
+                   WHERE task_id=? AND project_id=? AND revision=?""",
+                (
+                    values["scope"], values["inputs"], values["outputs"],
+                    values["existing_behaviors_to_preserve"], values["explicit_non_goals"],
+                    values["known_technical_context"], values["unknown_dependencies"],
+                    values["implementation_tasks"], values["acceptance_steps"],
+                    values["failure_recovery_notes"], values["required_return_evidence"],
+                    values["permission_risk_notes"], int(expected_revision) + 1, now,
+                    task_id, project_id, expected_revision,
+                ),
+            )
+            return self._public(self._row(connection, task_id))
+
+    def confirm(
+        self,
+        project_id: str,
+        task_id: str,
+        *,
+        actor: str,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        with self.db.connect() as connection:
+            row = self._assert_task(
+                connection,
+                project_id,
+                task_id,
+                actor=actor,
+                expected_revision=expected_revision,
+            )
+            result = evaluate_prototype_task(self._public(row))
+            if result["status"] != "PASS":
+                raise ConflictError(result["codes"][0])
+            now = utc_now()
+            connection.execute(
+                """UPDATE prototype_tasks
+                   SET status='READY', confirmed_at=?, updated_at=?
+                   WHERE task_id=? AND project_id=? AND revision=?""",
+                (now, now, task_id, project_id, expected_revision),
+            )
+            confirmed = self._public(self._row(connection, task_id))
+            confirmed["p0_status"] = "PASS"
+            confirmed["p0_codes"] = []
+            confirmed["p0_metrics"] = result["metrics"]
+            return confirmed

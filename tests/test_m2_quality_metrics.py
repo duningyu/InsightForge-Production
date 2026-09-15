@@ -116,4 +116,3 @@ def test_fabricated_dependency_marked_verified_is_a_p0_failure():
 
     assert result["status"] == "FAIL"
     assert "M2_FABRICATED_DEPENDENCY_MARKED_VERIFIED" in result["codes"]
-

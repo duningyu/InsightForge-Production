@@ -1,12 +1,203 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+from app.db import Database, utc_now
 
 
 class GoldSetNotFinalError(ValueError):
     """The requirement Gold Set has not received idea-provider confirmation."""
+
+
+class QualityBindingError(ValueError):
+    """Quality evidence does not match the evaluation or artifact contract."""
+
+
+class QualityRevisionError(ValueError):
+    """An immutable quality evaluation cannot be revised in place."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactBinding:
+    batch_id: str
+    sample_id: str
+    project_id: str
+    artifact_type: str
+    artifact_version_id: str
+    selected_solution_id: str | None
+    snapshot_id: str | None
+    upstream_version_ids: tuple[str, ...]
+    quality_layer: str
+    evaluator_role: str
+    metric_payload: Mapping[str, Any]
+    input_manifest: Mapping[str, Any]
+    evidence_manifest: Mapping[str, Any]
+    policy_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactQualityEvaluation:
+    quality_evaluation_id: str
+    batch_id: str
+    sample_id: str
+    project_id: str
+    artifact_type: str
+    artifact_version_id: str
+    selected_solution_id: str | None
+    snapshot_id: str | None
+    upstream_version_ids: tuple[str, ...]
+    quality_layer: str
+    quality_revision: int
+    status: str
+    metric_payload: Mapping[str, Any]
+    input_manifest_sha256: str
+    evidence_manifest_sha256: str
+    policy_version: str
+    evaluator_role: str
+    created_at: str
+    supersedes_quality_evaluation_id: str | None
+
+
+_QUALITY_METRICS = {
+    "SOLUTIONS": {
+        "brief_critical_requirement_recall", "brief_overall_requirement_recall",
+        "solution_set_recall", "solution_set_critical_recall", "selected_solution_recall",
+        "selected_solution_critical_recall", "requirement_alignment_precision", "factual_precision",
+        "unsupported_claim_rate", "decision_dimension_coverage", "pairwise_solution_differentiation",
+    },
+    "PRD": {
+        "requirement_coverage_recall", "critical_requirement_coverage", "selected_solution_inheritance",
+        "scope_consistency", "mandatory_section_coverage", "acceptance_criteria_testability",
+        "completeness", "actionability", "unsupported_claim_rate", "critical_contradiction_rate",
+    },
+    "TECHDOC": {
+        "prd_traceability_recall", "critical_technical_coverage", "nfr_coverage",
+        "implementation_actionability", "feasibility_accuracy", "selected_solution_snapshot_inheritance",
+        "unsupported_technical_claim_rate", "critical_contradiction_rate", "completeness",
+    },
+    "HANDOFF": {
+        "exact_version_binding_accuracy", "artifact_completeness", "unresolved_item_coverage",
+        "evidence_limitation_visibility", "decision_binding_accuracy", "package_integrity",
+    },
+}
+
+
+def _canonical_hash(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _assert_safe_evidence(value: Any, path: str = "evidence") -> None:
+    forbidden = {"body", "content", "raw_idea", "provider_payload", "full_text", "acknowledgement_text"}
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if str(key).lower() in forbidden:
+                raise QualityBindingError(f"unsafe quality evidence field: {path}.{key}")
+            _assert_safe_evidence(child, f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            _assert_safe_evidence(child, f"{path}[{index}]")
+
+
+class QualityEvaluationService:
+    """Persist immutable, safely projected P0/P1/P2 artifact evaluations."""
+
+    def __init__(self, database: Database):
+        self.database = database
+
+    def _validate_binding(self, binding: ArtifactBinding) -> None:
+        if binding.artifact_type not in _QUALITY_METRICS:
+            raise QualityBindingError("unknown artifact type")
+        if binding.quality_layer not in {"P0", "P1", "P2"}:
+            raise QualityBindingError("unknown quality layer")
+        if binding.evaluator_role not in {"system", "idea_provider", "independent_reviewer", "llm_assist"}:
+            raise QualityBindingError("unknown evaluator role")
+        _assert_safe_evidence(binding.metric_payload)
+        _assert_safe_evidence(binding.input_manifest)
+        _assert_safe_evidence(binding.evidence_manifest)
+        sample = self.database.fetch_one(
+            "SELECT batch_id, project_id FROM real_idea_samples WHERE sample_id = ?", (binding.sample_id,)
+        )
+        if not sample or sample["batch_id"] != binding.batch_id or sample["project_id"] != binding.project_id:
+            raise QualityBindingError("quality evidence is not bound to the sample project")
+        missing = _QUALITY_METRICS[binding.artifact_type] - set(binding.metric_payload)
+        if missing:
+            raise QualityBindingError(f"required metric payload missing: {sorted(missing)[0]}")
+
+    def _insert(self, binding: ArtifactBinding, *, status: str, revision: int = 1,
+                supersedes: str | None = None) -> ArtifactQualityEvaluation:
+        quality_id = f"quality_{uuid.uuid4().hex}"
+        created_at = utc_now()
+        input_hash = _canonical_hash(binding.input_manifest)
+        evidence_hash = _canonical_hash(binding.evidence_manifest | {"metrics": dict(binding.metric_payload)})
+        self.database.execute(
+            """INSERT INTO real_idea_quality_evaluations(
+                quality_evaluation_id, batch_id, sample_id, project_id, artifact_type,
+                artifact_version_id, selected_solution_id, snapshot_id, upstream_version_ids,
+                quality_layer, quality_revision, status, metric_payload, input_manifest_sha256,
+                evidence_manifest_sha256, policy_version, quality_schema_version, evaluator_role,
+                created_at, supersedes_quality_evaluation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v1', ?, ?, ?)""",
+            (quality_id, binding.batch_id, binding.sample_id, binding.project_id, binding.artifact_type,
+             binding.artifact_version_id, binding.selected_solution_id, binding.snapshot_id,
+             json.dumps(list(binding.upstream_version_ids)), binding.quality_layer, revision, status,
+             json.dumps(dict(binding.metric_payload), ensure_ascii=False, sort_keys=True), input_hash,
+             evidence_hash, binding.policy_version, binding.evaluator_role, created_at, supersedes),
+        )
+        return self.get(quality_id)
+
+    def get(self, quality_evaluation_id: str) -> ArtifactQualityEvaluation:
+        row = self.database.fetch_one(
+            "SELECT * FROM real_idea_quality_evaluations WHERE quality_evaluation_id = ?",
+            (quality_evaluation_id,),
+        )
+        if not row:
+            raise KeyError(quality_evaluation_id)
+        return ArtifactQualityEvaluation(
+            quality_evaluation_id=row["quality_evaluation_id"], batch_id=row["batch_id"],
+            sample_id=row["sample_id"], project_id=row["project_id"], artifact_type=row["artifact_type"],
+            artifact_version_id=row["artifact_version_id"], selected_solution_id=row["selected_solution_id"],
+            snapshot_id=row["snapshot_id"], upstream_version_ids=tuple(json.loads(row["upstream_version_ids"])),
+            quality_layer=row["quality_layer"], quality_revision=row["quality_revision"], status=row["status"],
+            metric_payload=json.loads(row["metric_payload"]), input_manifest_sha256=row["input_manifest_sha256"],
+            evidence_manifest_sha256=row["evidence_manifest_sha256"], policy_version=row["policy_version"],
+            evaluator_role=row["evaluator_role"], created_at=row["created_at"],
+            supersedes_quality_evaluation_id=row["supersedes_quality_evaluation_id"],
+        )
+
+    def evaluate_p0(self, binding: ArtifactBinding) -> ArtifactQualityEvaluation:
+        self._validate_binding(binding)
+        violations = binding.metric_payload.get("p0_violations", ())
+        status = "FAIL" if violations else "PASS"
+        return self._insert(binding, status=status)
+
+    def revise(self, quality_evaluation_id: str, *, metric_payload: Mapping[str, Any], status: str,
+               correction_reason: str, evaluator_role: str) -> ArtifactQualityEvaluation:
+        if not correction_reason.strip():
+            raise QualityRevisionError("correction reason is required")
+        original = self.get(quality_evaluation_id)
+        next_revision = original.quality_revision + 1
+        existing = self.database.fetch_one(
+            "SELECT 1 FROM real_idea_quality_evaluations WHERE batch_id=? AND sample_id=? AND artifact_type=? AND artifact_version_id=? AND quality_revision=?",
+            (original.batch_id, original.sample_id, original.artifact_type, original.artifact_version_id, next_revision),
+        )
+        if existing:
+            raise QualityRevisionError("quality revision already exists")
+        binding = ArtifactBinding(
+            original.batch_id, original.sample_id, original.project_id, original.artifact_type,
+            original.artifact_version_id, original.selected_solution_id, original.snapshot_id,
+            original.upstream_version_ids, original.quality_layer, evaluator_role, metric_payload,
+            {"source_quality_evaluation_id": original.quality_evaluation_id, "correction": correction_reason},
+            {"correction_reason": correction_reason}, original.policy_version,
+        )
+        self._validate_binding(binding)
+        if status not in {"PASS", "PARTIAL", "FAIL"}:
+            raise QualityRevisionError("invalid quality status")
+        return self._insert(binding, status=status, revision=next_revision, supersedes=quality_evaluation_id)
 
 
 @dataclass(frozen=True, slots=True)

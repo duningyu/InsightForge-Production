@@ -547,7 +547,12 @@ def _unique_indexes(connection: sqlite3.Connection, table: str) -> set[tuple[str
     return uniques
 
 
-def _validate_schema(connection: sqlite3.Connection) -> None:
+def _validate_schema(
+    connection: sqlite3.Connection,
+    *,
+    extension_state_check: str | None = None,
+    skip_extension_state_check: bool = False,
+) -> None:
     for table, expected_columns in _EXPECTED_COLUMNS.items():
         table_info = list(connection.execute(f"PRAGMA table_info({table})"))
         if not table_info:
@@ -567,7 +572,13 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         sql = _normalized_sql(connection.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
         ).fetchone()[0])
-        for check in _EXPECTED_CHECKS[table]:
+        checks = _EXPECTED_CHECKS[table]
+        if table == "real_idea_budget_extensions":
+            if skip_extension_state_check:
+                checks = ("CHECK(authorized_credits>0)",)
+            elif extension_state_check is not None:
+                checks = ("CHECK(authorized_credits>0)", extension_state_check)
+        for check in checks:
             if _normalized_sql(check) not in sql:
                 raise RuntimeError(f"real idea schema {table} is missing check constraint")
         if _foreign_keys(connection, table) != _EXPECTED_FOREIGN_KEYS[table]:
@@ -605,6 +616,9 @@ def apply(connection: sqlite3.Connection) -> None:
     )
     current = int(row[0]) if row is not None else 0
     if current > VERSION:
+        # A newer migration owns the evolved state CHECK, but older
+        # validators must still reject malformed same-named tables.
+        _validate_schema(connection, skip_extension_state_check=True)
         return
     if current == VERSION:
         _validate_schema(connection)

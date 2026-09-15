@@ -972,8 +972,10 @@ class Database:
             connection.executescript(SCHEMA_SQL)
             self._migrate_schema(connection)
             from app.migrations.real_idea_evaluation_v1 import apply
+            from app.migrations.real_idea_evaluation_v2 import apply as apply_v2
 
             apply(connection)
+            apply_v2(connection)
             connection.execute(
                 """
                 INSERT OR IGNORE INTO project_canvas_versions(

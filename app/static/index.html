@@ -278,6 +278,40 @@
               </div>
             </form>
           </section>
+          <section id="m2-prototype-task-panel" class="secondary-panel m2-panel" hidden aria-labelledby="m2-prototype-task-title">
+            <div class="secondary-panel-heading">
+              <div>
+                <p class="eyebrow">M2 · Prototype Task</p>
+                <h2 id="m2-prototype-task-title">检查可交给后续开发的实现计划</h2>
+                <p>这是一份可编辑的任务说明，不是 Formal Handoff，也不代表已经执行、测试或部署。</p>
+              </div>
+              <span id="m2-prototype-task-status" class="evidence-status status-unverified">尚未生成</span>
+            </div>
+            <p id="m2-prototype-task-gate" class="status-note">请先确认 Build Slice；生成只使用当前已确认范围和已知技术上下文。</p>
+            <div class="m2-form-actions">
+              <button id="m2-prototype-task-generate" class="button button-secondary" type="button">从已确认范围生成 Prototype Task</button>
+              <span id="m2-prototype-task-quality" class="status-note" role="status" aria-live="polite"></span>
+            </div>
+            <form id="m2-prototype-task-form" class="m2-form">
+              <label>任务目的<input id="m2-task-purpose" readonly></label>
+              <label class="m2-wide">本轮做什么<textarea id="m2-task-scope" rows="3" required></textarea></label>
+              <label>输入<textarea id="m2-task-inputs" rows="3"></textarea></label>
+              <label>预期输出<textarea id="m2-task-outputs" rows="3"></textarea></label>
+              <label class="m2-wide">必须保持的既有行为<textarea id="m2-task-preserve" rows="3"></textarea></label>
+              <label class="m2-wide">明确不做什么<textarea id="m2-task-non-goals" rows="3" required></textarea></label>
+              <label class="m2-wide">已知技术上下文（区分 CONFIRMED / UNKNOWN / ASSUMED）<textarea id="m2-task-known-context" rows="4"></textarea></label>
+              <label class="m2-wide">未知依赖（保持 UNKNOWN）<textarea id="m2-task-unknown-dependencies" rows="3"></textarea></label>
+              <label class="m2-wide">开发任务<textarea id="m2-task-implementation-tasks" rows="4" required></textarea></label>
+              <label class="m2-wide">验收步骤（必须可观察）<textarea id="m2-task-acceptance-steps" rows="4" required></textarea></label>
+              <label>错误 / 恢复说明<textarea id="m2-task-failure-recovery" rows="3"></textarea></label>
+              <label>要求返回的证据<textarea id="m2-task-required-evidence" rows="3"></textarea></label>
+              <label class="m2-wide">权限 / 风险说明<textarea id="m2-task-permission-risk" rows="3"></textarea></label>
+              <div class="m2-form-actions m2-wide">
+                <button id="m2-prototype-task-save" class="button button-secondary" type="submit">保存 Prototype Task</button>
+                <button id="m2-prototype-task-confirm" class="button button-primary" type="button">确认可交给后续开发</button>
+              </div>
+            </form>
+          </section>
           <section id="snapshot-view" class="workspace-view" data-workspace-view="snapshot">
             <div id="snapshot-content" class="view-content"></div>
             <button id="snapshot-primary-action" class="button button-primary hidden" type="button"></button>

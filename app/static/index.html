@@ -197,6 +197,58 @@
 
         <div id="project-content" class="project-content">
           <article id="project-next-action-card" class="next-action-card hidden" aria-live="polite"></article>
+          <section id="m1-intent-panel" class="secondary-panel m1-intent-panel" aria-labelledby="m1-intent-title">
+            <div class="secondary-panel-heading">
+              <div>
+                <p class="eyebrow">M1 · 目的确认</p>
+                <h2 id="m1-intent-title">先确定这次要做什么</h2>
+                <p>先保存你的原始想法和使用目的，系统只生成一张可编辑的第一行动卡，不会替你执行行动。</p>
+              </div>
+            </div>
+            <form id="m1-intent-form" class="m1-intent-form">
+              <label>这次主要目的
+                <select id="m1-purpose" required>
+                  <option value="UNSPECIFIED">还没确定</option>
+                  <option value="LEARNING">学习和理解</option>
+                  <option value="PERSONAL_USE">解决自己的问题</option>
+                  <option value="FOR_OTHERS">帮助或观察他人</option>
+                </select>
+              </label>
+              <label class="m1-wide">原始想法
+                <textarea id="m1-raw-idea" rows="4" maxlength="4000" required placeholder="用你自己的话写下想法，不需要先改写成产品需求。"></textarea>
+              </label>
+              <div class="m1-form-actions">
+                <button class="button button-primary" type="submit">保存目的并生成第一张行动卡</button>
+                <span id="m1-intent-status" class="status-note" role="status" aria-live="polite"></span>
+              </div>
+            </form>
+            <section id="m1-action-panel" class="m1-action-panel" hidden aria-labelledby="m1-action-title">
+              <div class="secondary-panel-heading">
+                <div>
+                  <h3 id="m1-action-title">第一张行动卡</h3>
+                  <p>你可以修改这张卡。保存后会产生新版本；只有你确认后，它才算是当前计划。</p>
+                </div>
+                <span id="m1-action-state" class="evidence-status status-unverified">待确认</span>
+              </div>
+              <form id="m1-action-form" class="m1-action-form">
+                <label>目标<input id="m1-goal" maxlength="1000" required></label>
+                <label>为什么现在做<input id="m1-why-now" maxlength="1000" required></label>
+                <label>预期产物<input id="m1-expected-artifact" maxlength="1000" required></label>
+                <label>停止条件<input id="m1-stop-condition" maxlength="1000" required></label>
+                <label class="m1-wide">输入<textarea id="m1-inputs" rows="3" required placeholder="每行一项"></textarea></label>
+                <label class="m1-wide">步骤<textarea id="m1-steps" rows="4" required placeholder="每行一步"></textarea></label>
+                <label>检查点<textarea id="m1-checks" rows="3" required placeholder="每行一项"></textarea></label>
+                <label>分支处理<textarea id="m1-branches" rows="3" required placeholder="每行一项"></textarea></label>
+                <label class="m1-wide">禁止事项<textarea id="m1-prohibited-actions" rows="3" required placeholder="每行一项"></textarea></label>
+                <div class="m1-form-actions m1-wide">
+                  <button class="button button-secondary" type="submit">保存行动卡版本</button>
+                  <button id="m1-action-confirm" class="button button-primary" type="button">确认这张行动卡</button>
+                  <span id="m1-action-status" class="status-note" role="status" aria-live="polite"></span>
+                </div>
+              </form>
+              <p id="m1-quality" class="m1-quality status-note"></p>
+            </section>
+          </section>
           <section id="snapshot-view" class="workspace-view" data-workspace-view="snapshot">
             <div id="snapshot-content" class="view-content"></div>
             <button id="snapshot-primary-action" class="button button-primary hidden" type="button"></button>

@@ -61,6 +61,9 @@ from app.schemas import (
     BetaConsentRequest,
     BetaEventRequest,
     BetaFeedbackRequest,
+    ProjectIntentUpsertRequest,
+    FirstActionUpdateRequest,
+    FirstActionConfirmRequest,
 )
 from app.services.projects import ProjectService
 from app.services.competitors import CompetitorService
@@ -103,6 +106,7 @@ from app.services.beta_analytics import BetaAnalyticsService
 from app.services.beta_feedback import BetaFeedbackService
 from app.services.beta_sessions import BetaSessionService
 from app.services.beta_usage import BetaUsageService
+from app.services.project_intent import ProjectIntentService
 from app.services.solution_generation_guard import SolutionGenerationGuard
 from app.services.provider_dispatch_ledger import ProviderDispatchLedger
 from app.services.retrieval_service import ProjectRetrievalService
@@ -254,6 +258,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
                 idle_timeout_minutes=settings.beta_session_idle_timeout_minutes,
             )
         application.state.projects = ProjectService(db)
+        application.state.project_intent = ProjectIntentService(db)
         application.state.competitors = CompetitorService(db, application.state.projects)
         application.state.competitor_decisions = CompetitorDecisionService(
             db, application.state.projects
@@ -1438,6 +1443,64 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         result = application.state.ai_reference.get(project_id, row["id"], actor=actor)
         result["context"] = application.state.ai_reference.get_context(project_id, actor=actor)
         return result
+
+    @application.get("/api/projects/{project_id}/intent")
+    def get_project_intent(
+        project_id: str,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.project_intent.get_intent(project_id, actor=x_actor)
+
+    @application.put("/api/projects/{project_id}/intent")
+    def upsert_project_intent(
+        project_id: str,
+        payload: ProjectIntentUpsertRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.project_intent.set_intent(
+            project_id,
+            purpose=payload.purpose,
+            raw_idea=payload.raw_idea,
+            expected_revision=payload.expected_revision,
+            actor=x_actor,
+        )
+
+    @application.post("/api/projects/{project_id}/actions/first")
+    def ensure_first_action(
+        project_id: str,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.project_intent.ensure_first_action(project_id, actor=x_actor)
+
+    @application.patch("/api/projects/{project_id}/actions/{task_id}")
+    def update_first_action(
+        project_id: str,
+        task_id: str,
+        payload: FirstActionUpdateRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        updates = payload.model_dump(exclude={"expected_revision"}, exclude_none=True)
+        return application.state.project_intent.update_action(
+            project_id,
+            task_id,
+            expected_revision=payload.expected_revision,
+            updates=updates,
+            actor=x_actor,
+        )
+
+    @application.post("/api/projects/{project_id}/actions/{task_id}/confirm")
+    def confirm_first_action(
+        project_id: str,
+        task_id: str,
+        payload: FirstActionConfirmRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.project_intent.confirm_action(
+            project_id,
+            task_id,
+            expected_revision=payload.expected_revision,
+            actor=x_actor,
+        )
 
     @application.post("/api/projects/{project_id}/ai-reference", status_code=201)
     def create_ai_reference(

@@ -174,6 +174,40 @@ class ProjectCreateRequest(StrictModel):
     summary: str = Field(min_length=1, max_length=3000)
 
 
+Purpose = Literal["LEARNING", "PERSONAL_USE", "FOR_OTHERS", "UNSPECIFIED"]
+
+
+class ProjectIntentUpsertRequest(StrictModel):
+    purpose: Purpose
+    raw_idea: str = Field(min_length=1, max_length=4000)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+    @field_validator("raw_idea")
+    @classmethod
+    def reject_blank_or_placeholder_idea(cls, value: str) -> str:
+        value = value.strip()
+        if not value or value in {"待定", "暂未确认", "TODO", "TBD"}:
+            raise ValueError("raw_idea must contain a substantive user idea")
+        return value
+
+
+class FirstActionUpdateRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+    goal: str | None = Field(default=None, min_length=1, max_length=1000)
+    why_now: str | None = Field(default=None, min_length=1, max_length=1000)
+    inputs: list[str] | None = Field(default=None, max_length=20)
+    steps: list[str] | None = Field(default=None, max_length=20)
+    expected_artifact: str | None = Field(default=None, min_length=1, max_length=1000)
+    checks: list[str] | None = Field(default=None, max_length=20)
+    branches: list[str] | None = Field(default=None, max_length=20)
+    stop_condition: str | None = Field(default=None, min_length=1, max_length=1000)
+    prohibited_actions: list[str] | None = Field(default=None, max_length=20)
+
+
+class FirstActionConfirmRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+
+
 class CanonicalExampleResponse(StrictModel):
     id: str
     title: str

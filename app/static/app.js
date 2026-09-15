@@ -26,6 +26,7 @@ const state = {
   examples: [],
   homeNextAction: null,
   projectNextAction: null,
+  projectIntent: null,
   walkthrough: null,
   modelProfiles: [],
   projectModelProfileId: null,
@@ -2668,6 +2669,120 @@ async function loadProjects() {
   renderRecentProjects();
 }
 
+function m1SetField(id, value) {
+  const node = qs(`#${id}`);
+  if (node) node.value = Array.isArray(value) ? value.join("\n") : String(value ?? "");
+}
+
+function m1ListValue(id) {
+  return String(qs(`#${id}`)?.value || "")
+    .split(/\r?\n/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function renderProjectIntent() {
+  const payload = state.projectIntent;
+  const intent = payload?.intent;
+  const action = payload?.first_action;
+  const actionPanel = qs("#m1-action-panel");
+  const intentStatus = qs("#m1-intent-status");
+  const actionStatus = qs("#m1-action-status");
+  const actionState = qs("#m1-action-state");
+  const confirmButton = qs("#m1-action-confirm");
+  if (!actionPanel || !intentStatus || !actionStatus || !actionState || !confirmButton) return;
+  qs("#m1-purpose").value = intent?.purpose || "UNSPECIFIED";
+  m1SetField("m1-raw-idea", intent?.raw_idea);
+  if (!intent || !action) {
+    actionPanel.hidden = true;
+    intentStatus.textContent = "尚未保存目的；保存后会生成一张本地行动卡。";
+    actionStatus.textContent = "";
+    qs("#m1-quality").textContent = "M1 默认不调用 Provider 或 Search。";
+    return;
+  }
+  actionPanel.hidden = false;
+  intentStatus.textContent = `目的已保存 · 第 ${intent.revision} 版`;
+  m1SetField("m1-goal", action.goal);
+  m1SetField("m1-why-now", action.why_now);
+  m1SetField("m1-inputs", action.inputs);
+  m1SetField("m1-steps", action.steps);
+  m1SetField("m1-expected-artifact", action.expected_artifact);
+  m1SetField("m1-checks", action.checks);
+  m1SetField("m1-branches", action.branches);
+  m1SetField("m1-stop-condition", action.stop_condition);
+  m1SetField("m1-prohibited-actions", action.prohibited_actions);
+  actionState.textContent = action.confirmed ? "已确认" : action.status === "READY" ? "待确认" : "需要修改";
+  actionState.className = `evidence-status ${action.confirmed ? "status-supported" : action.status === "READY" ? "status-unverified" : "status-contradicted"}`;
+  confirmButton.disabled = action.confirmed || action.status !== "READY";
+  actionStatus.textContent = `行动卡第 ${action.revision} 版 · ${action.confirmed ? "已确认" : "可继续编辑"}`;
+  const quality = payload.quality || {};
+  const coverage = quality.structural_coverage || {};
+  qs("#m1-quality").textContent = `结构完整度 ${coverage.covered || 0}/${coverage.required || 9} · 目的对齐 ${quality.purpose_alignment || "未评估"} · Provider 0 · Search 0 · 仅记录计划，未执行、未验证。`;
+}
+
+async function loadProjectIntent() {
+  if (!state.currentProjectId) return;
+  try { state.projectIntent = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/intent`); }
+  catch (_) { state.projectIntent = null; }
+  renderProjectIntent();
+}
+
+async function saveProjectIntent(event) {
+  event.preventDefault();
+  if (!state.currentProjectId) return;
+  const current = state.projectIntent?.intent;
+  try {
+    state.projectIntent = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/intent`, {
+      method: "PUT",
+      body: JSON.stringify({
+        purpose: qs("#m1-purpose").value,
+        raw_idea: qs("#m1-raw-idea").value.trim(),
+        expected_revision: current ? current.revision : null,
+      }),
+    });
+    renderProjectIntent();
+    toast("目的已保存，第一张行动卡已生成。你可以先修改，再确认。");
+  } catch (error) { reportError(error); }
+}
+
+async function saveFirstAction(event) {
+  event.preventDefault();
+  const action = state.projectIntent?.first_action;
+  if (!state.currentProjectId || !action) return;
+  try {
+    state.projectIntent = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/actions/${encodeURIComponent(action.task_id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        expected_revision: action.revision,
+        goal: qs("#m1-goal").value.trim(),
+        why_now: qs("#m1-why-now").value.trim(),
+        inputs: m1ListValue("m1-inputs"),
+        steps: m1ListValue("m1-steps"),
+        expected_artifact: qs("#m1-expected-artifact").value.trim(),
+        checks: m1ListValue("m1-checks"),
+        branches: m1ListValue("m1-branches"),
+        stop_condition: qs("#m1-stop-condition").value.trim(),
+        prohibited_actions: m1ListValue("m1-prohibited-actions"),
+      }),
+    });
+    renderProjectIntent();
+    toast("行动卡新版本已保存，仍需你确认。");
+  } catch (error) { reportError(error); }
+}
+
+async function confirmFirstAction() {
+  const action = state.projectIntent?.first_action;
+  if (!state.currentProjectId || !action || action.confirmed) return;
+  try {
+    state.projectIntent = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/actions/${encodeURIComponent(action.task_id)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({expected_revision: action.revision}),
+    });
+    renderProjectIntent();
+    toast("行动卡已确认。系统只记录计划，不代表行动已经执行或结果已经验证。");
+  } catch (error) { reportError(error); }
+}
+
 async function loadProject(projectId) {
   if (state.currentProjectId !== projectId) {
     state.generationIntentId = null;
@@ -2675,9 +2790,11 @@ async function loadProject(projectId) {
   }
   state.evidenceEntry = {mode: null, submitting: false, pending: false};
   state.currentProjectId = projectId;
+  state.projectIntent = null;
   state.documentWorkspace = {...state.documentWorkspace, versions: [], selectedVersionId: null, compareVersionId: null, draft: null, dirty: false, error: null};
   renderProjectPicker();
   showProjectShell();
+  renderProjectIntent();
   try { state.ideaBrief = await api(`/api/projects/${projectId}/idea-brief`); } catch (_) { state.ideaBrief = null; }
   try { state.solutions = await api(`/api/projects/${projectId}/solutions`); } catch (_) { state.solutions = null; }
   try { state.snapshot = await api(`/api/projects/${projectId}/snapshot`); } catch (_) { state.snapshot = null; }
@@ -2705,7 +2822,7 @@ async function loadProject(projectId) {
       activateView(context.activeView);
     }
   } catch (_) { /* recovery must not prevent the project from opening */ }
-  await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadAIReference(), loadEvidenceGuidance(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough()]);
+  await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadAIReference(), loadEvidenceGuidance(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough(), loadProjectIntent()]);
 }
 
 async function loadEvidenceData() {
@@ -3154,6 +3271,9 @@ async function mutateCompetitors(path, options, adding = false) {
   }
 }
 function wireEvents() {
+  qs("#m1-intent-form")?.addEventListener("submit", saveProjectIntent);
+  qs("#m1-action-form")?.addEventListener("submit", saveFirstAction);
+  qs("#m1-action-confirm")?.addEventListener("click", () => void confirmFirstAction());
   qs("#ai-reference-generate")?.addEventListener("click", () => void generateAIReference());
   qs("#evidence-coach-open")?.addEventListener("click", () => selectEvidenceEntry("action_guidance"));
   qs("#competitor-open")?.addEventListener("click", openCompetitors);

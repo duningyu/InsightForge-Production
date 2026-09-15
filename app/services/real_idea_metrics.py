@@ -107,6 +107,8 @@ _QUALITY_METRICS = {
     },
 }
 
+M2_P2_RUBRIC_VERSION = "if-guide-m2-quality-v1"
+
 
 def _canonical_hash(value: Mapping[str, Any]) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -302,20 +304,54 @@ class QualityEvaluationService:
                               supersedes=source.quality_evaluation_id)
         return result.quality_evaluation_id
 
+    @staticmethod
+    def _validate_p2_review(
+        review: Mapping[str, Any], *, require_m2_audit_envelope: bool
+    ) -> tuple[str, str, list[str]]:
+        """Validate the small, safe, human-audit envelope for one P2 review."""
+        _assert_safe_evidence(review)
+        role = review.get("evaluator_role")
+        if role not in {"idea_provider", "independent_reviewer"}:
+            raise QualityBindingError("P2 requires an authoritative human reviewer")
+        review_id = review.get("review_id")
+        if not isinstance(review_id, str) or not review_id.strip():
+            raise QualityBindingError("P2 review_id is required")
+        rubric_version = review.get("rubric_version", "")
+        evidence_ids = review.get("evidence_ids", [])
+        if require_m2_audit_envelope:
+            if not isinstance(rubric_version, str) or not rubric_version.strip():
+                raise QualityBindingError("P2 rubric version is required")
+            if rubric_version != M2_P2_RUBRIC_VERSION:
+                raise QualityBindingError("unknown P2 rubric version")
+            if not isinstance(evidence_ids, list) or not evidence_ids or any(
+                not isinstance(item, str) or not item.strip() for item in evidence_ids
+            ):
+                raise QualityBindingError("P2 evidence ids are required")
+        status = review.get("status", "PARTIAL")
+        if status not in {"PASS", "PARTIAL", "FAIL"}:
+            raise QualityBindingError("invalid P2 quality status")
+        return role, review_id, evidence_ids
+
     def record_p2_review(self, quality_evaluation_id: str, review: Mapping[str, Any]) -> ArtifactQualityEvaluation:
         """Persist a human review; an LLM assist cannot be the authoritative P2 reviewer."""
         source = self.get(quality_evaluation_id)
         if source.quality_layer not in {"P0", "P1"} or source.status == "FAIL":
             raise QualityBindingError("P2 requires a passing operational evaluation")
-        role = review.get("evaluator_role")
-        if role not in {"idea_provider", "independent_reviewer"}:
-            raise QualityBindingError("P2 requires an authoritative human reviewer")
+        role, review_id, evidence_ids = self._validate_p2_review(
+            review, require_m2_audit_envelope=source.evaluation_scope == "IF_GUIDE_M2"
+        )
         payload = dict(source.metric_payload)
         payload["p2_review"] = {key: value for key, value in review.items() if key != "evaluator_role"}
+        evidence_manifest = {"review_id": review_id}
+        if source.evaluation_scope == "IF_GUIDE_M2":
+            evidence_manifest.update({
+                "rubric_version": M2_P2_RUBRIC_VERSION,
+                "evidence_ids": evidence_ids,
+            })
         binding = self._binding_from_evaluation(
             source, quality_layer="P2", evaluator_role=role, metric_payload=payload,
             input_manifest={"source_quality_evaluation_id": source.quality_evaluation_id},
-            evidence_manifest={"review_id": review.get("review_id", "redacted")},
+            evidence_manifest=evidence_manifest,
         )
         return self._insert(binding, status=str(review.get("status", "PARTIAL")),
                             revision=source.quality_revision + 1,
@@ -356,6 +392,10 @@ class QualityEvaluationService:
         if not correction_reason.strip():
             raise QualityRevisionError("correction reason is required")
         original = self.get(quality_evaluation_id)
+        if original.evaluation_scope == "IF_GUIDE_M2" and original.quality_layer == "P2" and evaluator_role not in {
+            "idea_provider", "independent_reviewer"
+        }:
+            raise QualityBindingError("P2 corrections require an authoritative human reviewer")
         next_revision = original.quality_revision + 1
         if original.evaluation_scope == "IF_GUIDE_M2":
             existing = self.database.fetch_one(

@@ -2708,6 +2708,7 @@ function renderM2BuildSlice() {
   const gate = qs("#m2-build-slice-gate");
   const saveButton = qs("#m2-build-slice-save");
   const confirmButton = qs("#m2-build-slice-confirm");
+  const p0Status = quality.p0_status || quality.status;
   const fields = [
     ["m2-in-scope", slice?.in_scope],
     ["m2-out-of-scope", slice?.out_of_scope],
@@ -2725,14 +2726,14 @@ function renderM2BuildSlice() {
   panel.hidden = !state.currentProjectId;
   qsa("#m2-build-slice-form textarea, #m2-build-slice-form input").forEach(node => { node.disabled = !readyForSlice; });
   if (saveButton) saveButton.disabled = !readyForSlice;
-  if (confirmButton) confirmButton.disabled = !readyForSlice || !slice || slice.status === "CONFIRMED" || quality.p0_status !== "PASS";
+  if (confirmButton) confirmButton.disabled = !readyForSlice || !slice || slice.status === "CONFIRMED" || p0Status !== "PASS";
   if (gate) gate.textContent = readyForSlice ? "M2 只记录你确认的范围，不执行外部行动。" : "请先确认 M1 第一行动卡，才能定义 Build Slice。";
   if (status) status.textContent = slice
     ? `Build Slice · ${slice.status || "DRAFT"} · 第 ${slice.revision || 1} 版`
     : "尚未定义 Build Slice。";
   const metricSummary = quality.metrics ? ` · 质量指标已记录：${Object.keys(quality.metrics).length} 项` : "";
   const qualityNode = qs("#m2-build-slice-quality");
-  if (qualityNode) qualityNode.textContent = `P0 ${quality.p0_status || "未评估"}${metricSummary} · 不代表已执行、已测试或已部署。`;
+  if (qualityNode) qualityNode.textContent = `P0 ${p0Status || "未评估"}${metricSummary} · 不代表已执行、已测试或已部署。`;
   renderM2PrototypeTask();
 }
 
@@ -2747,6 +2748,7 @@ function renderM2PrototypeTask() {
   const generateButton = qs("#m2-prototype-task-generate");
   const saveButton = qs("#m2-prototype-task-save");
   const confirmButton = qs("#m2-prototype-task-confirm");
+  const p0Status = quality.p0_status || quality.status;
   const fields = [
     ["m2-task-scope", task?.scope],
     ["m2-task-inputs", task?.inputs],
@@ -2767,7 +2769,7 @@ function renderM2PrototypeTask() {
   qsa("#m2-prototype-task-form textarea, #m2-prototype-task-form input").forEach(node => { node.disabled = !task; });
   if (generateButton) generateButton.disabled = !sliceReady || Boolean(task);
   if (saveButton) saveButton.disabled = !task || task.status === "READY";
-  if (confirmButton) confirmButton.disabled = !task || task.status === "READY" || quality.p0_status !== "PASS";
+  if (confirmButton) confirmButton.disabled = !task || task.status === "READY" || p0Status !== "PASS";
   if (gate) gate.textContent = task
     ? "请检查并编辑这份实现计划；它不代表已经执行、测试或部署。"
     : "生成前请确认 Build Slice；生成只使用当前已确认范围和已知技术上下文。";
@@ -2775,7 +2777,7 @@ function renderM2PrototypeTask() {
     ? `Prototype Task · ${task.status || "DRAFT"} · 第 ${task.revision || 1} 版`
     : "尚未生成 Prototype Task。";
   const qualityNode = qs("#m2-prototype-task-quality");
-  if (qualityNode) qualityNode.textContent = `P0 ${quality.p0_status || "未评估"} · 不代表已执行、已测试或已部署。`;
+  if (qualityNode) qualityNode.textContent = `P0 ${p0Status || "未评估"} · 不代表已执行、已测试或已部署。`;
 }
 
 async function loadM2Artifacts() {

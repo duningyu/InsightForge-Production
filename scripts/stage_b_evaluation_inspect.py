@@ -1456,6 +1456,44 @@ def _run_seed_phase1a_project_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _inspect_real_idea_batch(database: Database, batch_id: str) -> dict[str, Any]:
+    """Return an allowlisted, body-free projection of one evaluation batch."""
+    batch = database.fetch_one(
+        """SELECT batch_id, batch_key, status, source_commit, deployment_id, model,
+                  sample_count, provider_policy_version, created_at, finalized_at
+           FROM real_idea_batches WHERE batch_id = ?""",
+        (batch_id,),
+    )
+    if not batch:
+        raise KeyError(batch_id)
+    samples = database.fetch_all(
+        """SELECT sample_id, sample_key, project_id, raw_idea_sha256, state,
+                         solutions_evaluation_id, selected_solution_id, created_at, terminal_at
+           FROM real_idea_samples WHERE batch_id = ? ORDER BY sample_key""",
+        (batch_id,),
+    )
+    reservations = database.fetch_all(
+        """SELECT reservation_id, sample_id, stage, ordinal, state, attempted_at, released_at
+           FROM real_idea_transport_reservations WHERE batch_id = ?
+           ORDER BY sample_id, stage, ordinal""",
+        (batch_id,),
+    )
+    quality = database.fetch_all(
+        """SELECT quality_evaluation_id, sample_id, artifact_type, status,
+                         revision, evidence_manifest_sha256, policy_version, created_at
+           FROM real_idea_quality_evaluations WHERE batch_id = ?
+           ORDER BY sample_id, artifact_type, revision""",
+        (batch_id,),
+    )
+    return {
+        "batch": dict(batch),
+        "samples": [dict(row) for row in samples],
+        "reservations": [dict(row) for row in reservations],
+        "quality_evaluations": [dict(row) for row in quality],
+        "safe_metadata_only": True,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ["--help"]:
@@ -1463,12 +1501,44 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument(
             "command",
             nargs="?",
-            choices=("inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project", *_PHASE2_COMMANDS),
+            choices=("inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project", "real-idea-batch", "real-idea-inspect", *_PHASE2_COMMANDS),
             help="operator command (the diagnostic command requires its own arguments)",
         )
         parser.print_help()
         return 0
-    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project", *_PHASE2_COMMANDS} else "inspect"
+    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project", "real-idea-batch", "real-idea-inspect", *_PHASE2_COMMANDS} else "inspect"
+    if command == "real-idea-batch":
+        parser = argparse.ArgumentParser(
+            description="Inspect the real-idea evaluation batch safely; this command never executes a batch"
+        )
+        parser.add_argument("real-idea-batch", nargs="?")
+        parser.add_argument("--batch-id", required=False)
+        parser.add_argument("--database", type=Path, default=_database_path())
+        if "--help" in argv[1:]:
+            parser.print_help()
+            return 0
+        args = parser.parse_args(argv[1:])
+        if not args.batch_id:
+            parser.error("--batch-id is required for inspection")
+        database = Database(args.database)
+        database.init_schema()
+        print(json.dumps(_inspect_real_idea_batch(database, args.batch_id), ensure_ascii=False, indent=2))
+        return 0
+    if command == "real-idea-inspect":
+        parser = argparse.ArgumentParser(
+            description="Read-only real-idea evaluation metadata without ideas, claims, or document bodies"
+        )
+        parser.add_argument("real-idea-inspect", nargs="?")
+        parser.add_argument("--batch-id", required=True)
+        parser.add_argument("--database", type=Path, default=_database_path())
+        if "--help" in argv[1:]:
+            parser.print_help()
+            return 0
+        args = parser.parse_args(argv[1:])
+        database = Database(args.database)
+        database.init_schema()
+        print(json.dumps(_inspect_real_idea_batch(database, args.batch_id), ensure_ascii=False, indent=2))
+        return 0
     if command == "seed-phase1a-project":
         parser = argparse.ArgumentParser(description="Create the internal Stage-B Phase1A synthetic canary project")
         parser.add_argument("seed-phase1a-project", nargs="?")

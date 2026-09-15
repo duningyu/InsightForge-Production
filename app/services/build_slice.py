@@ -111,6 +111,32 @@ class BuildSliceService:
             (project_id,),
         ).fetchone()
 
+    def _mark_needs_revision(
+        self, connection: sqlite3.Connection, project_id: str, slice_id: str, now: str
+    ) -> None:
+        connection.execute(
+            """UPDATE build_slices
+               SET status='NEEDS_REVISION', confirmed_at=NULL, updated_at=?
+               WHERE project_id=? AND slice_id=?""",
+            (now, project_id, slice_id),
+        )
+        connection.execute(
+            """UPDATE prototype_tasks
+               SET status='NEEDS_REVISION', confirmed_at=NULL, updated_at=?
+               WHERE project_id=? AND slice_id=?""",
+            (now, project_id, slice_id),
+        )
+
+    def _mark_tasks_needs_revision(
+        self, connection: sqlite3.Connection, project_id: str, slice_id: str, now: str
+    ) -> None:
+        connection.execute(
+            """UPDATE prototype_tasks
+               SET status='NEEDS_REVISION', confirmed_at=NULL, updated_at=?
+               WHERE project_id=? AND slice_id=?""",
+            (now, project_id, slice_id),
+        )
+
     def _public(self, row: Any) -> dict[str, Any]:
         payload = {"slice_id": row["slice_id"], "project_id": row["project_id"]}
         for key in (
@@ -224,7 +250,7 @@ class BuildSliceService:
         with self.db.connect() as connection:
             self._project(connection, project_id)
             intent = connection.execute(
-                "SELECT owner_actor FROM project_intents WHERE project_id = ? ORDER BY revision DESC LIMIT 1",
+                "SELECT * FROM project_intents WHERE project_id = ? ORDER BY revision DESC LIMIT 1",
                 (project_id,),
             ).fetchone()
             if intent is not None and intent["owner_actor"] != actor:
@@ -234,6 +260,30 @@ class BuildSliceService:
                 return None
             if row["owner_actor"] != actor:
                 raise PermissionError("build slice belongs to another actor")
+            stale = int(row["intent_revision"]) != int(intent["revision"]) if intent is not None else True
+            if not stale and intent is not None:
+                action = connection.execute(
+                    """SELECT confirmed FROM first_action_cards
+                       WHERE project_id=? AND intent_revision=? AND template_version=?""",
+                    (project_id, intent["revision"], TEMPLATE_VERSION),
+                ).fetchone()
+                project = connection.execute(
+                    "SELECT current_snapshot_id FROM projects WHERE id=?", (project_id,)
+                ).fetchone()
+                stale = (
+                    action is None
+                    or not bool(action["confirmed"])
+                    or project["current_snapshot_id"] != row["snapshot_id"]
+                )
+                if not stale and row["snapshot_id"] is not None:
+                    snapshot = connection.execute(
+                        "SELECT version FROM project_snapshots WHERE id=? AND project_id=?",
+                        (row["snapshot_id"], project_id),
+                    ).fetchone()
+                    stale = snapshot is None or snapshot["version"] != row["snapshot_version"]
+            if stale:
+                self._mark_needs_revision(connection, project_id, row["slice_id"], utc_now())
+                row = self._row(connection, row["slice_id"])
             return self._public(row)
 
     def update(
@@ -285,6 +335,7 @@ class BuildSliceService:
                     values["constraint_notes"], int(expected_revision) + 1, now, slice_id, project_id,
                 ),
             )
+            self._mark_tasks_needs_revision(connection, project_id, slice_id, now)
             return self._public(self._row(connection, slice_id))
 
     def confirm(

@@ -131,7 +131,7 @@ class PrototypeTaskService:
         *,
         actor: str,
         expected_revision: int | None = None,
-    ) -> Any:
+    ) -> tuple[Any, Any]:
         self._project(connection, project_id)
         row = self._row(connection, task_id)
         if row["project_id"] != project_id:
@@ -140,10 +140,11 @@ class PrototypeTaskService:
             raise PermissionError("prototype task belongs to another actor")
         if expected_revision is not None and int(row["revision"]) != int(expected_revision):
             raise ConflictError("PROTOTYPE_TASK_REVISION_CONFLICT")
-        self._assert_current_task_binding(connection, row, actor=actor)
-        return row
+        current_slice = self._assert_current_task_binding(connection, row, actor=actor)
+        return row, current_slice
 
     def get_current(self, project_id: str, *, actor: str) -> dict[str, Any] | None:
+        self.build_slices.get_current(project_id, actor=actor)
         with self.db.connect() as connection:
             self._project(connection, project_id)
             intent = connection.execute(
@@ -230,8 +231,10 @@ class PrototypeTaskService:
     def evaluate_p0(self, project_id: str, task_id: str, *, actor: str) -> dict[str, Any]:
         """Evaluate the current task without writing a quality record."""
         with self.db.connect() as connection:
-            row = self._assert_task(connection, project_id, task_id, actor=actor)
-            result = evaluate_prototype_task(self._public(row))
+            row, current_slice = self._assert_task(connection, project_id, task_id, actor=actor)
+            result = evaluate_prototype_task(
+                self._public(row), build_slice=self.build_slices._public(current_slice)
+            )
             return {
                 "task_id": task_id,
                 "project_id": project_id,
@@ -254,7 +257,7 @@ class PrototypeTaskService:
         if unknown:
             raise ValueError(f"unsupported prototype task fields: {sorted(unknown)}")
         with self.db.connect() as connection:
-            row = self._assert_task(
+            row, _current_slice = self._assert_task(
                 connection,
                 project_id,
                 task_id,
@@ -299,14 +302,16 @@ class PrototypeTaskService:
         expected_revision: int,
     ) -> dict[str, Any]:
         with self.db.connect() as connection:
-            row = self._assert_task(
+            row, current_slice = self._assert_task(
                 connection,
                 project_id,
                 task_id,
                 actor=actor,
                 expected_revision=expected_revision,
             )
-            result = evaluate_prototype_task(self._public(row))
+            result = evaluate_prototype_task(
+                self._public(row), build_slice=self.build_slices._public(current_slice)
+            )
             if result["status"] != "PASS":
                 raise ConflictError(result["codes"][0])
             now = utc_now()

@@ -259,7 +259,54 @@ def evaluate_build_slice(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
-def evaluate_prototype_task(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _normalized_text(value: Any) -> str:
+    return " ".join(str(value).casefold().split())
+
+
+def _contains_requirement(requirement: Any, values: Any) -> bool:
+    target = _normalized_text(requirement)
+    if not target:
+        return False
+    return any(
+        target == _normalized_text(value) or target in _normalized_text(value)
+        for value in _flatten([values])
+    )
+
+
+def _m2_inheritance_codes(
+    payload: Mapping[str, Any], build_slice: Mapping[str, Any]
+) -> list[str]:
+    """Check task-to-slice identity and semantic inheritance without side effects."""
+    codes: list[str] = []
+    structural_pairs = (
+        ("project_id", "project_id"),
+        ("slice_id", "slice_id"),
+        ("slice_revision", "revision"),
+        ("snapshot_id", "snapshot_id"),
+        ("snapshot_version", "snapshot_version"),
+    )
+    for task_key, slice_key in structural_pairs:
+        if payload.get(task_key) != build_slice.get(slice_key):
+            codes.append("M2_STRUCTURAL_BINDING_CONFLICT")
+    if _normalized_text(payload.get("purpose")) != _normalized_text(build_slice.get("purpose")):
+        codes.append("M2_PURPOSE_INHERITANCE_CONFLICT")
+
+    for item in build_slice.get("out_of_scope", []) or []:
+        if _contains_requirement(item, payload.get("scope", [])) or _contains_requirement(
+            item, payload.get("implementation_tasks", [])
+        ):
+            codes.append("M2_SCOPE_INHERITANCE_CONFLICT")
+            break
+    for constraint in build_slice.get("confirmed_constraints", []) or []:
+        if not _contains_requirement(constraint, payload.get("permission_risk_notes", [])):
+            codes.append("M2_CONSTRAINT_INHERITANCE_CONFLICT")
+            break
+    return list(dict.fromkeys(codes))
+
+
+def evaluate_prototype_task(
+    payload: Mapping[str, Any], *, build_slice: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Evaluate a Prototype Task without treating its instructions as execution evidence."""
     codes: list[str] = []
     for field in REQUIRED_PROTOTYPE_TASK_FIELDS:
@@ -281,6 +328,8 @@ def evaluate_prototype_task(payload: Mapping[str, Any]) -> dict[str, Any]:
     all_text = _flatten(payload.values())
     if any(_FALSE_EXECUTION_CLAIM.search(text) for text in all_text):
         codes.append("M2_FALSE_EXECUTION_CLAIM")
+    if build_slice is not None:
+        codes.extend(_m2_inheritance_codes(payload, build_slice))
 
     complete = not any(code.startswith("M2_MISSING_") for code in codes)
     metrics, details, rubric_codes, rubric_version, evidence_ids = _m2_quality_rubric(

@@ -168,7 +168,15 @@ class BuildSliceService:
         actor: str,
         expected_snapshot_id: str | None,
         expected_intent_revision: int,
+        initial_updates: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        initial_updates = initial_updates or {}
+        unknown = set(initial_updates) - _JSON_FIELDS
+        if unknown:
+            raise ValueError(f"unsupported build slice fields: {sorted(unknown)}")
+        for field, value in initial_updates.items():
+            if not isinstance(value, list):
+                raise ValueError(f"{field} must be a list")
         with self.db.connect() as connection:
             intent, action, snapshot = self._context(
                 connection,
@@ -188,17 +196,26 @@ class BuildSliceService:
                 return self._public(existing)
             now = utc_now()
             slice_id = f"build_slice_{uuid.uuid4().hex}"
+            values = {field: "[]" for field in _JSON_FIELDS}
+            values["confirmed_constraints"] = action["prohibited_actions_json"]
+            values.update({field: _encode(value) for field, value in initial_updates.items()})
             connection.execute(
                 """INSERT INTO build_slices(
                     slice_id, project_id, owner_actor, intent_revision,
                     first_action_task_id, first_action_revision, snapshot_id, snapshot_version,
-                    purpose, confirmed_constraints, revision, status, confirmed_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'DRAFT', NULL, ?, ?)""",
+                    purpose, confirmed_constraints, in_scope_json, out_of_scope_json,
+                    minimal_flow_json, acceptance_criteria_json, inputs_json, expected_outputs_json,
+                    error_handling_json, unknowns_json, constraint_notes_json,
+                    revision, status, confirmed_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'DRAFT', NULL, ?, ?)""",
                 (
                     slice_id, project_id, actor, intent["revision"], action["task_id"],
                     action["card_revision"], snapshot["id"] if snapshot else None,
                     snapshot["version"] if snapshot else None, intent["purpose"],
-                    action["prohibited_actions_json"], now, now,
+                    values["confirmed_constraints"], values["in_scope"], values["out_of_scope"],
+                    values["minimal_flow"], values["acceptance_criteria"], values["inputs"],
+                    values["expected_outputs"], values["error_handling"], values["unknowns"],
+                    values["constraint_notes"], now, now,
                 ),
             )
             return self._public(self._row(connection, slice_id))
@@ -206,6 +223,12 @@ class BuildSliceService:
     def get_current(self, project_id: str, *, actor: str) -> dict[str, Any] | None:
         with self.db.connect() as connection:
             self._project(connection, project_id)
+            intent = connection.execute(
+                "SELECT owner_actor FROM project_intents WHERE project_id = ? ORDER BY revision DESC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            if intent is not None and intent["owner_actor"] != actor:
+                raise PermissionError("project intent belongs to another actor")
             row = self._latest(connection, project_id)
             if row is None:
                 return None

@@ -146,6 +146,12 @@ class PrototypeTaskService:
     def get_current(self, project_id: str, *, actor: str) -> dict[str, Any] | None:
         with self.db.connect() as connection:
             self._project(connection, project_id)
+            intent = connection.execute(
+                "SELECT owner_actor FROM project_intents WHERE project_id = ? ORDER BY revision DESC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            if intent is not None and intent["owner_actor"] != actor:
+                raise PermissionError("project intent belongs to another actor")
             row = self._latest(connection, project_id)
             if row is None:
                 return None

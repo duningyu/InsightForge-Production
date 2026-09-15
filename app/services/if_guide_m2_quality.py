@@ -211,6 +211,10 @@ def _quality_result(
     *, codes: list[str], metrics: dict[str, float], metric_details: dict[str, dict[str, Any]],
     rubric_version: str, evidence_ids: list[str], artifact_kind: str,
 ) -> dict[str, Any]:
+    evidence_kind = {
+        "BUILD_SLICE": "IF_GUIDE_M2_BUILD_SLICE",
+        "PROTOTYPE_TASK": "IF_GUIDE_M2_PROTOTYPE_TASK",
+    }.get(artifact_kind, "M2_SEMANTIC_CONTENT")
     return {
         "status": "PASS" if not codes else "FAIL",
         "codes": codes,
@@ -218,7 +222,7 @@ def _quality_result(
         "metric_details": metric_details,
         "rubric_version": rubric_version,
         "evidence_ids": evidence_ids,
-        "evidence_kind": "M2_SEMANTIC_CONTENT",
+        "evidence_kind": evidence_kind,
         "artifact_kind": artifact_kind,
     }
 

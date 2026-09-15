@@ -64,6 +64,9 @@ from app.schemas import (
     ProjectIntentUpsertRequest,
     FirstActionUpdateRequest,
     FirstActionConfirmRequest,
+    BuildSliceUpsertRequest,
+    M2RevisionRequest,
+    PrototypeTaskUpsertRequest,
 )
 from app.services.projects import ProjectService
 from app.services.competitors import CompetitorService
@@ -107,6 +110,8 @@ from app.services.beta_feedback import BetaFeedbackService
 from app.services.beta_sessions import BetaSessionService
 from app.services.beta_usage import BetaUsageService
 from app.services.project_intent import ProjectIntentService
+from app.services.build_slice import BuildSliceService
+from app.services.prototype_task import PrototypeTaskService
 from app.services.solution_generation_guard import SolutionGenerationGuard
 from app.services.provider_dispatch_ledger import ProviderDispatchLedger
 from app.services.retrieval_service import ProjectRetrievalService
@@ -259,6 +264,8 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             )
         application.state.projects = ProjectService(db)
         application.state.project_intent = ProjectIntentService(db)
+        application.state.build_slices = BuildSliceService(db)
+        application.state.prototype_tasks = PrototypeTaskService(db)
         application.state.competitors = CompetitorService(db, application.state.projects)
         application.state.competitor_decisions = CompetitorDecisionService(
             db, application.state.projects
@@ -1500,6 +1507,149 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             task_id,
             expected_revision=payload.expected_revision,
             actor=x_actor,
+        )
+
+    @application.get("/api/projects/{project_id}/build-slice")
+    def get_build_slice(
+        project_id: str,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        result = application.state.build_slices.get_current(project_id, actor=x_actor)
+        if result is None:
+            raise KeyError("build slice not found")
+        return result
+
+    @application.put("/api/projects/{project_id}/build-slice")
+    def upsert_build_slice(
+        project_id: str,
+        payload: BuildSliceUpsertRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        current = application.state.build_slices.get_current(project_id, actor=x_actor)
+        updates = payload.model_dump(
+            exclude={"expected_revision", "expected_snapshot_id", "expected_intent_revision", "slice_id"},
+            exclude_none=True,
+        )
+        if current is None:
+            if payload.expected_intent_revision is None:
+                raise ValueError("expected_intent_revision is required for a new Build Slice")
+            current = application.state.build_slices.create_or_get(
+                project_id,
+                actor=x_actor,
+                expected_snapshot_id=payload.expected_snapshot_id,
+                expected_intent_revision=payload.expected_intent_revision,
+                initial_updates=updates,
+            )
+            return current
+        return application.state.build_slices.update(
+            project_id,
+            payload.slice_id or current["slice_id"],
+            actor=x_actor,
+            expected_revision=payload.expected_revision,
+            updates=updates,
+        )
+
+    @application.post("/api/projects/{project_id}/build-slice/confirm")
+    def confirm_build_slice(
+        project_id: str,
+        payload: M2RevisionRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        current = application.state.build_slices.get_current(project_id, actor=x_actor)
+        if current is None:
+            raise KeyError("build slice not found")
+        return application.state.build_slices.confirm(
+            project_id,
+            current["slice_id"],
+            actor=x_actor,
+            expected_revision=payload.expected_revision,
+        )
+
+    @application.get("/api/projects/{project_id}/build-slice/quality")
+    def get_build_slice_quality(
+        project_id: str,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        current = application.state.build_slices.get_current(project_id, actor=x_actor)
+        if current is None:
+            raise KeyError("build slice not found")
+        return application.state.build_slices.evaluate_p0(
+            project_id, current["slice_id"], actor=x_actor
+        )
+
+    @application.get("/api/projects/{project_id}/prototype-task")
+    def get_prototype_task(
+        project_id: str,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        result = application.state.prototype_tasks.get_current(project_id, actor=x_actor)
+        if result is None:
+            raise KeyError("prototype task not found")
+        return result
+
+    @application.put("/api/projects/{project_id}/prototype-task")
+    def upsert_prototype_task(
+        project_id: str,
+        payload: PrototypeTaskUpsertRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        current = application.state.prototype_tasks.get_current(project_id, actor=x_actor)
+        updates = payload.model_dump(
+            exclude={"expected_revision", "expected_slice_revision", "slice_id", "task_id"},
+            exclude_none=True,
+        )
+        if current is None:
+            if payload.slice_id is None or payload.expected_slice_revision is None:
+                raise ValueError("slice_id and expected_slice_revision are required for a new Prototype Task")
+            current = application.state.prototype_tasks.generate_rule_first(
+                project_id,
+                actor=x_actor,
+                slice_id=payload.slice_id,
+                expected_slice_revision=payload.expected_slice_revision,
+            )
+            if updates:
+                current = application.state.prototype_tasks.update(
+                    project_id,
+                    current["task_id"],
+                    actor=x_actor,
+                    expected_revision=current["revision"],
+                    updates=updates,
+                )
+            return current
+        return application.state.prototype_tasks.update(
+            project_id,
+            payload.task_id or current["task_id"],
+            actor=x_actor,
+            expected_revision=payload.expected_revision,
+            updates=updates,
+        )
+
+    @application.post("/api/projects/{project_id}/prototype-task/confirm")
+    def confirm_prototype_task(
+        project_id: str,
+        payload: M2RevisionRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        current = application.state.prototype_tasks.get_current(project_id, actor=x_actor)
+        if current is None:
+            raise KeyError("prototype task not found")
+        return application.state.prototype_tasks.confirm(
+            project_id,
+            current["task_id"],
+            actor=x_actor,
+            expected_revision=payload.expected_revision,
+        )
+
+    @application.get("/api/projects/{project_id}/prototype-task/quality")
+    def get_prototype_task_quality(
+        project_id: str,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        current = application.state.prototype_tasks.get_current(project_id, actor=x_actor)
+        if current is None:
+            raise KeyError("prototype task not found")
+        return application.state.prototype_tasks.evaluate_p0(
+            project_id, current["task_id"], actor=x_actor
         )
 
     @application.post("/api/projects/{project_id}/ai-reference", status_code=201)

@@ -208,6 +208,46 @@ class FirstActionConfirmRequest(StrictModel):
     expected_revision: int = Field(ge=1)
 
 
+class BuildSliceUpsertRequest(StrictModel):
+    expected_revision: int | None = Field(default=None, ge=1)
+    expected_snapshot_id: str | None = Field(default=None, min_length=1, max_length=200)
+    expected_intent_revision: int | None = Field(default=None, ge=1)
+    slice_id: str | None = Field(default=None, min_length=1, max_length=200)
+    confirmed_constraints: list[str] | None = Field(default=None, max_length=30)
+    in_scope: list[str] | None = Field(default=None, max_length=30)
+    out_of_scope: list[str] | None = Field(default=None, max_length=30)
+    minimal_flow: list[str] | None = Field(default=None, max_length=30)
+    acceptance_criteria: list[str] | None = Field(default=None, max_length=30)
+    inputs: list[str] | None = Field(default=None, max_length=30)
+    expected_outputs: list[str] | None = Field(default=None, max_length=30)
+    error_handling: list[str] | None = Field(default=None, max_length=30)
+    unknowns: list[str] | None = Field(default=None, max_length=30)
+    constraint_notes: list[str] | None = Field(default=None, max_length=30)
+
+
+class M2RevisionRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+
+
+class PrototypeTaskUpsertRequest(StrictModel):
+    task_id: str | None = Field(default=None, min_length=1, max_length=200)
+    expected_revision: int | None = Field(default=None, ge=1)
+    slice_id: str | None = Field(default=None, min_length=1, max_length=200)
+    expected_slice_revision: int | None = Field(default=None, ge=1)
+    scope: list[str] | None = Field(default=None, max_length=30)
+    inputs: list[str] | None = Field(default=None, max_length=30)
+    outputs: list[str] | None = Field(default=None, max_length=30)
+    existing_behaviors_to_preserve: list[str] | None = Field(default=None, max_length=30)
+    explicit_non_goals: list[str] | None = Field(default=None, max_length=30)
+    known_technical_context: list[str] | None = Field(default=None, max_length=30)
+    unknown_dependencies: list[str] | None = Field(default=None, max_length=30)
+    implementation_tasks: list[str] | None = Field(default=None, max_length=30)
+    acceptance_steps: list[str] | None = Field(default=None, max_length=30)
+    failure_recovery_notes: list[str] | None = Field(default=None, max_length=30)
+    required_return_evidence: list[str] | None = Field(default=None, max_length=30)
+    permission_risk_notes: list[str] | None = Field(default=None, max_length=30)
+
+
 class CanonicalExampleResponse(StrictModel):
     id: str
     title: str

@@ -175,6 +175,75 @@ class QualityEvaluationService:
         status = "FAIL" if violations else "PASS"
         return self._insert(binding, status=status)
 
+    def enqueue_p1(self, quality_evaluation_id: str) -> str:
+        """Create the append-only structured evaluation after a passing P0 gate."""
+        source = self.get(quality_evaluation_id)
+        if source.quality_layer != "P0" or source.status == "FAIL":
+            raise QualityBindingError("P1 requires a passing P0 evaluation")
+        payload = dict(source.metric_payload)
+        gaps = tuple(payload.get("p1_gaps", ()))
+        binding = ArtifactBinding(
+            source.batch_id, source.sample_id, source.project_id, source.artifact_type,
+            source.artifact_version_id, source.selected_solution_id, source.snapshot_id,
+            source.upstream_version_ids, "P1", "system", payload,
+            {"source_quality_evaluation_id": source.quality_evaluation_id},
+            {"source_quality_evaluation_id": source.quality_evaluation_id}, source.policy_version,
+        )
+        result = self._insert(binding, status="PARTIAL" if gaps else "PASS", revision=2,
+                              supersedes=source.quality_evaluation_id)
+        return result.quality_evaluation_id
+
+    def record_p2_review(self, quality_evaluation_id: str, review: Mapping[str, Any]) -> ArtifactQualityEvaluation:
+        """Persist a human review; an LLM assist cannot be the authoritative P2 reviewer."""
+        source = self.get(quality_evaluation_id)
+        if source.quality_layer not in {"P0", "P1"} or source.status == "FAIL":
+            raise QualityBindingError("P2 requires a passing operational evaluation")
+        role = review.get("evaluator_role")
+        if role not in {"idea_provider", "independent_reviewer"}:
+            raise QualityBindingError("P2 requires an authoritative human reviewer")
+        payload = dict(source.metric_payload)
+        payload["p2_review"] = {key: value for key, value in review.items() if key != "evaluator_role"}
+        binding = ArtifactBinding(
+            source.batch_id, source.sample_id, source.project_id, source.artifact_type,
+            source.artifact_version_id, source.selected_solution_id, source.snapshot_id,
+            source.upstream_version_ids, "P2", role, payload,
+            {"source_quality_evaluation_id": source.quality_evaluation_id},
+            {"review_id": review.get("review_id", "redacted")}, source.policy_version,
+        )
+        return self._insert(binding, status=str(review.get("status", "PARTIAL")),
+                            revision=source.quality_revision + 1,
+                            supersedes=source.quality_evaluation_id)
+
+    def build_batch_report(self, batch_id: str) -> dict[str, Any]:
+        rows = self.database.fetch_all(
+            "SELECT sample_id, COUNT(*) AS quality_evaluation_count "
+            "FROM real_idea_quality_evaluations WHERE batch_id=? GROUP BY sample_id ORDER BY sample_id",
+            (batch_id,),
+        )
+        return {
+            "batch_id": batch_id,
+            "sample_count": len(rows),
+            "samples": [{"sample_id": row["sample_id"],
+                         "quality_evaluation_count": row["quality_evaluation_count"]} for row in rows],
+            "n3_statistical_superiority_claim_allowed": False,
+        }
+
+    def monitoring_summary(self, batch_id: str) -> dict[str, Any]:
+        rows = self.database.fetch_all(
+            "SELECT status, COUNT(*) AS count FROM real_idea_quality_evaluations "
+            "WHERE batch_id=? GROUP BY status ORDER BY status", (batch_id,)
+        )
+        latest = self.database.fetch_one(
+            "SELECT quality_evaluation_id FROM real_idea_quality_evaluations "
+            "WHERE batch_id=? ORDER BY created_at DESC, quality_evaluation_id DESC LIMIT 1", (batch_id,)
+        )
+        return {
+            "batch_id": batch_id,
+            "quality_evaluation_count": sum(row["count"] for row in rows),
+            "statuses": {row["status"]: row["count"] for row in rows},
+            "latest_quality_evaluation_id": latest["quality_evaluation_id"] if latest else None,
+        }
+
     def revise(self, quality_evaluation_id: str, *, metric_payload: Mapping[str, Any], status: str,
                correction_reason: str, evaluator_role: str) -> ArtifactQualityEvaluation:
         if not correction_reason.strip():
@@ -197,6 +266,8 @@ class QualityEvaluationService:
         self._validate_binding(binding)
         if status not in {"PASS", "PARTIAL", "FAIL"}:
             raise QualityRevisionError("invalid quality status")
+        if original.status == "FAIL" and status != "FAIL":
+            raise QualityBindingError("a P0 failure cannot be upgraded")
         return self._insert(binding, status=status, revision=next_revision, supersedes=quality_evaluation_id)
 
 

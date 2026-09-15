@@ -9,6 +9,7 @@ from typing import Any
 
 from app.db import utc_now
 from app.errors import ConflictError
+from app.services.if_guide_m2_quality import evaluate_build_slice
 from app.services.project_intent import TEMPLATE_VERSION
 
 
@@ -121,6 +122,33 @@ class BuildSliceService:
         for field in _JSON_FIELDS:
             payload[field] = _decode(row[f"{field}_json"] if field != "confirmed_constraints" else row[field])
         return payload
+
+    def _bound_row(self, connection: sqlite3.Connection, project_id: str, slice_id: str, *, actor: str) -> Any:
+        row = self._row(connection, slice_id)
+        if row["project_id"] != project_id:
+            raise PermissionError("build slice belongs to another project")
+        if row["owner_actor"] != actor:
+            raise PermissionError("build slice belongs to another actor")
+        self._context(
+            connection,
+            project_id,
+            actor=actor,
+            expected_snapshot_id=row["snapshot_id"],
+            expected_intent_revision=row["intent_revision"],
+        )
+        return row
+
+    def evaluate_p0(self, project_id: str, slice_id: str, *, actor: str) -> dict[str, Any]:
+        """Evaluate the current slice without writing a quality record."""
+        with self.db.connect() as connection:
+            row = self._bound_row(connection, project_id, slice_id, actor=actor)
+            result = evaluate_build_slice(self._public(row))
+            return {
+                "slice_id": slice_id,
+                "project_id": project_id,
+                "revision": int(row["revision"]),
+                **result,
+            }
 
     def _assert_existing_binding(
         self, row: Any, *, actor: str, expected_snapshot_id: str | None, expected_intent_revision: int
@@ -235,3 +263,42 @@ class BuildSliceService:
                 ),
             )
             return self._public(self._row(connection, slice_id))
+
+    def confirm(
+        self,
+        project_id: str,
+        slice_id: str,
+        *,
+        actor: str,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        with self.db.connect() as connection:
+            row = self._row(connection, slice_id)
+            if row["project_id"] != project_id:
+                raise PermissionError("build slice belongs to another project")
+            if row["owner_actor"] != actor:
+                raise PermissionError("build slice belongs to another actor")
+            if int(row["revision"]) != int(expected_revision):
+                raise ConflictError("BUILD_SLICE_REVISION_CONFLICT")
+            self._context(
+                connection,
+                project_id,
+                actor=actor,
+                expected_snapshot_id=row["snapshot_id"],
+                expected_intent_revision=row["intent_revision"],
+            )
+            result = evaluate_build_slice(self._public(row))
+            if result["status"] != "PASS":
+                raise ConflictError(result["codes"][0])
+            now = utc_now()
+            connection.execute(
+                """UPDATE build_slices
+                   SET status='CONFIRMED', confirmed_at=?, updated_at=?
+                   WHERE slice_id=? AND project_id=? AND revision=?""",
+                (now, now, slice_id, project_id, expected_revision),
+            )
+            confirmed = self._public(self._row(connection, slice_id))
+            confirmed["p0_status"] = "PASS"
+            confirmed["p0_codes"] = []
+            confirmed["p0_metrics"] = result["metrics"]
+            return confirmed

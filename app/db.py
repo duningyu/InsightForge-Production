@@ -974,10 +974,12 @@ class Database:
             from app.migrations.real_idea_evaluation_v1 import apply
             from app.migrations.real_idea_evaluation_v2 import apply as apply_v2
             from app.migrations.if_guide_m1 import apply as apply_if_guide_m1
+            from app.migrations.if_guide_m2 import apply as apply_if_guide_m2
 
             apply(connection)
             apply_v2(connection)
             apply_if_guide_m1(connection)
+            apply_if_guide_m2(connection)
             connection.execute(
                 """
                 INSERT OR IGNORE INTO project_canvas_versions(

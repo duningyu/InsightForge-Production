@@ -558,7 +558,17 @@ def _validate_schema(
         if not table_info:
             raise RuntimeError(f"real idea schema {table} is missing")
         columns = {row[1] for row in table_info}
-        if columns != expected_columns:
+        allowed_evolved_columns = (
+            {"owner_actor", "artifact_id", "artifact_revision", "evaluation_scope",
+             "intent_revision", "slice_id", "slice_revision"}
+            if table == "real_idea_quality_evaluations"
+            else set()
+        )
+        if columns != expected_columns and not (
+            table == "real_idea_quality_evaluations"
+            and expected_columns <= columns
+            and columns - expected_columns <= allowed_evolved_columns
+        ):
             missing = ", ".join(sorted(expected_columns - columns))
             extra = ", ".join(sorted(columns - expected_columns))
             detail = f"missing columns: {missing}" if missing else f"unexpected columns: {extra}"
@@ -579,6 +589,14 @@ def _validate_schema(
             elif extension_state_check is not None:
                 checks = ("CHECK(authorized_credits>0)", extension_state_check)
         for check in checks:
+            if (
+                table == "real_idea_quality_evaluations"
+                and "artifact_typeIN" in check
+                and "build_slice" in sql
+            ):
+                if "build_slice" not in sql or "prototype_task" not in sql:
+                    raise RuntimeError("real idea quality schema is missing M2 artifact types")
+                continue
             if _normalized_sql(check) not in sql:
                 raise RuntimeError(f"real idea schema {table} is missing check constraint")
         if _foreign_keys(connection, table) != _EXPECTED_FOREIGN_KEYS[table]:

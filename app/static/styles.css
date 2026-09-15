@@ -173,6 +173,13 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
 .m1-action-form { padding: 15px; border-radius: 13px; background: var(--surface-soft); }
 .m1-action-form textarea { resize: vertical; }
 .m1-quality { margin: 12px 0 0; }
+.m2-panel { border-color: #c9d8ee; background: linear-gradient(145deg, #ffffff, #f7f9fd); }
+.m2-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.m2-form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 750; }
+.m2-form input, .m2-form textarea { width: 100%; min-width: 0; }
+.m2-form textarea { resize: vertical; }
+.m2-wide { grid-column: 1 / -1; }
+.m2-form-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .dialog-card { width: min(780px, calc(100vw - 32px)); border: 0; border-radius: 20px; padding: 26px; box-shadow: var(--shadow); }
 .dialog-card::backdrop { background: rgba(18,31,27,.36); backdrop-filter: blur(4px); }
 .dialog-card h2 { margin-top: 0; }
@@ -244,6 +251,8 @@ input:focus, textarea:focus, select:focus, button:focus-visible, summary:focus-v
   .optional-grid, .snapshot-grid, .two-column, .brief-grid, .document-grid, .solution-grid { grid-template-columns: 1fr; }
   .m1-intent-form, .m1-action-form { grid-template-columns: 1fr; }
   .m1-wide { grid-column: auto; }
+  .m2-form { grid-template-columns: 1fr; }
+  .m2-wide { grid-column: auto; }
   .project-shell { grid-template-columns: 1fr; }
   .primary-nav { position: fixed; z-index: 80; top: 62px; left: 0; width: min(82vw, 300px); height: calc(100vh - 62px); transform: translateX(-105%); transition: transform 180ms ease; box-shadow: var(--shadow); }
   .primary-nav.open { transform: translateX(0); }

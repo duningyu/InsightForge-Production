@@ -249,6 +249,35 @@
               <p id="m1-quality" class="m1-quality status-note"></p>
             </section>
           </section>
+          <section id="m2-build-slice-panel" class="secondary-panel m2-panel" hidden aria-labelledby="m2-build-slice-title">
+            <div class="secondary-panel-heading">
+              <div>
+                <p class="eyebrow">M2 · Build Slice</p>
+                <h2 id="m2-build-slice-title">定义本轮最小可用流程</h2>
+                <p>Build Slice 是你确认的范围边界和验收契约。它只记录计划，不代表已经执行、测试或部署。</p>
+              </div>
+              <span id="m2-build-slice-status" class="evidence-status status-unverified">尚未定义</span>
+            </div>
+            <p id="m2-build-slice-gate" class="status-note">请先确认 M1 第一行动卡，才能定义 Build Slice。</p>
+            <form id="m2-build-slice-form" class="m2-form">
+              <label>上游目的<input id="m2-build-slice-purpose" readonly></label>
+              <label class="m2-wide">本轮做什么<textarea id="m2-in-scope" rows="4" required placeholder="每行一项"></textarea></label>
+              <label class="m2-wide">本轮不做什么<textarea id="m2-out-of-scope" rows="4" required placeholder="每行一项"></textarea></label>
+              <label class="m2-wide">最小流程<textarea id="m2-minimal-flow" rows="4" required placeholder="每行一步"></textarea></label>
+              <label class="m2-wide">验收标准<textarea id="m2-acceptance-criteria" rows="4" required placeholder="每行一条，写成可观察结果"></textarea></label>
+              <label>已确认约束<textarea id="m2-confirmed-constraints" rows="3" placeholder="每行一项"></textarea></label>
+              <label>输入<textarea id="m2-inputs" rows="3" placeholder="每行一项"></textarea></label>
+              <label>预期输出<textarea id="m2-expected-outputs" rows="3" placeholder="每行一项"></textarea></label>
+              <label>错误处理<textarea id="m2-error-handling" rows="3" placeholder="每行一项"></textarea></label>
+              <label>未知依赖<textarea id="m2-unknowns" rows="3" placeholder="未知项必须保持 UNKNOWN"></textarea></label>
+              <label class="m2-wide">约束说明<textarea id="m2-constraint-notes" rows="3" placeholder="权限、风险和不得改变的既有行为"></textarea></label>
+              <div class="m2-form-actions m2-wide">
+                <button id="m2-build-slice-save" class="button button-secondary" type="submit">保存 Build Slice</button>
+                <button id="m2-build-slice-confirm" class="button button-primary" type="button">确认本轮范围</button>
+                <span id="m2-build-slice-quality" class="status-note" role="status" aria-live="polite"></span>
+              </div>
+            </form>
+          </section>
           <section id="snapshot-view" class="workspace-view" data-workspace-view="snapshot">
             <div id="snapshot-content" class="view-content"></div>
             <button id="snapshot-primary-action" class="button button-primary hidden" type="button"></button>

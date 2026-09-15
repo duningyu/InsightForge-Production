@@ -27,6 +27,10 @@ const state = {
   homeNextAction: null,
   projectNextAction: null,
   projectIntent: null,
+  buildSlice: null,
+  buildSliceQuality: null,
+  prototypeTask: null,
+  prototypeTaskQuality: null,
   walkthrough: null,
   modelProfiles: [],
   projectModelProfileId: null,
@@ -2681,6 +2685,108 @@ function m1ListValue(id) {
     .filter(Boolean);
 }
 
+function m2SetField(id, value) {
+  const node = qs(`#${id}`);
+  if (node) node.value = Array.isArray(value) ? value.join("\n") : String(value ?? "");
+}
+
+function m2ListValue(id) {
+  return String(qs(`#${id}`)?.value || "")
+    .split(/\r?\n/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function renderM2BuildSlice() {
+  const panel = qs("#m2-build-slice-panel");
+  if (!panel) return;
+  const slice = state.buildSlice;
+  const quality = state.buildSliceQuality || {};
+  const action = state.projectIntent?.first_action;
+  const readyForSlice = Boolean(action?.confirmed);
+  const status = qs("#m2-build-slice-status");
+  const gate = qs("#m2-build-slice-gate");
+  const saveButton = qs("#m2-build-slice-save");
+  const confirmButton = qs("#m2-build-slice-confirm");
+  const fields = [
+    ["m2-in-scope", slice?.in_scope],
+    ["m2-out-of-scope", slice?.out_of_scope],
+    ["m2-minimal-flow", slice?.minimal_flow],
+    ["m2-acceptance-criteria", slice?.acceptance_criteria],
+    ["m2-confirmed-constraints", slice?.confirmed_constraints],
+    ["m2-inputs", slice?.inputs],
+    ["m2-expected-outputs", slice?.expected_outputs],
+    ["m2-error-handling", slice?.error_handling],
+    ["m2-unknowns", slice?.unknowns],
+    ["m2-constraint-notes", slice?.constraint_notes],
+  ];
+  fields.forEach(([id, value]) => m2SetField(id, value));
+  m2SetField("m2-build-slice-purpose", slice?.purpose || state.projectIntent?.intent?.purpose);
+  panel.hidden = !state.currentProjectId;
+  qsa("#m2-build-slice-form textarea, #m2-build-slice-form input").forEach(node => { node.disabled = !readyForSlice; });
+  if (saveButton) saveButton.disabled = !readyForSlice;
+  if (confirmButton) confirmButton.disabled = !readyForSlice || !slice || slice.status === "CONFIRMED" || quality.p0_status !== "PASS";
+  if (gate) gate.textContent = readyForSlice ? "M2 只记录你确认的范围，不执行外部行动。" : "请先确认 M1 第一行动卡，才能定义 Build Slice。";
+  if (status) status.textContent = slice
+    ? `Build Slice · ${slice.status || "DRAFT"} · 第 ${slice.revision || 1} 版`
+    : "尚未定义 Build Slice。";
+  const metricSummary = quality.metrics ? ` · 质量指标已记录：${Object.keys(quality.metrics).length} 项` : "";
+  const qualityNode = qs("#m2-build-slice-quality");
+  if (qualityNode) qualityNode.textContent = `P0 ${quality.p0_status || "未评估"}${metricSummary} · 不代表已执行、已测试或已部署。`;
+}
+
+async function loadM2Artifacts() {
+  if (!state.currentProjectId) return;
+  const projectId = encodeURIComponent(state.currentProjectId);
+  try { state.buildSlice = await api(`/api/projects/${projectId}/build-slice`); } catch (_) { state.buildSlice = null; }
+  try { state.buildSliceQuality = await api(`/api/projects/${projectId}/build-slice/quality`); } catch (_) { state.buildSliceQuality = null; }
+  renderM2BuildSlice();
+}
+
+async function saveBuildSlice(event) {
+  event.preventDefault();
+  if (!state.currentProjectId || !state.projectIntent?.first_action?.confirmed) return;
+  const current = state.buildSlice;
+  try {
+    state.buildSlice = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/build-slice`, {
+      method: "PUT",
+      body: JSON.stringify({
+        slice_id: current?.slice_id || null,
+        expected_revision: current ? current.revision : null,
+        expected_snapshot_id: state.snapshot?.snapshot_id || state.snapshot?.id || null,
+        expected_intent_revision: state.projectIntent?.intent?.revision || null,
+        confirmed_constraints: m2ListValue("m2-confirmed-constraints"),
+        in_scope: m2ListValue("m2-in-scope"),
+        out_of_scope: m2ListValue("m2-out-of-scope"),
+        minimal_flow: m2ListValue("m2-minimal-flow"),
+        acceptance_criteria: m2ListValue("m2-acceptance-criteria"),
+        inputs: m2ListValue("m2-inputs"),
+        expected_outputs: m2ListValue("m2-expected-outputs"),
+        error_handling: m2ListValue("m2-error-handling"),
+        unknowns: m2ListValue("m2-unknowns"),
+        constraint_notes: m2ListValue("m2-constraint-notes"),
+      }),
+    });
+    state.buildSliceQuality = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/build-slice/quality`);
+    renderM2BuildSlice();
+    toast("Build Slice 已保存。请检查范围和验收标准后再确认。");
+  } catch (error) { reportError(error); }
+}
+
+async function confirmBuildSlice() {
+  const slice = state.buildSlice;
+  if (!state.currentProjectId || !slice || slice.status === "CONFIRMED") return;
+  try {
+    state.buildSlice = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/build-slice/confirm`, {
+      method: "POST",
+      body: JSON.stringify({expected_revision: slice.revision}),
+    });
+    state.buildSliceQuality = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/build-slice/quality`);
+    renderM2BuildSlice();
+    toast("Build Slice 已确认。下一步可以生成一份可编辑的 Prototype Task 计划。");
+  } catch (error) { reportError(error); }
+}
+
 function renderProjectIntent() {
   const payload = state.projectIntent;
   const intent = payload?.intent;
@@ -2725,6 +2831,7 @@ async function loadProjectIntent() {
   try { state.projectIntent = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/intent`); }
   catch (_) { state.projectIntent = null; }
   renderProjectIntent();
+  renderM2BuildSlice();
 }
 
 async function saveProjectIntent(event) {
@@ -2791,10 +2898,15 @@ async function loadProject(projectId) {
   state.evidenceEntry = {mode: null, submitting: false, pending: false};
   state.currentProjectId = projectId;
   state.projectIntent = null;
+  state.buildSlice = null;
+  state.buildSliceQuality = null;
+  state.prototypeTask = null;
+  state.prototypeTaskQuality = null;
   state.documentWorkspace = {...state.documentWorkspace, versions: [], selectedVersionId: null, compareVersionId: null, draft: null, dirty: false, error: null};
   renderProjectPicker();
   showProjectShell();
   renderProjectIntent();
+  renderM2BuildSlice();
   try { state.ideaBrief = await api(`/api/projects/${projectId}/idea-brief`); } catch (_) { state.ideaBrief = null; }
   try { state.solutions = await api(`/api/projects/${projectId}/solutions`); } catch (_) { state.solutions = null; }
   try { state.snapshot = await api(`/api/projects/${projectId}/snapshot`); } catch (_) { state.snapshot = null; }
@@ -2822,7 +2934,7 @@ async function loadProject(projectId) {
       activateView(context.activeView);
     }
   } catch (_) { /* recovery must not prevent the project from opening */ }
-  await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadAIReference(), loadEvidenceGuidance(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough(), loadProjectIntent()]);
+  await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadAIReference(), loadEvidenceGuidance(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough(), loadProjectIntent(), loadM2Artifacts()]);
 }
 
 async function loadEvidenceData() {
@@ -3274,6 +3386,8 @@ function wireEvents() {
   qs("#m1-intent-form")?.addEventListener("submit", saveProjectIntent);
   qs("#m1-action-form")?.addEventListener("submit", saveFirstAction);
   qs("#m1-action-confirm")?.addEventListener("click", () => void confirmFirstAction());
+  qs("#m2-build-slice-form")?.addEventListener("submit", saveBuildSlice);
+  qs("#m2-build-slice-confirm")?.addEventListener("click", () => void confirmBuildSlice());
   qs("#ai-reference-generate")?.addEventListener("click", () => void generateAIReference());
   qs("#evidence-coach-open")?.addEventListener("click", () => selectEvidenceEntry("action_guidance"));
   qs("#competitor-open")?.addEventListener("click", openCompetitors);

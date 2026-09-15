@@ -50,6 +50,7 @@ from app.services.real_idea_budget import (
     EXTENSION_CREDITS,
     EXTENSION_ID,
     RealIdeaBudgetService,
+    read_durable_budget,
 )
 
 
@@ -1016,7 +1017,8 @@ def _run_create_real_idea_budget_extension_cli(args: argparse.Namespace) -> int:
     )
     database = Database(args.database)
     database.init_schema()
-    budget = RealIdeaBudgetService(database, durable_budget=DEFAULT_STAGE_B_TRANSPORT_BUDGET)
+    current = read_durable_budget(database, configured_capacity=DEFAULT_STAGE_B_TRANSPORT_BUDGET)
+    budget = RealIdeaBudgetService(database, durable_budget=current.durable_available)
     created = budget.activate_extension(EXTENSION_ID, EXTENSION_CREDITS, created_by=args.actor)
     print(json.dumps({
         "extension": budget.inspect_extension(),
@@ -1030,7 +1032,8 @@ def _run_create_real_idea_budget_extension_cli(args: argparse.Namespace) -> int:
 def _run_inspect_real_idea_budget_extension_cli(args: argparse.Namespace) -> int:
     database = Database(args.database)
     database.init_schema()
-    budget = RealIdeaBudgetService(database, durable_budget=DEFAULT_STAGE_B_TRANSPORT_BUDGET)
+    current = read_durable_budget(database, configured_capacity=DEFAULT_STAGE_B_TRANSPORT_BUDGET)
+    budget = RealIdeaBudgetService(database, durable_budget=current.durable_available)
     print(json.dumps({
         "extension": budget.inspect_extension(),
         "accounting": budget.accounting_summary(),

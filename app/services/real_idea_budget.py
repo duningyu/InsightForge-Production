@@ -36,6 +36,45 @@ class BudgetAllocation:
 
 
 @dataclass(frozen=True, slots=True)
+class DurableBudgetSnapshot:
+    configured_capacity: int
+    consumed: int
+    durable_available: int
+    bootstrap: bool
+
+
+def read_durable_budget(database: Database, *, configured_capacity: int) -> DurableBudgetSnapshot:
+    """Read the current durable budget from the authoritative receipt ledger.
+
+    The configured capacity is only a bootstrap value for an empty ledger. Once
+    receipts exist, consumption is authoritative and malformed accounting fails
+    closed instead of silently reverting to configuration.
+    """
+    if configured_capacity < 0:
+        raise ValueError("configured capacity must be non-negative")
+    try:
+        with database.connect() as connection:
+            rows = connection.execute(
+                "SELECT budget_consumed FROM stage_b_evaluation_receipts"
+            ).fetchall()
+    except Exception as exc:
+        raise ValueError("unable to read durable budget accounting") from exc
+
+    if not rows:
+        return DurableBudgetSnapshot(configured_capacity, 0, configured_capacity, True)
+
+    consumed = 0
+    for row in rows:
+        value = row[0]
+        if not isinstance(value, int) or value not in (0, 1):
+            raise ValueError("inconsistent durable budget accounting")
+        consumed += value
+    if consumed > configured_capacity:
+        raise ValueError("inconsistent durable budget accounting")
+    return DurableBudgetSnapshot(configured_capacity, consumed, configured_capacity - consumed, False)
+
+
+@dataclass(frozen=True, slots=True)
 class TransportReservation:
     reservation_id: str
     batch_id: str

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -10,7 +11,9 @@ from app.services.real_idea_budget import (
     EXTENSION_ID,
     RealIdeaBudgetService,
     ReservationStateError,
+    read_durable_budget,
 )
+from app.services.stage_b_evaluation import StageBEvaluationReceiptStore
 
 
 def _seed_batch(db, batch_id: str) -> None:
@@ -109,6 +112,66 @@ def test_extension_inspection_exposes_safe_state_only(db):
         "state": "UNBOUND_RESTRICTED",
         "bound_batch_id": None,
     }
+
+
+def _consume_stage_b_transport(db, evaluation_id: str) -> None:
+    store = StageBEvaluationReceiptStore(database=db)
+    store.create(
+        evaluation_id=evaluation_id,
+        execution_id=evaluation_id,
+        idea_id="budget-accounting-test",
+        execution_mode="TEST",
+        operation="budget_accounting_test",
+        provider="test-provider",
+        model="test-model",
+        prompt_version="test",
+        context_version="test",
+        retry_ordinal=0,
+        budget_before=12,
+    )
+    store.mark_transport_started(evaluation_id)
+
+
+def test_durable_budget_is_derived_from_existing_consumption_not_default(db):
+    _consume_stage_b_transport(db, "consumed-1")
+    _consume_stage_b_transport(db, "consumed-2")
+
+    snapshot = read_durable_budget(db, configured_capacity=12)
+
+    assert snapshot.durable_available == 10
+    assert snapshot.consumed == 2
+    assert snapshot.bootstrap is False
+
+
+def test_durable_budget_bootstraps_only_when_receipt_ledger_is_empty(db):
+    snapshot = read_durable_budget(db, configured_capacity=12)
+
+    assert snapshot.durable_available == 12
+    assert snapshot.consumed == 0
+    assert snapshot.bootstrap is True
+
+
+def test_durable_budget_fails_closed_for_inconsistent_consumption(db):
+    _consume_stage_b_transport(db, "consumed-1")
+    with db.connect() as connection:
+        connection.execute(
+            "UPDATE stage_b_evaluation_receipts SET budget_consumed=13 WHERE evaluation_id=?",
+            ("consumed-1",),
+        )
+
+    with pytest.raises(ValueError, match="inconsistent"):
+        read_durable_budget(db, configured_capacity=12)
+
+
+def test_budget_inspector_uses_current_durable_budget(db, capsys):
+    _consume_stage_b_transport(db, "consumed-1")
+
+    from scripts.stage_b_evaluation_inspect import main
+
+    assert main(["inspect-real-idea-budget-extension", "--database", str(db.path)]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["accounting"]["general_spendable"] == 11
+    assert output["accounting"]["safe_ceiling"] == 10
 
 
 def test_v2_migration_preserves_old_extension_and_unrelated_data(tmp_path):

@@ -23,8 +23,8 @@ class QualityRevisionError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ArtifactBinding:
-    batch_id: str
-    sample_id: str
+    batch_id: str | None
+    sample_id: str | None
     project_id: str
     artifact_type: str
     artifact_version_id: str
@@ -37,6 +37,13 @@ class ArtifactBinding:
     input_manifest: Mapping[str, Any]
     evidence_manifest: Mapping[str, Any]
     policy_version: str
+    owner_actor: str | None = None
+    artifact_id: str | None = None
+    artifact_revision: int | None = None
+    evaluation_scope: str = "REAL_IDEA_BATCH"
+    intent_revision: int | None = None
+    slice_id: str | None = None
+    slice_revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +67,13 @@ class ArtifactQualityEvaluation:
     evaluator_role: str
     created_at: str
     supersedes_quality_evaluation_id: str | None
+    owner_actor: str | None = None
+    artifact_id: str | None = None
+    artifact_revision: int | None = None
+    evaluation_scope: str = "REAL_IDEA_BATCH"
+    intent_revision: int | None = None
+    slice_id: str | None = None
+    slice_revision: int | None = None
 
 
 _QUALITY_METRICS = {
@@ -82,6 +96,14 @@ _QUALITY_METRICS = {
     "HANDOFF": {
         "exact_version_binding_accuracy", "artifact_completeness", "unresolved_item_coverage",
         "evidence_limitation_visibility", "decision_binding_accuracy", "package_integrity",
+    },
+    "BUILD_SLICE": {
+        "scope_recall", "scope_precision", "acceptance_coverage", "acceptance_testability",
+        "constraint_preservation", "dependency_clarity", "unsupported_claim_rate",
+    },
+    "PROTOTYPE_TASK": {
+        "scope_recall", "scope_precision", "acceptance_coverage", "acceptance_testability",
+        "constraint_preservation", "dependency_clarity", "unsupported_claim_rate",
     },
 }
 
@@ -119,17 +141,71 @@ class QualityEvaluationService:
         _assert_safe_evidence(binding.metric_payload)
         _assert_safe_evidence(binding.input_manifest)
         _assert_safe_evidence(binding.evidence_manifest)
-        sample = self.database.fetch_one(
-            "SELECT batch_id, project_id FROM real_idea_samples WHERE sample_id = ?", (binding.sample_id,)
-        )
-        if not sample or sample["batch_id"] != binding.batch_id or sample["project_id"] != binding.project_id:
-            raise QualityBindingError("quality evidence is not bound to the sample project")
+        if binding.evaluation_scope == "IF_GUIDE_M2":
+            self._validate_m2_binding(binding)
+        elif binding.evaluation_scope != "REAL_IDEA_BATCH":
+            raise QualityBindingError("unknown evaluation scope")
+        else:
+            if binding.artifact_type in {"BUILD_SLICE", "PROTOTYPE_TASK"}:
+                raise QualityBindingError("M2 artifacts require IF_GUIDE_M2 evaluation scope")
+            sample = self.database.fetch_one(
+                "SELECT batch_id, project_id FROM real_idea_samples WHERE sample_id = ?", (binding.sample_id,)
+            )
+            if not sample or sample["batch_id"] != binding.batch_id or sample["project_id"] != binding.project_id:
+                raise QualityBindingError("quality evidence is not bound to the sample project")
         missing = _QUALITY_METRICS[binding.artifact_type] - set(binding.metric_payload)
         if missing:
             raise QualityBindingError(f"required metric payload missing: {sorted(missing)[0]}")
 
+    def _validate_m2_binding(self, binding: ArtifactBinding) -> None:
+        if binding.artifact_type not in {"BUILD_SLICE", "PROTOTYPE_TASK"}:
+            raise QualityBindingError("IF_GUIDE_M2 scope only accepts M2 artifacts")
+        if binding.batch_id is not None or binding.sample_id is not None:
+            raise QualityBindingError("M2 quality evidence cannot bind to a real-idea sample")
+        if not binding.owner_actor or not binding.artifact_id or binding.artifact_revision is None:
+            raise QualityBindingError("M2 quality evidence requires owner, artifact, and revision binding")
+        if binding.artifact_revision < 1:
+            raise QualityBindingError("M2 artifact revision must be positive")
+        if not binding.artifact_version_id.strip():
+            raise QualityBindingError("artifact version identity is required")
+        if binding.artifact_type == "BUILD_SLICE":
+            if binding.slice_id not in {None, binding.artifact_id}:
+                raise QualityBindingError("Build Slice binding has inconsistent slice identity")
+            row = self.database.fetch_one(
+                "SELECT project_id, owner_actor, revision FROM build_slices WHERE slice_id = ?",
+                (binding.artifact_id,),
+            )
+        else:
+            if not binding.slice_id or binding.slice_revision is None:
+                raise QualityBindingError("Prototype Task binding requires parent slice binding")
+            row = self.database.fetch_one(
+                "SELECT project_id, owner_actor, revision, slice_id, slice_revision "
+                "FROM prototype_tasks WHERE task_id = ?",
+                (binding.artifact_id,),
+            )
+        if not row:
+            raise QualityBindingError("M2 quality evidence artifact does not exist")
+        if row["project_id"] != binding.project_id or row["owner_actor"] != binding.owner_actor:
+            raise QualityBindingError("M2 quality evidence is not bound to the owner project")
+        if row["revision"] != binding.artifact_revision:
+            raise QualityBindingError("M2 quality evidence artifact revision is stale")
+        if binding.artifact_type == "PROTOTYPE_TASK" and (
+            row["slice_id"] != binding.slice_id or row["slice_revision"] != binding.slice_revision
+        ):
+            raise QualityBindingError("Prototype Task parent slice binding is inconsistent")
+
     def _insert(self, binding: ArtifactBinding, *, status: str, revision: int = 1,
                 supersedes: str | None = None) -> ArtifactQualityEvaluation:
+        if binding.evaluation_scope == "IF_GUIDE_M2":
+            duplicate = self.database.fetch_one(
+                "SELECT 1 FROM real_idea_quality_evaluations "
+                "WHERE evaluation_scope=? AND project_id=? AND artifact_type=? "
+                "AND artifact_id=? AND artifact_revision=? AND quality_revision=?",
+                (binding.evaluation_scope, binding.project_id, binding.artifact_type,
+                 binding.artifact_id, binding.artifact_revision, revision),
+            )
+            if duplicate:
+                raise QualityRevisionError("M2 quality revision already exists")
         quality_id = f"quality_{uuid.uuid4().hex}"
         created_at = utc_now()
         input_hash = _canonical_hash(binding.input_manifest)
@@ -140,13 +216,16 @@ class QualityEvaluationService:
                 artifact_version_id, selected_solution_id, snapshot_id, upstream_version_ids,
                 quality_layer, quality_revision, status, metric_payload, input_manifest_sha256,
                 evidence_manifest_sha256, policy_version, quality_schema_version, evaluator_role,
-                created_at, supersedes_quality_evaluation_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v1', ?, ?, ?)""",
+                created_at, supersedes_quality_evaluation_id, owner_actor, artifact_id,
+                artifact_revision, evaluation_scope, intent_revision, slice_id, slice_revision
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (quality_id, binding.batch_id, binding.sample_id, binding.project_id, binding.artifact_type,
              binding.artifact_version_id, binding.selected_solution_id, binding.snapshot_id,
              json.dumps(list(binding.upstream_version_ids)), binding.quality_layer, revision, status,
              json.dumps(dict(binding.metric_payload), ensure_ascii=False, sort_keys=True), input_hash,
-             evidence_hash, binding.policy_version, binding.evaluator_role, created_at, supersedes),
+             evidence_hash, binding.policy_version, "v1", binding.evaluator_role, created_at, supersedes,
+             binding.owner_actor, binding.artifact_id, binding.artifact_revision, binding.evaluation_scope,
+             binding.intent_revision, binding.slice_id, binding.slice_revision),
         )
         return self.get(quality_id)
 
@@ -167,6 +246,38 @@ class QualityEvaluationService:
             evidence_manifest_sha256=row["evidence_manifest_sha256"], policy_version=row["policy_version"],
             evaluator_role=row["evaluator_role"], created_at=row["created_at"],
             supersedes_quality_evaluation_id=row["supersedes_quality_evaluation_id"],
+            owner_actor=row["owner_actor"], artifact_id=row["artifact_id"],
+            artifact_revision=row["artifact_revision"], evaluation_scope=row["evaluation_scope"],
+            intent_revision=row["intent_revision"], slice_id=row["slice_id"],
+            slice_revision=row["slice_revision"],
+        )
+
+    def get_for_artifact(
+        self, *, evaluation_scope: str, project_id: str, artifact_type: str,
+        artifact_id: str, artifact_revision: int,
+    ) -> ArtifactQualityEvaluation | None:
+        """Recover the newest immutable evaluation for one exact artifact revision."""
+        row = self.database.fetch_one(
+            "SELECT quality_evaluation_id FROM real_idea_quality_evaluations "
+            "WHERE evaluation_scope=? AND project_id=? AND artifact_type=? "
+            "AND artifact_id=? AND artifact_revision=? "
+            "ORDER BY quality_revision DESC, created_at DESC LIMIT 1",
+            (evaluation_scope, project_id, artifact_type, artifact_id, artifact_revision),
+        )
+        return self.get(row["quality_evaluation_id"]) if row else None
+
+    @staticmethod
+    def _binding_from_evaluation(source: ArtifactQualityEvaluation, *, quality_layer: str,
+                                 evaluator_role: str, metric_payload: Mapping[str, Any],
+                                 input_manifest: Mapping[str, Any],
+                                 evidence_manifest: Mapping[str, Any]) -> ArtifactBinding:
+        return ArtifactBinding(
+            source.batch_id, source.sample_id, source.project_id, source.artifact_type,
+            source.artifact_version_id, source.selected_solution_id, source.snapshot_id,
+            source.upstream_version_ids, quality_layer, evaluator_role, metric_payload,
+            input_manifest, evidence_manifest, source.policy_version,
+            source.owner_actor, source.artifact_id, source.artifact_revision,
+            source.evaluation_scope, source.intent_revision, source.slice_id, source.slice_revision,
         )
 
     def evaluate_p0(self, binding: ArtifactBinding) -> ArtifactQualityEvaluation:
@@ -182,12 +293,10 @@ class QualityEvaluationService:
             raise QualityBindingError("P1 requires a passing P0 evaluation")
         payload = dict(source.metric_payload)
         gaps = tuple(payload.get("p1_gaps", ()))
-        binding = ArtifactBinding(
-            source.batch_id, source.sample_id, source.project_id, source.artifact_type,
-            source.artifact_version_id, source.selected_solution_id, source.snapshot_id,
-            source.upstream_version_ids, "P1", "system", payload,
-            {"source_quality_evaluation_id": source.quality_evaluation_id},
-            {"source_quality_evaluation_id": source.quality_evaluation_id}, source.policy_version,
+        binding = self._binding_from_evaluation(
+            source, quality_layer="P1", evaluator_role="system", metric_payload=payload,
+            input_manifest={"source_quality_evaluation_id": source.quality_evaluation_id},
+            evidence_manifest={"source_quality_evaluation_id": source.quality_evaluation_id},
         )
         result = self._insert(binding, status="PARTIAL" if gaps else "PASS", revision=2,
                               supersedes=source.quality_evaluation_id)
@@ -203,12 +312,10 @@ class QualityEvaluationService:
             raise QualityBindingError("P2 requires an authoritative human reviewer")
         payload = dict(source.metric_payload)
         payload["p2_review"] = {key: value for key, value in review.items() if key != "evaluator_role"}
-        binding = ArtifactBinding(
-            source.batch_id, source.sample_id, source.project_id, source.artifact_type,
-            source.artifact_version_id, source.selected_solution_id, source.snapshot_id,
-            source.upstream_version_ids, "P2", role, payload,
-            {"source_quality_evaluation_id": source.quality_evaluation_id},
-            {"review_id": review.get("review_id", "redacted")}, source.policy_version,
+        binding = self._binding_from_evaluation(
+            source, quality_layer="P2", evaluator_role=role, metric_payload=payload,
+            input_manifest={"source_quality_evaluation_id": source.quality_evaluation_id},
+            evidence_manifest={"review_id": review.get("review_id", "redacted")},
         )
         return self._insert(binding, status=str(review.get("status", "PARTIAL")),
                             revision=source.quality_revision + 1,
@@ -250,18 +357,26 @@ class QualityEvaluationService:
             raise QualityRevisionError("correction reason is required")
         original = self.get(quality_evaluation_id)
         next_revision = original.quality_revision + 1
-        existing = self.database.fetch_one(
-            "SELECT 1 FROM real_idea_quality_evaluations WHERE batch_id=? AND sample_id=? AND artifact_type=? AND artifact_version_id=? AND quality_revision=?",
-            (original.batch_id, original.sample_id, original.artifact_type, original.artifact_version_id, next_revision),
-        )
+        if original.evaluation_scope == "IF_GUIDE_M2":
+            existing = self.database.fetch_one(
+                "SELECT 1 FROM real_idea_quality_evaluations WHERE evaluation_scope=? AND project_id=? "
+                "AND artifact_type=? AND artifact_id=? AND artifact_revision=? AND quality_revision=?",
+                (original.evaluation_scope, original.project_id, original.artifact_type,
+                 original.artifact_id, original.artifact_revision, next_revision),
+            )
+        else:
+            existing = self.database.fetch_one(
+                "SELECT 1 FROM real_idea_quality_evaluations WHERE batch_id=? AND sample_id=? AND artifact_type=? AND artifact_version_id=? AND quality_revision=?",
+                (original.batch_id, original.sample_id, original.artifact_type, original.artifact_version_id, next_revision),
+            )
         if existing:
             raise QualityRevisionError("quality revision already exists")
-        binding = ArtifactBinding(
-            original.batch_id, original.sample_id, original.project_id, original.artifact_type,
-            original.artifact_version_id, original.selected_solution_id, original.snapshot_id,
-            original.upstream_version_ids, original.quality_layer, evaluator_role, metric_payload,
-            {"source_quality_evaluation_id": original.quality_evaluation_id, "correction": correction_reason},
-            {"correction_reason": correction_reason}, original.policy_version,
+        binding = self._binding_from_evaluation(
+            original, quality_layer=original.quality_layer, evaluator_role=evaluator_role,
+            metric_payload=metric_payload,
+            input_manifest={"source_quality_evaluation_id": original.quality_evaluation_id,
+                            "correction": correction_reason},
+            evidence_manifest={"correction_reason": correction_reason},
         )
         self._validate_binding(binding)
         if status not in {"PASS", "PARTIAL", "FAIL"}:

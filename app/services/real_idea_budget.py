@@ -221,12 +221,19 @@ class RealIdeaBudgetService:
             bound_allocation = int(connection.execute(
                 "SELECT COALESCE(SUM(batch_earmark), 0) FROM real_idea_budget_allocations WHERE state = 'ACTIVE'"
             ).fetchone()[0])
+            authorized_total = self.durable_budget + sum(
+                value for state, value in totals.items() if state != RELEASED
+            )
             return {
-                "authorized_total": self.durable_budget + sum(value for state, value in totals.items() if state != RELEASED),
+                "authorized_total": authorized_total,
                 "general_spendable": self.durable_budget,
                 "restricted_unbound": totals.get(UNBOUND_RESTRICTED, 0),
                 "bound_allocation": bound_allocation,
-                "safe_ceiling": max(self.durable_budget - 1, 0),
+                # This is the conservative ceiling over all currently
+                # authorized capacity.  It is reporting/safety metadata only;
+                # ordinary spend remains capped by general_spendable and
+                # restricted credits remain unavailable until batch binding.
+                "safe_ceiling": max(authorized_total - 1, 0),
             }
 
     def reserve(self, batch_id: str, sample_id: str, stage: str, ordinal: int) -> TransportReservation:

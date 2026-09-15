@@ -52,7 +52,7 @@ def test_extension_starts_unbound_restricted_and_reports_restricted_accounting(d
         "general_spendable": 6,
         "restricted_unbound": 3,
         "bound_allocation": 0,
-        "safe_ceiling": 5,
+        "safe_ceiling": 8,
     }
 
 

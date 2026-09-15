@@ -988,6 +988,16 @@ class Database:
 
     def schema_version(self) -> int:
         with self.connect() as connection:
+            meta_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                ("real_idea_evaluation_schema_meta",),
+            ).fetchone()
+            if meta_exists:
+                row = connection.execute(
+                    "SELECT version FROM real_idea_evaluation_schema_meta WHERE singleton = 1"
+                ).fetchone()
+                if row is not None:
+                    return int(row[0])
             return int(connection.execute("PRAGMA user_version").fetchone()[0])
 
     def table_names(self) -> set[str]:

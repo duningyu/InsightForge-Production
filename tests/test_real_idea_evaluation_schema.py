@@ -9,6 +9,8 @@ def test_real_idea_schema_is_versioned_and_isolated(tmp_path):
     db = Database(tmp_path / "evaluation.sqlite")
     db.init_schema()
     assert db.schema_version() >= 1
+    with sqlite3.connect(db.path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
     assert db.table_names() >= {
         "real_idea_batches", "real_idea_samples",
         "real_idea_budget_allocations", "real_idea_transport_reservations",

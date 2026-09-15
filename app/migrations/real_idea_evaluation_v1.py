@@ -4,9 +4,15 @@ import sqlite3
 
 
 VERSION = 1
+_VERSION_TABLE = "real_idea_evaluation_schema_meta"
 
 
 MIGRATION_SQL = """
+CREATE TABLE IF NOT EXISTS real_idea_evaluation_schema_meta (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    version INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS real_idea_batches (
     batch_id TEXT PRIMARY KEY,
     batch_key TEXT NOT NULL UNIQUE,
@@ -586,7 +592,18 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
 
 def apply(connection: sqlite3.Connection) -> None:
     """Apply the additive Real Idea evaluation schema in the caller's transaction."""
-    current = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    meta_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (_VERSION_TABLE,),
+    ).fetchone()
+    row = (
+        connection.execute(
+            f"SELECT version FROM {_VERSION_TABLE} WHERE singleton = 1"
+        ).fetchone()
+        if meta_exists
+        else None
+    )
+    current = int(row[0]) if row is not None else 0
     if current > VERSION:
         return
     if current == VERSION:
@@ -597,7 +614,10 @@ def apply(connection: sqlite3.Connection) -> None:
     try:
         for statement in _migration_statements():
             connection.execute(statement)
-        connection.execute(f"PRAGMA user_version = {VERSION}")
+        connection.execute(
+            f"INSERT OR REPLACE INTO {_VERSION_TABLE}(singleton, version) VALUES (1, ?)",
+            (VERSION,),
+        )
         _validate_schema(connection)
         connection.execute("RELEASE SAVEPOINT real_idea_evaluation_v1")
     except Exception:

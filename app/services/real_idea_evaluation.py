@@ -13,6 +13,9 @@ from app.services.projects import ProjectService
 from app.services.solution_design import SolutionDesignService
 from app.services.stage_b_evaluation import StageBExecutionPolicy
 from app.services.handoff import HandoffService
+from app.services.evaluation_policy import EvaluationExecutionPolicy
+from app.services.quick_start import QuickStartService
+from app.schemas import QuickStartRequest
 from app.services.real_idea_budget import (
     BATCH_EARMARK,
     EXTENSION_CREDITS,
@@ -325,6 +328,37 @@ class RealIdeaEvaluationService:
             evaluation_id=evaluation_id,
         )
 
+    def run_quickstart(self, sample_id: str, *, raw_idea: str, runtime: Any) -> dict[str, Any]:
+        """Run the normal interpreter against the born evaluation project.
+
+        The reservation is durable before the runtime is entered; an attempted
+        transport is never refunded, including recovery/timeout outcomes.
+        """
+        sample = self.database.fetch_one("SELECT * FROM real_idea_samples WHERE sample_id=?", (sample_id,))
+        if not sample:
+            raise KeyError(sample_id)
+        if sample["state"] != "QUICKSTART_PENDING":
+            raise ValueError("sample is not pending QuickStart")
+        reservation = self.budget.reserve(sample["batch_id"], sample_id, "QUICKSTART", 1)
+        self.budget.mark_attempted(
+            reservation.reservation_id,
+            dispatch_id=f"dispatch_{uuid.uuid4().hex}",
+            transport_id=f"transport_{uuid.uuid4().hex}",
+        )
+        result = QuickStartService(self.database, self.projects, runtime).quick_start_existing_project(
+            sample["project_id"], QuickStartRequest(idea=raw_idea), actor=self.actor,
+            evaluation_policy=EvaluationExecutionPolicy(
+                batch_id=sample["batch_id"], sample_id=sample_id, stage="QUICKSTART",
+                max_provider_transports=1,
+            ),
+        )
+        next_state = result.get("status")
+        if next_state == "AWAITING_BRIEF_REVIEW":
+            self.transition_sample(sample_id, from_state="QUICKSTART_PENDING", to_state="AWAITING_BRIEF_REVIEW")
+        elif next_state == "OPERATIONAL_INCOMPLETE":
+            self.transition_sample(sample_id, from_state="QUICKSTART_PENDING", to_state="OPERATIONAL_INCOMPLETE")
+        return result
+
     def record_selection(
         self, sample_id: str, *, selected_ordinal: int, reason: str
     ) -> SelectionReviewResult:
@@ -489,7 +523,8 @@ class RealIdeaEvaluationService:
         hard_violations = {
             "cross_sample_binding", "wrong_version", "budget_overrun",
             "search_attempt", "silent_ack", "unsupported_verified_fact",
-            "critical_inheritance_failure",
+            "critical_inheritance_failure", "cross_sample_project", "wrong_solution_id",
+            "wrong_prd_version",
         }
         for violation in sorted(violations & hard_violations):
             reasons.append(violation)

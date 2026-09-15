@@ -243,6 +243,82 @@ class QuickStartService:
             raise KeyError("idea brief not found")
         return self._serialize_row(row)
 
+    def quick_start_existing_project(
+        self,
+        project_id: str,
+        payload: QuickStartRequest,
+        *,
+        actor: str,
+        evaluation_policy: EvaluationExecutionPolicy,
+    ) -> dict[str, Any]:
+        """Interpret an already-created evaluation project without creating another row.
+
+        The evaluation wrapper owns project birth; this method deliberately reuses the
+        normal interpreter, parser, completeness check, and brief persistence contract.
+        """
+        if evaluation_policy.stage != "QUICKSTART":
+            raise ValueError("QuickStart requires a QUICKSTART evaluation policy")
+        self.projects.get_project(project_id)
+        resolver = getattr(self.runtime, "for_project", None)
+        runtime = (
+            resolver(project_id, evaluation_policy=evaluation_policy)
+            if callable(resolver) else self.runtime
+        )
+        started = time.perf_counter()
+        try:
+            draft = runtime.interpret_idea(payload)
+        except StructuredRuntimeRecoveryError as exc:
+            trace = build_ai_trace_payload(
+                runtime=runtime, input_payload=payload, output_payload=None,
+                started_at=started, status="recovery_required",
+                component_version=self.INTERPRETER_VERSION,
+            )
+            trace["interpreter_version"] = trace.pop("component_version")
+            trace["error_code"] = exc.error_code
+            self.db.insert_audit(actor=actor, action="idea_generation_recovery_required",
+                                 entity_type="project", entity_id=project_id, payload=trace)
+            result = exc.as_payload(preserved_input=payload)
+            result.update({
+                "project_id": project_id, "status": "OPERATIONAL_INCOMPLETE",
+                "brief_confirmed": False,
+                "provider_transport_count": int(getattr(runtime, "provider_transport_attempts", 0)),
+            })
+            return result
+        trace = build_ai_trace_payload(
+            runtime=runtime, input_payload=payload, output_payload=draft,
+            started_at=started, status="completed", component_version=self.INTERPRETER_VERSION,
+        )
+        trace["interpreter_version"] = trace.pop("component_version")
+        transport_count = int(getattr(runtime, "provider_transport_attempts", 0))
+        completeness = draft.validate_substantive_completeness()
+        if not completeness.complete:
+            self.db.insert_audit(
+                actor=actor, action="idea_brief_incomplete", entity_type="project",
+                entity_id=project_id,
+                payload={"missing_fields": list(completeness.missing_fields),
+                         "provider_transport_count": transport_count},
+            )
+            return {
+                "project_id": project_id, "status": "OPERATIONAL_INCOMPLETE",
+                "brief_confirmed": False, "missing_fields": list(completeness.missing_fields),
+                "clarification_required": completeness.clarification_required,
+                "provider_transport_count": transport_count, "runtime_mode": runtime.mode,
+            }
+        with self.db.connect() as connection:
+            brief_id = self._insert_brief_tx(
+                connection, project_id=project_id, version=1, draft=draft,
+                confirmation_status="inferred",
+            )
+            self.db.insert_audit_tx(
+                connection, actor=actor, action="idea_brief_interpreted",
+                entity_type="idea_brief", entity_id=brief_id, payload=trace,
+            )
+        return {
+            "project_id": project_id, "status": "AWAITING_BRIEF_REVIEW",
+            "brief_confirmed": False, "provider_transport_count": transport_count,
+            "idea_brief": self.get_brief(project_id), "runtime_mode": runtime.mode,
+        }
+
     def confirm_brief(
         self,
         project_id: str,

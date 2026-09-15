@@ -18,9 +18,11 @@ from app.services.quick_start import QuickStartService
 from app.schemas import QuickStartRequest
 from app.services.real_idea_budget import (
     BATCH_EARMARK,
+    BOUND,
     EXTENSION_CREDITS,
     EXTENSION_ID,
     RealIdeaBudgetService,
+    UNBOUND_RESTRICTED,
 )
 
 
@@ -31,6 +33,11 @@ SAMPLE_STATES = frozenset({
     "WITHDRAWN", "FINALIZED",
 })
 SAMPLE_KEYS = ("REAL_IDEA_01", "REAL_IDEA_02", "REAL_IDEA_03")
+SAMPLE_SOURCE_TYPES = {
+    "REAL_IDEA_01": "project_owner_real_product_idea",
+    "REAL_IDEA_02": "student_internship_job_seeker_idea",
+    "REAL_IDEA_03": "career_switcher_junior_pm_idea",
+}
 
 
 class ExpectedSeedFailure(RuntimeError):
@@ -118,10 +125,210 @@ class RealIdeaEvaluationService:
         self.budget = RealIdeaBudgetService(database, durable_budget=durable_budget)
         self._integrity_violations: dict[str, set[str]] = {}
 
+    def create_batch_with_slots(
+        self,
+        *,
+        batch_id: str,
+        source_commit: str,
+        deployment_id: str,
+        extension_id: str = EXTENSION_ID,
+        actor: str | None = None,
+    ) -> BatchRecord:
+        """Create the fixed Real Idea batch and its empty slots atomically.
+
+        This is the only mutation path for creating the evaluation batch.  It
+        deliberately does not create a project, brief, reservation, or raw
+        idea; those belong to the later per-sample lifecycle.
+        """
+        if batch_id != "REAL_IDEA_BATCH_01":
+            raise ValueError("only REAL_IDEA_BATCH_01 is supported")
+        if extension_id != EXTENSION_ID:
+            raise ValueError("only the approved Real Idea extension is supported")
+        if not isinstance(source_commit, str) or not source_commit.strip():
+            raise ValueError("source_commit is required")
+        if not isinstance(deployment_id, str) or not deployment_id.strip():
+            raise ValueError("deployment_id is required")
+
+        manifest = self._build_batch_manifest(batch_id, source_commit.strip(), deployment_id.strip())
+        created_by = actor or self.actor
+        empty_raw_hash = hashlib.sha256(b"").hexdigest()
+        now = utc_now()
+
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT batch_id, status, manifest_sha256 FROM real_idea_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            if existing:
+                if self._is_complete_empty_batch_tx(connection, batch_id, manifest):
+                    return BatchRecord(existing["batch_id"], existing["status"])
+                raise ValueError("Real Idea batch already exists but is incomplete or conflicts")
+
+            extension = connection.execute(
+                "SELECT extension_id, authorized_credits, state, bound_batch_id "
+                "FROM real_idea_budget_extensions WHERE extension_id = ?",
+                (extension_id,),
+            ).fetchone()
+            if not extension:
+                raise ValueError("approved restricted extension is missing")
+            if extension["state"] != UNBOUND_RESTRICTED:
+                raise ValueError("approved restricted extension is not unbound")
+            if int(extension["authorized_credits"]) != EXTENSION_CREDITS:
+                raise ValueError("approved restricted extension has unexpected credits")
+            if extension["bound_batch_id"] is not None:
+                raise ValueError("approved restricted extension is already bound")
+
+            prompt_hash = manifest["prompt_hash"]
+            schema_hash = manifest["schema_hash"]
+            connection.execute(
+                """
+                INSERT INTO real_idea_batches(
+                    batch_id, batch_key, status, created_at, manifest_sha256,
+                    source_commit, deployment_id, model, prompt_hash, schema_hash,
+                    completeness_contract_version, questionnaire_version, sample_count,
+                    search_allowed, provider_policy_version, batch_version_split,
+                    safe_counts_json, created_by
+                ) VALUES (?, ?, 'CREATED', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 3, 0, ?, 0, '{}', ?)
+                """,
+                (
+                    batch_id, batch_id, now, source_commit.strip(), deployment_id.strip(),
+                    manifest["model"], prompt_hash, schema_hash,
+                    manifest["idea_brief_completeness_contract_version"],
+                    manifest["questionnaire_version"], manifest["provider_policy_version"], created_by,
+                ),
+            )
+            allocation = self.budget._earmark_batch_tx(connection, batch_id, BATCH_EARMARK)
+            for sample_key in SAMPLE_KEYS:
+                sample_manifest = hashlib.sha256(
+                    f"{batch_id}:{sample_key}:empty:v1".encode("utf-8")
+                ).hexdigest()
+                connection.execute(
+                    """
+                    INSERT INTO real_idea_samples(
+                        sample_id, batch_id, sample_key, source_type, project_id,
+                        raw_idea_sha256, redaction_version, state, sample_manifest_sha256,
+                        budget_allocation_id, created_at, created_by
+                    ) VALUES (?, ?, ?, ?, NULL, ?, 'pending-v1', 'CREATED', ?, ?, ?, ?)
+                    """,
+                    (
+                        sample_key, batch_id, sample_key, SAMPLE_SOURCE_TYPES[sample_key],
+                        empty_raw_hash, sample_manifest, allocation.allocation_id, now, created_by,
+                    ),
+                )
+            self._freeze_batch_manifest_tx(connection, batch_id, manifest)
+            return BatchRecord(batch_id, "CREATED")
+
+    @staticmethod
+    def _build_batch_manifest(batch_id: str, source_commit: str, deployment_id: str) -> dict[str, Any]:
+        def digest(label: str) -> str:
+            return hashlib.sha256(f"{label}:v1".encode("utf-8")).hexdigest()
+
+        return {
+            "manifest_version": "real-idea-batch-v1",
+            "batch_id": batch_id,
+            "source_commit": source_commit,
+            "deployment_id": deployment_id,
+            "model": "qwen3.7-flash",
+            "quickstart_prompt_hash": digest("quickstart-prompt"),
+            "quickstart_schema_hash": digest("quickstart-schema"),
+            "solutions_prompt_hash": digest("solutions-prompt"),
+            "solutions_schema_hash": digest("solutions-schema"),
+            "prompt_hash": digest("quickstart-prompt") + digest("solutions-prompt"),
+            "schema_hash": digest("quickstart-schema") + digest("solutions-schema"),
+            "idea_brief_completeness_contract_version": "v1",
+            "questionnaire_version": "v1",
+            "sample_source_types": dict(SAMPLE_SOURCE_TYPES),
+            "quickstart_one_shot_policy": {"max_provider_transports": 1, "validation_regeneration": False},
+            "solutions_one_shot_policy": {"max_provider_transports": 1, "validation_regeneration": False},
+            "sample_hard_cap": 2,
+            "batch_hard_cap": BATCH_EARMARK,
+            "budget_extension_id": EXTENSION_ID,
+            "provider_policy_version": "real-idea-v1",
+            "search": False,
+        }
+
+    def _freeze_batch_manifest_tx(self, connection, batch_id: str, manifest: dict[str, Any]) -> None:
+        samples = connection.execute(
+            "SELECT sample_key, state, project_id FROM real_idea_samples WHERE batch_id = ? ORDER BY sample_key",
+            (batch_id,),
+        ).fetchall()
+        if len(samples) != len(SAMPLE_KEYS) or [row["sample_key"] for row in samples] != list(SAMPLE_KEYS):
+            raise ValueError("batch must contain exactly the fixed three sample slots")
+        if any(row["state"] != "CREATED" or row["project_id"] is not None for row in samples):
+            raise ValueError("batch sample slots must be empty before manifest freeze")
+        allocation = connection.execute(
+            "SELECT batch_earmark, state FROM real_idea_budget_allocations WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        if not allocation or allocation["state"] != "ACTIVE" or int(allocation["batch_earmark"]) != BATCH_EARMARK:
+            raise ValueError("batch must have the approved active earmark before manifest freeze")
+        if connection.execute(
+            "SELECT COUNT(*) FROM real_idea_transport_reservations WHERE batch_id = ?", (batch_id,)
+        ).fetchone()[0]:
+            raise ValueError("batch manifest cannot freeze with transport reservations")
+        encoded = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        manifest_sha256 = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        updated = connection.execute(
+            """
+            UPDATE real_idea_batches
+            SET manifest_sha256 = ?, prompt_hash = ?, schema_hash = ?,
+                safe_counts_json = ?
+            WHERE batch_id = ? AND manifest_sha256 = 'pending'
+            """,
+            (manifest_sha256, manifest["prompt_hash"], manifest["schema_hash"], encoded, batch_id),
+        )
+        if updated.rowcount != 1:
+            raise ValueError("batch manifest was already frozen")
+
+    def _is_complete_empty_batch_tx(self, connection, batch_id: str, manifest: dict[str, Any]) -> bool:
+        batch = connection.execute(
+            "SELECT manifest_sha256, safe_counts_json FROM real_idea_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        if not batch or batch["manifest_sha256"] in {None, "pending"}:
+            return False
+        try:
+            stored = json.loads(batch["safe_counts_json"])
+        except (TypeError, json.JSONDecodeError):
+            return False
+        encoded = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        expected_sha = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        samples = connection.execute(
+            "SELECT sample_key, state, project_id FROM real_idea_samples WHERE batch_id = ? ORDER BY sample_key",
+            (batch_id,),
+        ).fetchall()
+        extension = connection.execute(
+            "SELECT state, bound_batch_id FROM real_idea_budget_extensions WHERE extension_id = ?",
+            (EXTENSION_ID,),
+        ).fetchone()
+        allocation = connection.execute(
+            "SELECT batch_earmark, state FROM real_idea_budget_allocations WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        return (
+            batch["manifest_sha256"] == expected_sha
+            and stored == manifest
+            and [row["sample_key"] for row in samples] == list(SAMPLE_KEYS)
+            and all(row["state"] == "CREATED" and row["project_id"] is None for row in samples)
+            and extension is not None and extension["state"] == BOUND and extension["bound_batch_id"] == batch_id
+            and allocation is not None and allocation["state"] == "ACTIVE"
+            and int(allocation["batch_earmark"]) == BATCH_EARMARK
+        )
+
     def start_batch(self, batch_id: str | Any, actor: str | None = None) -> BatchRecord:
         if not isinstance(batch_id, str) or not batch_id.strip():
             raise ValueError("batch_id is required")
         batch_id = batch_id.strip()
+        if batch_id == "REAL_IDEA_BATCH_01":
+            return self.create_batch_with_slots(
+                batch_id=batch_id,
+                source_commit="local-test",
+                deployment_id="local-test",
+                actor=actor,
+            )
+        # Generic lifecycle fixtures use this legacy path; the fixed production
+        # batch is created only through the atomic method above.
         now = utc_now()
         manifest = hashlib.sha256(f"{batch_id}:manifest:v1".encode()).hexdigest()
         with self.database.connect() as connection:
@@ -173,15 +380,27 @@ class RealIdeaEvaluationService:
             if not allocation:
                 raise ValueError("batch has no active earmark")
             used = connection.execute(
-                "SELECT sample_key FROM real_idea_samples WHERE batch_id = ? ORDER BY sample_key",
+                "SELECT sample_id, sample_key, state, project_id FROM real_idea_samples WHERE batch_id = ? ORDER BY sample_key",
                 (batch_id,),
             ).fetchall()
-            used_keys = {row["sample_key"] for row in used}
+            placeholders = [
+                row for row in used
+                if row["sample_key"] in SAMPLE_KEYS
+                and row["state"] == "CREATED"
+                and row["project_id"] is None
+            ]
+            used_keys = {row["sample_key"] for row in used if row not in placeholders}
             available = [key for key in SAMPLE_KEYS if key not in used_keys]
-            if not available:
+            if not available and not placeholders:
                 raise ValueError("all three batch sample slots are already used")
-            sample_key = available[0]
-            sample_id = f"sample_{uuid.uuid4().hex}"
+            placeholder = placeholders[0] if placeholders else None
+            sample_key = placeholder["sample_key"] if placeholder else available[0]
+            sample_id = placeholder["sample_id"] if placeholder else f"sample_{uuid.uuid4().hex}"
+            if placeholder:
+                connection.execute(
+                    "DELETE FROM real_idea_samples WHERE sample_id = ?",
+                    (placeholder["sample_id"],),
+                )
             project_id = f"project_real_idea_{uuid.uuid4().hex}"
             sample_manifest = hashlib.sha256(
                 f"{batch_id}:{sample_key}:{raw_hash}:v1".encode("utf-8")

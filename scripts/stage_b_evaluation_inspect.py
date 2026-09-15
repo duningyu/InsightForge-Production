@@ -52,6 +52,7 @@ from app.services.real_idea_budget import (
     RealIdeaBudgetService,
     read_durable_budget,
 )
+from app.services.real_idea_evaluation import RealIdeaEvaluationService
 
 
 PHASE2_PRD_CONFIRM = "PHASE2_PRD_CONFIRM"
@@ -1029,6 +1030,36 @@ def _run_create_real_idea_budget_extension_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_create_real_idea_batch_cli(args: argparse.Namespace) -> int:
+    """Create the approved batch through the single atomic domain-service path."""
+    evaluate_stage_b_guard(
+        real_provider_stage_b=_env_bool("REAL_PROVIDER_STAGE_B"),
+        safe_fixture_mode=_env_bool("INSIGHTFORGE_SAFE_FIXTURE_MODE"),
+        accounts_enabled=_env_bool("INSIGHTFORGE_ACCOUNTS_ENABLED"),
+        participant_id=args.participant,
+    )
+    database = Database(args.database)
+    database.init_schema()
+    current = read_durable_budget(database, configured_capacity=DEFAULT_STAGE_B_TRANSPORT_BUDGET)
+    service = RealIdeaEvaluationService(
+        database,
+        durable_budget=current.durable_available,
+        actor=args.actor,
+    )
+    service.create_batch_with_slots(
+        batch_id="REAL_IDEA_BATCH_01",
+        source_commit=args.source_commit,
+        deployment_id=args.deployment_id,
+        actor=args.actor,
+    )
+    print(json.dumps({
+        "batch": _inspect_real_idea_batch(database, "REAL_IDEA_BATCH_01"),
+        "accounting": service.budget.accounting_summary(),
+        "safe_metadata_only": True,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _run_inspect_real_idea_budget_extension_cli(args: argparse.Namespace) -> int:
     database = Database(args.database)
     database.init_schema()
@@ -1520,7 +1551,8 @@ def _inspect_real_idea_batch(database: Database, batch_id: str) -> dict[str, Any
     )
     quality = database.fetch_all(
         """SELECT quality_evaluation_id, sample_id, artifact_type, status,
-                         revision, evidence_manifest_sha256, policy_version, created_at
+                         quality_revision AS revision, evidence_manifest_sha256,
+                         policy_version, created_at
            FROM real_idea_quality_evaluations WHERE batch_id = ?
            ORDER BY sample_id, artifact_type, revision""",
         (batch_id,),
@@ -1541,12 +1573,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument(
             "command",
             nargs="?",
-            choices=("inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project", "real-idea-batch", "real-idea-inspect", "create-real-idea-budget-extension", "inspect-real-idea-budget-extension", *_PHASE2_COMMANDS),
+            choices=("inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project", "real-idea-batch", "real-idea-inspect", "create-real-idea-budget-extension", "create-real-idea-batch", "inspect-real-idea-budget-extension", *_PHASE2_COMMANDS),
             help="operator command (the diagnostic command requires its own arguments)",
         )
         parser.print_help()
         return 0
-    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project", "real-idea-batch", "real-idea-inspect", "create-real-idea-budget-extension", "inspect-real-idea-budget-extension", *_PHASE2_COMMANDS} else "inspect"
+    command = argv[0] if argv and argv[0] in {"inspect", "inspect-provider-attempt", "dry-create", "ai-reference-shape-canary", "solutions-canary", "local-prd-canary", "seed-phase1a-project", "real-idea-batch", "real-idea-inspect", "create-real-idea-budget-extension", "create-real-idea-batch", "inspect-real-idea-budget-extension", *_PHASE2_COMMANDS} else "inspect"
     if command == "real-idea-batch":
         parser = argparse.ArgumentParser(
             description="Inspect the real-idea evaluation batch safely; this command never executes a batch"
@@ -1594,6 +1626,23 @@ def main(argv: list[str] | None = None) -> int:
             parser.print_help()
             return 0
         return _run_create_real_idea_budget_extension_cli(parser.parse_args(argv[1:]))
+    if command == "create-real-idea-batch":
+        parser = argparse.ArgumentParser(
+            description=(
+                "Create REAL_IDEA_BATCH_01 with its fixed empty sample slots "
+                "through the Stage-B atomic domain service"
+            )
+        )
+        parser.add_argument("create-real-idea-batch", nargs="?")
+        parser.add_argument("--database", type=Path, default=_database_path())
+        parser.add_argument("--participant", default=STAGE_B_PHASE1A_PARTICIPANT)
+        parser.add_argument("--actor", default="stage-b-batch-operator")
+        parser.add_argument("--source-commit", required=True)
+        parser.add_argument("--deployment-id", required=True)
+        if "--help" in argv[1:]:
+            parser.print_help()
+            return 0
+        return _run_create_real_idea_batch_cli(parser.parse_args(argv[1:]))
     if command == "inspect-real-idea-budget-extension":
         parser = argparse.ArgumentParser(
             description="Inspect restricted Real Idea budget extension state without mutation"

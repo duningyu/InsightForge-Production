@@ -105,79 +105,100 @@ class RealIdeaBudgetService:
         if extension_id != EXTENSION_ID or authorized_credits != EXTENSION_CREDITS:
             raise ValueError("only the approved restricted extension may be activated")
         with self.database.connect() as connection:
-            existing = connection.execute(
-                "SELECT authorized_credits, state FROM real_idea_budget_extensions WHERE extension_id = ?",
-                (extension_id,),
-            ).fetchone()
-            if existing:
-                if int(existing[0]) != authorized_credits or existing[1] not in {UNBOUND_RESTRICTED, BOUND}:
-                    raise ValueError("restricted extension is already incompatible")
-                return False
-            connection.execute(
-                """
-                INSERT INTO real_idea_budget_extensions(
-                    extension_id, authorized_credits, state, created_at, created_by
-                ) VALUES (?, ?, 'UNBOUND_RESTRICTED', ?, ?)
-                """,
-                (extension_id, authorized_credits, utc_now(), created_by),
+            return self._activate_extension_tx(
+                connection, extension_id, authorized_credits, created_by=created_by
             )
-            return True
+
+    def _activate_extension_tx(
+        self,
+        connection: Any,
+        extension_id: str,
+        authorized_credits: int,
+        *,
+        created_by: str = "real_idea_budget_service",
+    ) -> bool:
+        """Activate the approved extension on an already-open transaction."""
+        if extension_id != EXTENSION_ID or authorized_credits != EXTENSION_CREDITS:
+            raise ValueError("only the approved restricted extension may be activated")
+        existing = connection.execute(
+            "SELECT authorized_credits, state FROM real_idea_budget_extensions WHERE extension_id = ?",
+            (extension_id,),
+        ).fetchone()
+        if existing:
+            if int(existing[0]) != authorized_credits or existing[1] not in {UNBOUND_RESTRICTED, BOUND}:
+                raise ValueError("restricted extension is already incompatible")
+            return False
+        connection.execute(
+            """
+            INSERT INTO real_idea_budget_extensions(
+                extension_id, authorized_credits, state, created_at, created_by
+            ) VALUES (?, ?, 'UNBOUND_RESTRICTED', ?, ?)
+            """,
+            (extension_id, authorized_credits, utc_now(), created_by),
+        )
+        return True
 
     def earmark_batch(self, batch_id: str, amount: int) -> BudgetAllocation:
         if amount != BATCH_EARMARK:
             raise ValueError("the Real Idea batch earmark must be exactly six transports")
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            batch = connection.execute(
-                "SELECT batch_id FROM real_idea_batches WHERE batch_id = ?", (batch_id,)
-            ).fetchone()
-            if not batch:
-                raise ValueError("batch must exist before budget earmark")
-            extension = connection.execute(
-                "SELECT extension_id, authorized_credits, state, bound_batch_id FROM real_idea_budget_extensions "
-                "WHERE extension_id = ?",
-                (EXTENSION_ID,),
-            ).fetchone()
-            if not extension or extension[2] not in {UNBOUND_RESTRICTED, BOUND}:
-                raise ValueError("approved restricted extension is not active")
-            if extension[2] == BOUND and extension[3] != batch_id:
-                raise ValueError("approved restricted extension is already bound to another batch")
-            existing = connection.execute(
-                "SELECT * FROM real_idea_budget_allocations WHERE batch_id = ?", (batch_id,)
-            ).fetchone()
-            if existing:
-                allocation = self._allocation(existing)
-                if allocation.batch_earmark != amount or allocation.authorized_total != self.durable_budget + EXTENSION_CREDITS:
-                    raise ValueError("existing batch allocation conflicts with approved budget")
-                if extension[2] == UNBOUND_RESTRICTED:
-                    connection.execute(
-                        "UPDATE real_idea_budget_extensions SET state = 'BOUND', bound_batch_id = ? WHERE extension_id = ?",
-                        (batch_id, EXTENSION_ID),
-                    )
-                return allocation
-            allocation_id = f"allocation_{uuid4().hex}"
-            connection.execute(
-                """
-                INSERT INTO real_idea_budget_allocations(
-                    allocation_id, batch_id, authorized_total, batch_earmark,
-                    sample_cap, quickstart_cap, solutions_cap, purpose, state,
-                    created_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'REAL_IDEA_BATCH_01', 'ACTIVE', ?,
-                          'real_idea_budget_service')
-                """,
-                (
-                    allocation_id, batch_id, self.durable_budget + EXTENSION_CREDITS,
-                    amount, SAMPLE_CAP, STAGE_CAPS["QUICKSTART"], STAGE_CAPS["SOLUTIONS"], utc_now(),
-                ),
-            )
-            connection.execute(
-                "UPDATE real_idea_budget_extensions SET state = 'BOUND', bound_batch_id = ? WHERE extension_id = ?",
-                (batch_id, EXTENSION_ID),
-            )
-            row = connection.execute(
-                "SELECT * FROM real_idea_budget_allocations WHERE allocation_id = ?", (allocation_id,)
-            ).fetchone()
-            return self._allocation(row)
+            return self._earmark_batch_tx(connection, batch_id, amount)
+
+    def _earmark_batch_tx(self, connection, batch_id: str, amount: int) -> BudgetAllocation:
+        """Bind the restricted extension and create the batch allocation in the caller's transaction."""
+        batch = connection.execute(
+            "SELECT batch_id FROM real_idea_batches WHERE batch_id = ?", (batch_id,)
+        ).fetchone()
+        if not batch:
+            raise ValueError("batch must exist before budget earmark")
+        extension = connection.execute(
+            "SELECT extension_id, authorized_credits, state, bound_batch_id FROM real_idea_budget_extensions "
+            "WHERE extension_id = ?",
+            (EXTENSION_ID,),
+        ).fetchone()
+        if not extension or extension[2] not in {UNBOUND_RESTRICTED, BOUND}:
+            raise ValueError("approved restricted extension is not active")
+        if int(extension[1]) != EXTENSION_CREDITS:
+            raise ValueError("approved restricted extension has unexpected credits")
+        if extension[2] == BOUND and extension[3] != batch_id:
+            raise ValueError("approved restricted extension is already bound to another batch")
+        existing = connection.execute(
+            "SELECT * FROM real_idea_budget_allocations WHERE batch_id = ?", (batch_id,)
+        ).fetchone()
+        if existing:
+            allocation = self._allocation(existing)
+            if allocation.batch_earmark != amount or allocation.authorized_total != self.durable_budget + EXTENSION_CREDITS:
+                raise ValueError("existing batch allocation conflicts with approved budget")
+            if extension[2] == UNBOUND_RESTRICTED:
+                connection.execute(
+                    "UPDATE real_idea_budget_extensions SET state = 'BOUND', bound_batch_id = ? WHERE extension_id = ?",
+                    (batch_id, EXTENSION_ID),
+                )
+            return allocation
+        allocation_id = f"allocation_{uuid4().hex}"
+        connection.execute(
+            """
+            INSERT INTO real_idea_budget_allocations(
+                allocation_id, batch_id, authorized_total, batch_earmark,
+                sample_cap, quickstart_cap, solutions_cap, purpose, state,
+                created_at, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'REAL_IDEA_BATCH_01', 'ACTIVE', ?,
+                      'real_idea_budget_service')
+            """,
+            (
+                allocation_id, batch_id, self.durable_budget + EXTENSION_CREDITS,
+                amount, SAMPLE_CAP, STAGE_CAPS["QUICKSTART"], STAGE_CAPS["SOLUTIONS"], utc_now(),
+            ),
+        )
+        connection.execute(
+            "UPDATE real_idea_budget_extensions SET state = 'BOUND', bound_batch_id = ? WHERE extension_id = ?",
+            (batch_id, EXTENSION_ID),
+        )
+        row = connection.execute(
+            "SELECT * FROM real_idea_budget_allocations WHERE allocation_id = ?", (allocation_id,)
+        ).fetchone()
+        return self._allocation(row)
 
     def release_extension(self, extension_id: str, batch_id: str) -> None:
         with self.database.connect() as connection:
@@ -224,9 +245,14 @@ class RealIdeaBudgetService:
             authorized_total = self.durable_budget + sum(
                 value for state, value in totals.items() if state != RELEASED
             )
+            bound_extension_credits = int(connection.execute(
+                "SELECT COALESCE(SUM(authorized_credits), 0) "
+                "FROM real_idea_budget_extensions WHERE state = 'BOUND'"
+            ).fetchone()[0])
+            general_spendable = max(self.durable_budget - max(bound_allocation - bound_extension_credits, 0), 0)
             return {
                 "authorized_total": authorized_total,
-                "general_spendable": self.durable_budget,
+                "general_spendable": general_spendable,
                 "restricted_unbound": totals.get(UNBOUND_RESTRICTED, 0),
                 "bound_allocation": bound_allocation,
                 # This is the conservative ceiling over all currently

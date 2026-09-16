@@ -31,6 +31,14 @@ const state = {
   buildSliceQuality: null,
   prototypeTask: null,
   prototypeTaskQuality: null,
+  m3: {
+    history: null,
+    currentSubmission: null,
+    currentReview: null,
+    recovery: null,
+    decision: null,
+    busy: false,
+  },
   walkthrough: null,
   modelProfiles: [],
   projectModelProfileId: null,
@@ -2780,6 +2788,227 @@ function renderM2PrototypeTask() {
   if (qualityNode) qualityNode.textContent = `P0 ${p0Status || "未评估"} · 不代表已执行、已测试或已部署。`;
 }
 
+function m3ListValue(id) {
+  return String(qs(`#${id}`)?.value || "")
+    .split(/\r?\n/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function m3Latest(category) {
+  const events = state.m3.history?.events || [];
+  return [...events].reverse().find(item => item.category === category) || null;
+}
+
+function m3StatusText(item) {
+  if (!item) return "暂无";
+  return item.overall_status || item.status || item.decision || item.submission_kind || "已记录";
+}
+
+function renderM3History(events) {
+  const node = qs("#m3-history-items");
+  if (!node) return;
+  if (!events.length) {
+    node.textContent = "暂无 M3 记录。";
+    return;
+  }
+  node.innerHTML = events.map(item => {
+    const id = item.submission_id || item.review_id || item.decision_id || item.task_id || "";
+    const detail = item.category === "review"
+      ? `${escapeHtml(item.evidence_level || "")}`
+      : item.category === "decision"
+        ? `${item.confirmed ? "已确认" : "待确认"}`
+        : item.category === "recovery"
+          ? `${escapeHtml(item.kind || "RECOVERY")}`
+          : `${escapeHtml(item.source_identity || "USER_INPUT")}`;
+    return `<div class="m3-history-item"><strong>${escapeHtml(item.category)} · ${escapeHtml(m3StatusText(item))}</strong><span>${escapeHtml(id)} · ${detail} · 第 ${escapeHtml(item.revision || 1)} 版</span></div>`;
+  }).join("");
+}
+
+function renderM3() {
+  const panel = qs("#m3-action-panel");
+  if (!panel) return;
+  const action = state.projectIntent?.first_action;
+  const ready = Boolean(action?.confirmed);
+  const history = state.m3.history?.events || [];
+  const submission = m3Latest("submission");
+  const review = m3Latest("review");
+  const recovery = m3Latest("recovery");
+  const decision = m3Latest("decision");
+  panel.hidden = !state.currentProjectId || !ready;
+  const current = qs("#m3-current-action");
+  if (current) current.textContent = action ? `${action.goal || "当前行动"} · ${action.status || "READY"}` : "请先确认 M1 第一行动卡。";
+  const revision = qs("#m3-action-revision");
+  if (revision) revision.textContent = action ? `当前行动卡版本：${action.revision} · ${action.confirmed ? "已确认" : "待确认"}` : "当前行动卡版本：—";
+  const status = qs("#m3-action-status");
+  if (status) status.textContent = submission ? `已提交 ${submission.submission_kind} · ${m3StatusText(review)}` : "尚未提交";
+  const reviewPanel = qs("#m3-review-panel");
+  if (reviewPanel) reviewPanel.hidden = !submission;
+  const recoveryPanel = qs("#m3-recovery-panel");
+  if (recoveryPanel) recoveryPanel.hidden = !review || review.overall_status === "PASS";
+  const recoveryAction = qs("#m3-recovery-action");
+  if (recoveryAction) recoveryAction.textContent = recovery ? `恢复行动 ${recovery.task_id} · ${recovery.execution_state || recovery.status}` : (review ? "根据复核建议创建一个最小恢复行动。" : "");
+  const recoveryStatus = qs("#m3-recovery-status");
+  if (recoveryStatus) recoveryStatus.textContent = recovery ? "恢复行动已保存，可刷新后重新打开。" : "不会覆盖原行动卡。";
+  const decisionPanel = qs("#m3-decision-panel");
+  if (decisionPanel) decisionPanel.hidden = !review;
+  const decisionRecommendation = qs("#m3-decision-recommendation");
+  if (decisionRecommendation) decisionRecommendation.textContent = review ? `复核建议：${review.recommendation_present ? "已提供" : "待补充"}` : "";
+  const decisionEvidence = qs("#m3-decision-evidence");
+  if (decisionEvidence) decisionEvidence.textContent = review ? `证据等级：${review.evidence_level} · 结论：${review.overall_status}` : "";
+  const decisionUnknowns = qs("#m3-decision-unknowns");
+  if (decisionUnknowns) decisionUnknowns.textContent = review ? `已知未知：${review.known_unknown_count || 0} 项；确认决定不等于部署或市场验证。` : "";
+  const recommendationButton = qs("#m3-decision-recommend");
+  if (recommendationButton) recommendationButton.disabled = !review || Boolean(decision) || state.m3.busy;
+  const decisionButton = qs("#m3-decision-confirm");
+  if (decisionButton) decisionButton.disabled = !decision || decision.confirmed || state.m3.busy;
+  renderM3History(history);
+}
+
+async function loadM3State() {
+  if (!state.currentProjectId) return;
+  try { state.m3.history = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/m3/history`); }
+  catch (_) { state.m3.history = {events: [], provider_dispatches: 0, provider_transports: 0, search_requests: 0}; }
+  renderM3();
+}
+
+function m3SubmissionDescription(kind) {
+  const fields = kind === "DONE"
+    ? ["m3-done-description", "m3-done-result", "m3-done-notes"]
+    : ["m3-blocked-step", "m3-blocked-observed", "m3-blocked-attempted"];
+  return fields.map(id => String(qs(`#${id}`)?.value || "").trim()).filter(Boolean).join("\n\n");
+}
+
+async function submitM3Submission(kind) {
+  if (state.m3.busy || !state.currentProjectId) return;
+  const action = state.projectIntent?.first_action;
+  const description = m3SubmissionDescription(kind);
+  if (!action || !description) { toast("请先填写结果描述。提交不会替代系统验证。"); return; }
+  state.m3.busy = true;
+  renderM3();
+  try {
+    const attachmentId = kind === "DONE" ? "m3-done-attachments" : "m3-blocked-evidence";
+    const checksId = kind === "DONE" ? "m3-done-check-results" : null;
+    await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/actions/${encodeURIComponent(action.task_id)}/submissions`, {
+      method: "POST",
+      body: JSON.stringify({
+        task_revision: action.revision,
+        submission_kind: kind,
+        description,
+        attachment_refs: m3ListValue(attachmentId),
+        check_results: checksId ? m3ListValue(checksId) : [],
+        execution_claim: {},
+        source_identity: "USER_INPUT",
+      }),
+    });
+    qs("#m3-submission-status").textContent = "结果已提交，接下来请记录正式复核。";
+    await loadM3State();
+  } catch (error) { reportError(error); }
+  finally { state.m3.busy = false; renderM3(); }
+}
+
+function parseM3CheckItems() {
+  return m3ListValue("m3-review-check-items").map((line, index) => {
+    const [name, outcome = "UNKNOWN"] = line.split("|").map(part => part.trim());
+    return {check_id: name || `check-${index + 1}`, outcome, evidence_refs: outcome === "PASS" ? ["USER_REPORTED"] : []};
+  });
+}
+
+async function createM3Review(event) {
+  event.preventDefault();
+  const submission = m3Latest("submission");
+  const action = state.projectIntent?.first_action;
+  if (!submission || !action || state.m3.busy) return;
+  state.m3.busy = true;
+  renderM3();
+  try {
+    await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/submissions/${encodeURIComponent(submission.submission_id)}/review`, {
+      method: "POST",
+      body: JSON.stringify({
+        submission_revision: submission.revision,
+        task_id: action.task_id,
+        task_revision: submission.task_revision,
+        check_items: parseM3CheckItems(),
+        overall_status: qs("#m3-review-status").value,
+        known_unknowns: m3ListValue("m3-review-unknowns"),
+        evidence_level: qs("#m3-review-evidence-level").value,
+        recommendation: qs("#m3-review-recommendation").value.trim(),
+        reviewer_role: "human_reviewer",
+      }),
+    });
+    toast("复核已保存；证据等级仍保持诚实标注。 ");
+    await loadM3State();
+  } catch (error) { reportError(error); }
+  finally { state.m3.busy = false; renderM3(); }
+}
+
+async function createM3Recovery() {
+  const submission = m3Latest("submission");
+  const review = m3Latest("review");
+  const action = state.projectIntent?.first_action;
+  if (!submission || !review || !action || review.overall_status === "PASS" || state.m3.busy) return;
+  state.m3.busy = true;
+  renderM3();
+  try {
+    await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/actions/${encodeURIComponent(action.task_id)}/recovery`, {
+      method: "POST",
+      body: JSON.stringify({
+        submission_id: submission.submission_id,
+        review_id: review.review_id,
+        review_revision: review.revision,
+        goal: qs("#m3-recovery-action").textContent.trim() || "完成复核建议中的一个最小恢复行动",
+        inputs: ["当前失败或未知结论"],
+        steps: ["执行一项与复核阻塞直接相关的最小行动"],
+        checks: ["记录可观察结果并重新提交"],
+      }),
+    });
+    toast("最小恢复行动已保存。 ");
+    await loadM3State();
+  } catch (error) { reportError(error); }
+  finally { state.m3.busy = false; renderM3(); }
+}
+
+async function recommendM3Decision() {
+  const submission = m3Latest("submission");
+  const review = m3Latest("review");
+  if (!submission || !review || state.m3.busy) return;
+  state.m3.busy = true;
+  renderM3();
+  try {
+    await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/decisions/recommend`, {
+      method: "POST",
+      body: JSON.stringify({
+        submission_id: submission.submission_id,
+        review_id: review.review_id,
+        review_revision: review.revision,
+        decision: qs("#m3-decision-select").value,
+        rationale: qs("#m3-decision-rationale").value.trim(),
+        recommendation: review.recommendation_present ? "基于当前复核记录继续评估" : "先补充复核证据",
+        remaining_unknowns: review.known_unknown_count ? ["复核中仍有未解决未知"] : [],
+      }),
+    });
+    toast("决定建议已保存，请再次检查证据后确认。 ");
+    await loadM3State();
+  } catch (error) { reportError(error); }
+  finally { state.m3.busy = false; renderM3(); }
+}
+
+async function confirmM3Decision() {
+  const decision = m3Latest("decision");
+  if (!decision || decision.confirmed || state.m3.busy) return;
+  state.m3.busy = true;
+  renderM3();
+  try {
+    await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/decisions/${encodeURIComponent(decision.decision_id)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({expected_revision: decision.revision}),
+    });
+    toast("决定已确认；这不代表实现、部署或市场验证已经发生。 ");
+    await loadM3State();
+  } catch (error) { reportError(error); }
+  finally { state.m3.busy = false; renderM3(); }
+}
+
 async function loadM2Artifacts() {
   if (!state.currentProjectId) return;
   const projectId = encodeURIComponent(state.currentProjectId);
@@ -2789,6 +3018,7 @@ async function loadM2Artifacts() {
   try { state.prototypeTaskQuality = await api(`/api/projects/${projectId}/prototype-task/quality`); } catch (_) { state.prototypeTaskQuality = null; }
   renderM2BuildSlice();
   renderM2PrototypeTask();
+  renderM3();
 }
 
 async function saveBuildSlice(event) {
@@ -3015,11 +3245,13 @@ async function loadProject(projectId) {
   state.buildSliceQuality = null;
   state.prototypeTask = null;
   state.prototypeTaskQuality = null;
+  state.m3 = {history: null, currentSubmission: null, currentReview: null, recovery: null, decision: null, busy: false};
   state.documentWorkspace = {...state.documentWorkspace, versions: [], selectedVersionId: null, compareVersionId: null, draft: null, dirty: false, error: null};
   renderProjectPicker();
   showProjectShell();
   renderProjectIntent();
   renderM2BuildSlice();
+  renderM3();
   try { state.ideaBrief = await api(`/api/projects/${projectId}/idea-brief`); } catch (_) { state.ideaBrief = null; }
   try { state.solutions = await api(`/api/projects/${projectId}/solutions`); } catch (_) { state.solutions = null; }
   try { state.snapshot = await api(`/api/projects/${projectId}/snapshot`); } catch (_) { state.snapshot = null; }
@@ -3047,7 +3279,7 @@ async function loadProject(projectId) {
       activateView(context.activeView);
     }
   } catch (_) { /* recovery must not prevent the project from opening */ }
-  await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadAIReference(), loadEvidenceGuidance(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough(), loadProjectIntent(), loadM2Artifacts()]);
+  await Promise.all([loadEvidenceData(), loadDocuments(), loadHandoff(), loadAIReference(), loadEvidenceGuidance(), loadProjectNextAction(), loadProjectModelProfile(), loadWalkthrough(), loadProjectIntent(), loadM2Artifacts(), loadM3State()]);
 }
 
 async function loadEvidenceData() {
@@ -3504,6 +3736,21 @@ function wireEvents() {
   qs("#m2-prototype-task-generate")?.addEventListener("click", () => void generatePrototypeTask());
   qs("#m2-prototype-task-form")?.addEventListener("submit", savePrototypeTask);
   qs("#m2-prototype-task-confirm")?.addEventListener("click", () => void confirmPrototypeTask());
+  qs("#m3-open-done-form")?.addEventListener("click", () => {
+    qs("#m3-done-form").hidden = false;
+    qs("#m3-blocked-form").hidden = true;
+  });
+  qs("#m3-open-blocked-form")?.addEventListener("click", () => {
+    qs("#m3-done-form").hidden = true;
+    qs("#m3-blocked-form").hidden = false;
+  });
+  qs("#m3-load-history")?.addEventListener("click", () => void loadM3State());
+  qs("#m3-done-form")?.addEventListener("submit", event => { event.preventDefault(); void submitM3Submission("DONE"); });
+  qs("#m3-blocked-form")?.addEventListener("submit", event => { event.preventDefault(); void submitM3Submission("BLOCKED"); });
+  qs("#m3-review-form")?.addEventListener("submit", createM3Review);
+  qs("#m3-recovery-create")?.addEventListener("click", () => void createM3Recovery());
+  qs("#m3-decision-recommend")?.addEventListener("click", () => void recommendM3Decision());
+  qs("#m3-decision-confirm")?.addEventListener("click", () => void confirmM3Decision());
   qs("#ai-reference-generate")?.addEventListener("click", () => void generateAIReference());
   qs("#evidence-coach-open")?.addEventListener("click", () => selectEvidenceEntry("action_guidance"));
   qs("#competitor-open")?.addEventListener("click", openCompetitors);

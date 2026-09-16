@@ -312,6 +312,80 @@
               </div>
             </form>
           </section>
+          <section id="m3-action-panel" class="secondary-panel m3-panel" hidden aria-labelledby="m3-action-title">
+            <div class="secondary-panel-heading">
+              <div>
+                <p class="eyebrow">M3 · 结果复盘</p>
+                <h2 id="m3-action-title">记录这次行动的结果</h2>
+                <p>提交是你的结果陈述，不等于系统独立验证；证据等级会在复核时明确显示。</p>
+              </div>
+              <span id="m3-action-status" class="evidence-status status-unverified">尚未提交</span>
+            </div>
+            <div id="m3-current-action" class="m3-current-action"></div>
+            <p id="m3-action-revision" class="status-note">当前行动卡版本：—</p>
+            <div class="m3-form-actions">
+              <button id="m3-open-done-form" class="button button-primary" type="button">我做完了</button>
+              <button id="m3-open-blocked-form" class="button button-secondary" type="button">我卡住了</button>
+              <button id="m3-load-history" class="button button-secondary" type="button">刷新 M3 记录</button>
+            </div>
+            <form id="m3-done-form" class="m3-form" hidden>
+              <label>做了什么<textarea id="m3-done-description" rows="3" required></textarea></label>
+              <label>结果<textarea id="m3-done-result" rows="3" required></textarea></label>
+              <label>证据 / 附件引用<textarea id="m3-done-attachments" rows="2" placeholder="每行一个安全引用，不要粘贴私密正文"></textarea></label>
+              <label>检查结果<textarea id="m3-done-check-results" rows="3" placeholder="每行一项观察到的检查结果"></textarea></label>
+              <label>备注<textarea id="m3-done-notes" rows="2"></textarea></label>
+              <div class="m3-form-actions">
+                <button id="m3-done-submit" class="button button-primary" type="submit">提交完成结果</button>
+              </div>
+            </form>
+            <form id="m3-blocked-form" class="m3-form" hidden>
+              <label>卡在哪一步<textarea id="m3-blocked-step" rows="2" required></textarea></label>
+              <label>观察到的错误 / 结果<textarea id="m3-blocked-observed" rows="3" required></textarea></label>
+              <label>已经尝试了什么<textarea id="m3-blocked-attempted" rows="3"></textarea></label>
+              <label>安全日志 / 证据引用<textarea id="m3-blocked-evidence" rows="2"></textarea></label>
+              <div class="m3-form-actions">
+                <button id="m3-blocked-submit" class="button button-primary" type="submit">提交卡住结果</button>
+              </div>
+            </form>
+            <p id="m3-submission-status" class="status-note" role="status" aria-live="polite"></p>
+            <section id="m3-review-panel" class="m3-subsection" hidden aria-labelledby="m3-review-title">
+              <h3 id="m3-review-title">结果复核</h3>
+              <form id="m3-review-form" class="m3-form">
+                <label>复核结论<select id="m3-review-status">
+                  <option value="PASS">PASS</option><option value="FAIL">FAIL</option><option value="UNKNOWN">UNKNOWN</option><option value="NOT_APPLICABLE">NOT_APPLICABLE</option>
+                </select></label>
+                <label>证据等级<select id="m3-review-evidence-level">
+                  <option value="USER_REPORTED">USER_REPORTED</option><option value="ARTIFACT_CHECKED">ARTIFACT_CHECKED</option><option value="AUTHORIZED_RUN">AUTHORIZED_RUN</option>
+                </select></label>
+                <label>检查项<textarea id="m3-review-check-items" rows="3" placeholder="每行一项；格式：名称 | PASS/FAIL/UNKNOWN/NOT_APPLICABLE"></textarea></label>
+                <label>已知未知<textarea id="m3-review-unknowns" rows="2"></textarea></label>
+                <label>复核建议<textarea id="m3-review-recommendation" rows="3" required></textarea></label>
+                <button id="m3-review-submit" class="button button-primary" type="submit">保存复核</button>
+              </form>
+            </section>
+            <section id="m3-recovery-panel" class="m3-subsection" hidden aria-labelledby="m3-recovery-title">
+              <h3 id="m3-recovery-title">最小恢复行动</h3>
+              <p id="m3-recovery-action"></p>
+              <p id="m3-recovery-status" class="status-note"></p>
+              <button id="m3-recovery-create" class="button button-secondary" type="button">创建恢复行动</button>
+            </section>
+            <section id="m3-decision-panel" class="m3-subsection" hidden aria-labelledby="m3-decision-title">
+              <h3 id="m3-decision-title">确认下一步决定</h3>
+              <p id="m3-decision-recommendation"></p>
+              <p id="m3-decision-evidence" class="status-note"></p>
+              <p id="m3-decision-unknowns" class="status-note"></p>
+              <label>决定<select id="m3-decision-select">
+                <option value="CONTINUE">CONTINUE</option><option value="NARROW">NARROW</option><option value="CHANGE">CHANGE</option><option value="STOP">STOP</option><option value="FINISH">FINISH</option>
+              </select></label>
+              <label>理由<textarea id="m3-decision-rationale" rows="3" required></textarea></label>
+              <button id="m3-decision-recommend" class="button button-secondary" type="button">保存决定建议</button>
+              <button id="m3-decision-confirm" class="button button-primary" type="button">确认决定</button>
+            </section>
+            <section id="m3-history" class="m3-subsection" aria-labelledby="m3-history-title">
+              <h3 id="m3-history-title">M3 历史</h3>
+              <div id="m3-history-items" class="status-note">暂无 M3 记录。</div>
+            </section>
+          </section>
           <section id="snapshot-view" class="workspace-view" data-workspace-view="snapshot">
             <div id="snapshot-content" class="view-content"></div>
             <button id="snapshot-primary-action" class="button button-primary hidden" type="button"></button>

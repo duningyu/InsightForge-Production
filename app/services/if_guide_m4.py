@@ -8,6 +8,10 @@ from typing import Any
 
 from app.db import utc_now
 from app.errors import ConflictError
+from app.services.if_guide_m4_conditions import (
+    validate_condition_definition,
+    validate_observed_accounting,
+)
 
 
 _ALLOWED_CONDITIONS = {
@@ -209,6 +213,21 @@ class M4EvaluationService:
             self._check_revision(row, expected_revision, "EXPERIMENT_REVISION_CONFLICT")
             if row["state"] != "DRAFT":
                 raise ConflictError("EXPERIMENT_NOT_DRAFT")
+            definitions = _from_json(row["condition_definitions_json"])
+            for condition, definition in definitions.items():
+                try:
+                    validate_condition_definition(
+                        condition,
+                        definition,
+                        expected_source_commit=row["source_commit"]
+                        if condition == "INSIGHTFORGE_STATEFUL" else None,
+                        expected_deployment_id=row["deployment_id"]
+                        if condition == "INSIGHTFORGE_STATEFUL" else None,
+                        expected_rubric_versions=_from_json(row["rubric_versions_json"])
+                        if condition == "INSIGHTFORGE_STATEFUL" else None,
+                    )
+                except ValueError as exc:
+                    raise ConflictError(str(exc)) from exc
             now = utc_now()
             connection.execute(
                 """
@@ -405,4 +424,75 @@ class M4EvaluationService:
                 connection.execute(
                     "SELECT * FROM m4_sessions WHERE session_id = ?", (session_id,)
                 ).fetchone()
+            )
+
+    def record_operational_accounting(
+        self,
+        *,
+        session_id: str,
+        account_id: str,
+        expected_revision: int,
+        elapsed_ms: int = 0,
+        time_to_first_valid_action_ms: int | None = None,
+        time_to_first_usable_flow_ms: int | None = None,
+        edit_count: int = 0,
+        support_minutes: float = 0,
+        provider_calls: int = 0,
+        provider_cost: float = 0,
+        retry_count: int = 0,
+        timeout_count: int = 0,
+        severe_error_count: int = 0,
+        recovery_attempts: int = 0,
+    ) -> dict[str, Any]:
+        counters = {
+            "elapsed_ms": elapsed_ms,
+            "time_to_first_valid_action_ms": time_to_first_valid_action_ms,
+            "time_to_first_usable_flow_ms": time_to_first_usable_flow_ms,
+            "edit_count": edit_count,
+            "support_minutes": support_minutes,
+            "provider_calls": provider_calls,
+            "provider_cost": provider_cost,
+            "retry_count": retry_count,
+            "timeout_count": timeout_count,
+            "severe_error_count": severe_error_count,
+            "recovery_attempts": recovery_attempts,
+        }
+        for name, value in counters.items():
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0):
+                raise ConflictError(f"M4_ACCOUNTING_VALUE_INVALID:{name}")
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM m4_sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError("M4_SESSION_NOT_FOUND")
+            self._check_account(row, account_id)
+            self._check_revision(row, expected_revision, "SESSION_REVISION_CONFLICT")
+            experiment = self._experiment(connection, row["experiment_id"], account_id)
+            definitions = _from_json(experiment["condition_definitions_json"])
+            definition = definitions[row["condition"]]
+            try:
+                validate_observed_accounting(
+                    row["condition"], definition,
+                    provider_calls=provider_calls, provider_cost=provider_cost,
+                )
+            except ValueError as exc:
+                raise ConflictError(str(exc)) from exc
+            now = utc_now()
+            connection.execute(
+                """
+                UPDATE m4_sessions SET elapsed_ms = ?, time_to_first_valid_action_ms = ?,
+                    time_to_first_usable_flow_ms = ?, edit_count = ?, support_minutes = ?,
+                    provider_calls = ?, provider_cost = ?, retry_count = ?, timeout_count = ?,
+                    severe_error_count = ?, recovery_attempts = ?, revision = revision + 1,
+                    updated_at = ? WHERE session_id = ?
+                """,
+                (
+                    elapsed_ms, time_to_first_valid_action_ms, time_to_first_usable_flow_ms,
+                    edit_count, support_minutes, provider_calls, provider_cost, retry_count,
+                    timeout_count, severe_error_count, recovery_attempts, now, session_id,
+                ),
+            )
+            return self._session_public(
+                connection.execute("SELECT * FROM m4_sessions WHERE session_id = ?", (session_id,)).fetchone()
             )

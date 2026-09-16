@@ -4,6 +4,7 @@ import pytest
 
 from app.errors import ConflictError
 from app.services.if_guide_m4 import M4EvaluationService
+from app.services.if_guide_m4_conditions import default_condition_definitions
 
 
 def _create_experiment(service: M4EvaluationService) -> None:
@@ -13,11 +14,9 @@ def _create_experiment(service: M4EvaluationService) -> None:
         spec_version="m4-spec-v1",
         source_commit="m4-source",
         deployment_id="m4-deploy",
-        condition_definitions={
-            "STATIC_TEMPLATE": {"version": "static-v1"},
-            "GENERAL_AI": {"version": "general-v1"},
-            "INSIGHTFORGE_STATEFUL": {"version": "if-v1"},
-        },
+        condition_definitions=default_condition_definitions(
+            source_commit="m4-source", deployment_id="m4-deploy"
+        ),
         assignment_rule="balanced-by-purpose-v1",
         metric_versions={"primary": "m4-primary-v1"},
         rubric_versions={"quality": "r1.1-v1"},
@@ -168,9 +167,7 @@ def test_experiment_freeze_and_owned_session_lifecycle(db):
             experiment_id="m4-exp-001",
             account_id="m4-owner",
             expected_revision=2,
-            condition_definitions={
-                "STATIC_TEMPLATE": {"version": "changed"},
-                "GENERAL_AI": {"version": "general-v1"},
-                "INSIGHTFORGE_STATEFUL": {"version": "if-v1"},
-            },
+            condition_definitions=default_condition_definitions(
+                source_commit="m4-source", deployment_id="m4-deploy"
+            ),
         )

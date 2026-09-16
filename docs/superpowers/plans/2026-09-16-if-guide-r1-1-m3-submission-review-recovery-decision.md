@@ -229,7 +229,7 @@ Files to create or modify:
 
 - app/services/action_submission.py
 - app/schemas.py
-- tests/test_action_submission_service.py
+- tests/test_if_guide_m3_submission.py
 
 Interfaces consumed:
 
@@ -249,7 +249,7 @@ RED test:
 
 Run:
 
-   python -m pytest -q tests/test_action_submission_service.py
+   python -m pytest -q tests/test_if_guide_m3_submission.py
 
 Expected RED:
 
@@ -267,11 +267,11 @@ Minimal GREEN:
 
 GREEN command:
 
-   python -m pytest -q tests/test_action_submission_service.py
+   python -m pytest -q tests/test_if_guide_m3_submission.py
 
 Affected regression:
 
-   python -m pytest -q tests/test_m2_routes.py tests/test_prototype_task_generation.py tests/test_prototype_task_lifecycle.py
+   python -m pytest -q tests/test_m2_routes.py tests/test_m2_inheritance_integrity.py
 
 Commit:
 
@@ -282,7 +282,7 @@ Commit:
 Files to create or modify:
 
 - app/main.py
-- tests/test_action_submission_routes.py
+- tests/test_if_guide_m3_submission_routes.py
 
 Interfaces consumed:
 
@@ -300,7 +300,7 @@ RED test:
 
 Run:
 
-   python -m pytest -q tests/test_action_submission_routes.py
+   python -m pytest -q tests/test_if_guide_m3_submission_routes.py
 
 Expected RED:
 
@@ -317,7 +317,7 @@ Minimal GREEN:
 
 GREEN command:
 
-   python -m pytest -q tests/test_action_submission_routes.py
+   python -m pytest -q tests/test_if_guide_m3_submission_routes.py
 
 Affected regression:
 
@@ -333,7 +333,7 @@ Files to create or modify:
 
 - app/services/action_review.py
 - app/schemas.py
-- tests/test_action_review_service.py
+- tests/test_if_guide_m3_review.py
 
 Interfaces consumed:
 
@@ -353,7 +353,7 @@ RED test:
 
 Run:
 
-   python -m pytest -q tests/test_action_review_service.py
+   python -m pytest -q tests/test_if_guide_m3_review.py
 
 Expected RED:
 
@@ -372,11 +372,11 @@ Minimal GREEN:
 
 GREEN command:
 
-   python -m pytest -q tests/test_action_review_service.py
+   python -m pytest -q tests/test_if_guide_m3_review.py
 
 Affected regression:
 
-   python -m pytest -q tests/test_action_submission_service.py tests/test_m2_quality_metrics.py tests/test_m2_quality_bindings.py
+   python -m pytest -q tests/test_if_guide_m3_submission.py tests/test_m2_quality_metrics.py tests/test_m2_quality_bindings.py
 
 Commit:
 
@@ -428,7 +428,7 @@ GREEN command:
 
 Affected regression:
 
-   python -m pytest -q tests/test_action_submission_service.py tests/test_action_review_service.py tests/test_v3_handoff_and_tools.py
+   python -m pytest -q tests/test_if_guide_m3_submission.py tests/test_if_guide_m3_review.py tests/test_v3_handoff_and_tools.py
 
 Commit:
 
@@ -494,7 +494,7 @@ Files to create or modify:
 - app/services/recovery.py
 - app/services/action_review.py
 - app/services/project_intent.py only for the shared ActionTask row helper if a non-breaking extraction is required
-- tests/test_recovery_service.py
+- tests/test_if_guide_m3_recovery.py
 
 Interfaces consumed:
 
@@ -513,7 +513,7 @@ RED test:
 
 Run:
 
-   python -m pytest -q tests/test_recovery_service.py
+   python -m pytest -q tests/test_if_guide_m3_recovery.py
 
 Expected RED:
 
@@ -531,7 +531,7 @@ Minimal GREEN:
 
 GREEN command:
 
-   python -m pytest -q tests/test_recovery_service.py
+   python -m pytest -q tests/test_if_guide_m3_recovery.py
 
 Affected regression:
 
@@ -589,7 +589,7 @@ GREEN command:
 
 Affected regression:
 
-   python -m pytest -q tests/test_v3_solution_api.py tests/test_if_guide_m1.py tests/test_m2_routes.py
+   python -m pytest -q tests/test_v3_handoff_and_tools.py tests/test_if_guide_m1.py tests/test_m2_routes.py
 
 Commit:
 
@@ -803,7 +803,7 @@ Minimal GREEN:
 - verify existing M1 Purpose/First Action, M2 Build Slice/Prototype Task, project history, Solutions/Documents navigation, and Formal Handoff routes;
 - run final checks once on the candidate implementation after all task commits:
 
-   python -m pytest -q tests/test_if_guide_m3_migration.py tests/test_action_submission_service.py tests/test_action_submission_routes.py tests/test_action_review_service.py tests/test_m3_evidence_guards.py tests/test_m3_quality_metrics.py tests/test_recovery_service.py tests/test_m3_decision_service.py tests/test_m3_routes.py tests/test_m3_history_isolation.py tests/test_m3_compatibility.py tests/test_m3_negative_matrix.py tests/test_m3_provider_search_tripwires.py
+   python -m pytest -q tests/test_if_guide_m3_migration.py tests/test_if_guide_m3_submission.py tests/test_if_guide_m3_submission_routes.py tests/test_if_guide_m3_review.py tests/test_m3_evidence_guards.py tests/test_m3_quality_metrics.py tests/test_if_guide_m3_recovery.py tests/test_m3_decision_service.py tests/test_m3_routes.py tests/test_m3_history_isolation.py tests/test_m3_compatibility.py tests/test_m3_negative_matrix.py tests/test_m3_provider_search_tripwires.py
    python tests/run_m3_browser.py
    python tests/run_m2_browser.py
    python -m pytest -q tests/test_if_guide_m1.py tests/test_m2_routes.py tests/test_v3_handoff_and_tools.py
@@ -815,7 +815,7 @@ Minimal GREEN:
 
 GREEN command:
 
-   python -m pytest -q tests/test_if_guide_m3_migration.py tests/test_action_submission_service.py tests/test_action_submission_routes.py tests/test_action_review_service.py tests/test_m3_evidence_guards.py tests/test_m3_quality_metrics.py tests/test_recovery_service.py tests/test_m3_decision_service.py tests/test_m3_routes.py tests/test_m3_history_isolation.py tests/test_m3_compatibility.py tests/test_m3_negative_matrix.py tests/test_m3_provider_search_tripwires.py
+   python -m pytest -q tests/test_if_guide_m3_migration.py tests/test_if_guide_m3_submission.py tests/test_if_guide_m3_submission_routes.py tests/test_if_guide_m3_review.py tests/test_m3_evidence_guards.py tests/test_m3_quality_metrics.py tests/test_if_guide_m3_recovery.py tests/test_m3_decision_service.py tests/test_m3_routes.py tests/test_m3_history_isolation.py tests/test_m3_compatibility.py tests/test_m3_negative_matrix.py tests/test_m3_provider_search_tripwires.py
 
 Affected regression:
 

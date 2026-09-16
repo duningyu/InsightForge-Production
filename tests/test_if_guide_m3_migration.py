@@ -50,6 +50,8 @@ def test_m3_schema_has_submission_review_recovery_and_decision_contracts(db):
             "source_review_id",
             "decision",
             "rationale",
+            "recommendation",
+            "remaining_unknowns_json",
             "confirmed",
             "confirmed_by",
             "revision",

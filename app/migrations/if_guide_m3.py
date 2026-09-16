@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 
-VERSION = 1
+VERSION = 2
 _VERSION_TABLE = "if_guide_m3_schema_meta"
 
 
@@ -136,6 +136,22 @@ CREATE INDEX IF NOT EXISTS idx_decision_records_project
 """
 
 
+def _extend_decision_records(connection: sqlite3.Connection) -> None:
+    """Add the user-facing recommendation context without rewriting history."""
+    _add_column_if_missing(
+        connection,
+        "decision_records",
+        "recommendation",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column_if_missing(
+        connection,
+        "decision_records",
+        "remaining_unknowns_json",
+        "TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(remaining_unknowns_json))",
+    )
+
+
 def _execute_script(connection: sqlite3.Connection, script: str) -> None:
     statement = ""
     for line in script.splitlines():
@@ -168,6 +184,7 @@ def apply(connection: sqlite3.Connection) -> None:
         _execute_script(connection, SUBMISSIONS_SQL)
         _execute_script(connection, REVIEWS_SQL)
         _execute_script(connection, DECISIONS_SQL)
+        _extend_decision_records(connection)
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS if_guide_m3_schema_meta (

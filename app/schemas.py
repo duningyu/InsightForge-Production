@@ -264,6 +264,42 @@ class ActionSubmissionCreateRequest(StrictModel):
     ]
 
 
+class ActionReviewCreateRequest(StrictModel):
+    submission_revision: int = Field(ge=1)
+    task_id: str = Field(min_length=1, max_length=200)
+    task_revision: int = Field(ge=1)
+    check_items: list[Any] = Field(default_factory=list, max_length=30)
+    overall_status: Literal["PASS", "FAIL", "UNKNOWN", "NOT_APPLICABLE"]
+    known_unknowns: list[Any] = Field(default_factory=list, max_length=30)
+    evidence_level: Literal["USER_REPORTED", "ARTIFACT_CHECKED", "AUTHORIZED_RUN"]
+    recommendation: str = Field(default="", max_length=8000)
+    reviewer_role: str = Field(default="system_review", min_length=1, max_length=120)
+
+
+class RecoveryCreateRequest(StrictModel):
+    submission_id: str = Field(min_length=1, max_length=200)
+    review_id: str = Field(min_length=1, max_length=200)
+    review_revision: int = Field(ge=1)
+    goal: str = Field(min_length=1, max_length=8000)
+    inputs: list[Any] = Field(default_factory=list, max_length=30)
+    steps: list[Any] = Field(default_factory=list, max_length=30)
+    checks: list[Any] = Field(default_factory=list, max_length=30)
+
+
+class M3DecisionRecommendRequest(StrictModel):
+    submission_id: str = Field(min_length=1, max_length=200)
+    review_id: str = Field(min_length=1, max_length=200)
+    review_revision: int = Field(ge=1)
+    decision: Literal["CONTINUE", "NARROW", "CHANGE", "STOP", "FINISH"]
+    rationale: str = Field(min_length=1, max_length=8000)
+    recommendation: str = Field(min_length=1, max_length=8000)
+    remaining_unknowns: list[Any] = Field(default_factory=list, max_length=30)
+
+
+class M3DecisionConfirmRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+
+
 class CanonicalExampleResponse(StrictModel):
     id: str
     title: str

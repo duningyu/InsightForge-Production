@@ -68,6 +68,10 @@ from app.schemas import (
     M2RevisionRequest,
     PrototypeTaskUpsertRequest,
     ActionSubmissionCreateRequest,
+    ActionReviewCreateRequest,
+    RecoveryCreateRequest,
+    M3DecisionRecommendRequest,
+    M3DecisionConfirmRequest,
 )
 from app.services.projects import ProjectService
 from app.services.competitors import CompetitorService
@@ -114,6 +118,10 @@ from app.services.project_intent import ProjectIntentService
 from app.services.build_slice import BuildSliceService
 from app.services.prototype_task import PrototypeTaskService
 from app.services.action_submission import ActionSubmissionService
+from app.services.action_review import ActionReviewService
+from app.services.recovery import RecoveryService
+from app.services.m3_decision import M3DecisionService
+from app.services.if_guide_m3_inspector import IFGuideM3Inspector
 from app.services.solution_generation_guard import SolutionGenerationGuard
 from app.services.provider_dispatch_ledger import ProviderDispatchLedger
 from app.services.retrieval_service import ProjectRetrievalService
@@ -269,6 +277,10 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         application.state.build_slices = BuildSliceService(db)
         application.state.prototype_tasks = PrototypeTaskService(db)
         application.state.action_submissions = ActionSubmissionService(db)
+        application.state.action_reviews = ActionReviewService(db)
+        application.state.recovery = RecoveryService(db)
+        application.state.m3_decisions = M3DecisionService(db)
+        application.state.m3_inspector = IFGuideM3Inspector(db)
         application.state.competitors = CompetitorService(db, application.state.projects)
         application.state.competitor_decisions = CompetitorDecisionService(
             db, application.state.projects
@@ -1541,6 +1553,108 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         return application.state.action_submissions.list_for_task(
             project_id, task_id, actor=x_actor
         )
+
+    @application.post("/api/projects/{project_id}/submissions/{submission_id}/review", status_code=201)
+    def create_action_review(
+        project_id: str,
+        submission_id: str,
+        payload: ActionReviewCreateRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.action_reviews.review(
+            project_id=project_id,
+            submission_id=submission_id,
+            submission_revision=payload.submission_revision,
+            task_id=payload.task_id,
+            task_revision=payload.task_revision,
+            check_items=payload.check_items,
+            overall_status=payload.overall_status,
+            known_unknowns=payload.known_unknowns,
+            evidence_level=payload.evidence_level,
+            recommendation=payload.recommendation,
+            reviewer_role=payload.reviewer_role,
+            actor=x_actor,
+        )
+
+    @application.get("/api/projects/{project_id}/submissions/{submission_id}/review")
+    def list_action_reviews(
+        project_id: str,
+        submission_id: str,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.m3_inspector.reviews_for_submission(
+            project_id, submission_id, actor=x_actor
+        )
+
+    @application.post("/api/projects/{project_id}/actions/{task_id}/recovery", status_code=201)
+    def create_recovery_action(
+        project_id: str,
+        task_id: str,
+        payload: RecoveryCreateRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.recovery.create_from_review(
+            actor=x_actor,
+            project_id=project_id,
+            task_id=task_id,
+            submission_id=payload.submission_id,
+            review_id=payload.review_id,
+            review_revision=payload.review_revision,
+            goal=payload.goal,
+            inputs=payload.inputs,
+            steps=payload.steps,
+            checks=payload.checks,
+        )
+
+    @application.get("/api/projects/{project_id}/actions/{task_id}/recovery")
+    def get_recovery_action(
+        project_id: str,
+        task_id: str,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        result = application.state.recovery.get_current(project_id, actor=x_actor)
+        if result is None or result.get("parent_task_id") != task_id:
+            raise KeyError("recovery action not found")
+        return result
+
+    @application.post("/api/projects/{project_id}/decisions/recommend", status_code=201)
+    def recommend_m3_decision(
+        project_id: str,
+        payload: M3DecisionRecommendRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.m3_decisions.recommend(
+            actor=x_actor,
+            project_id=project_id,
+            submission_id=payload.submission_id,
+            review_id=payload.review_id,
+            review_revision=payload.review_revision,
+            decision=payload.decision,
+            rationale=payload.rationale,
+            recommendation=payload.recommendation,
+            remaining_unknowns=payload.remaining_unknowns,
+        )
+
+    @application.post("/api/projects/{project_id}/decisions/{decision_id}/confirm")
+    def confirm_m3_decision(
+        project_id: str,
+        decision_id: str,
+        payload: M3DecisionConfirmRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.m3_decisions.confirm(
+            actor=x_actor,
+            project_id=project_id,
+            decision_id=decision_id,
+            expected_revision=payload.expected_revision,
+        )
+
+    @application.get("/api/projects/{project_id}/m3/history")
+    def get_m3_history(
+        project_id: str,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.m3_inspector.history(project_id, actor=x_actor)
 
     @application.get("/api/projects/{project_id}/build-slice")
     def get_build_slice(

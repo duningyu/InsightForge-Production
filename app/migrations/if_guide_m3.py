@@ -158,6 +158,12 @@ def apply(connection: sqlite3.Connection) -> None:
 
     connection.execute("SAVEPOINT if_guide_m3")
     try:
+        # M3_ACTION evaluations intentionally reuse the immutable M2 ledger.
+        # SQLite CHECK constraints require the existing ledger to be rebuilt
+        # when it predates this artifact type.
+        from app.migrations.if_guide_m2 import _rebuild_quality_ledger
+
+        _rebuild_quality_ledger(connection)
         _extend_action_cards(connection)
         _execute_script(connection, SUBMISSIONS_SQL)
         _execute_script(connection, REVIEWS_SQL)

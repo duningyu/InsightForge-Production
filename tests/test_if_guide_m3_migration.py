@@ -87,3 +87,44 @@ def test_m3_schema_enforces_action_and_decision_enum_contracts(db):
     assert "NOT_APPLICABLE" in sql_by_table["action_reviews"]
     for decision in ("CONTINUE", "NARROW", "CHANGE", "STOP", "FINISH"):
         assert decision in sql_by_table["decision_records"]
+
+
+def test_m3_quality_ledger_accepts_m3_action_artifacts(db):
+    with db.connect() as connection:
+        project_id = connection.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1"
+        ).fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO real_idea_quality_evaluations(
+                quality_evaluation_id, project_id, artifact_type,
+                artifact_version_id, upstream_version_ids, quality_layer,
+                quality_revision, status, metric_payload,
+                input_manifest_sha256, evidence_manifest_sha256,
+                policy_version, quality_schema_version, evaluator_role,
+                evaluation_scope, owner_actor, artifact_id, artifact_revision,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "m3-quality-migration-test",
+                project_id,
+                "M3_ACTION",
+                "task-test:1",
+                "{}",
+                "P0",
+                1,
+                "PASS",
+                "{}",
+                "input-sha",
+                "evidence-sha",
+                "if-guide-m3",
+                "if-guide-m3-v1",
+                "system",
+                "IF_GUIDE_M3",
+                "owner",
+                "task-test",
+                1,
+                "2026-09-16T00:00:00+00:00",
+            ),
+        )

@@ -105,9 +105,14 @@ _QUALITY_METRICS = {
         "scope_recall", "scope_precision", "acceptance_coverage", "acceptance_testability",
         "constraint_preservation", "dependency_clarity", "unsupported_claim_rate",
     },
+    "M3_ACTION": {
+        "evidence_sufficiency", "review_accuracy", "result_decision_traceability",
+        "unsupported_conclusion_rate", "recovery_specificity", "unknown_status_distribution",
+    },
 }
 
 M2_P2_RUBRIC_VERSION = "if-guide-m2-quality-v1"
+M3_P2_RUBRIC_VERSION = "if-guide-m3-quality-v1"
 
 
 def _canonical_hash(value: Mapping[str, Any]) -> str:
@@ -145,6 +150,8 @@ class QualityEvaluationService:
         _assert_safe_evidence(binding.evidence_manifest)
         if binding.evaluation_scope == "IF_GUIDE_M2":
             self._validate_m2_binding(binding)
+        elif binding.evaluation_scope == "IF_GUIDE_M3":
+            self._validate_m3_binding(binding)
         elif binding.evaluation_scope != "REAL_IDEA_BATCH":
             raise QualityBindingError("unknown evaluation scope")
         else:
@@ -158,6 +165,31 @@ class QualityEvaluationService:
         missing = _QUALITY_METRICS[binding.artifact_type] - set(binding.metric_payload)
         if missing:
             raise QualityBindingError(f"required metric payload missing: {sorted(missing)[0]}")
+
+    def _validate_m3_binding(self, binding: ArtifactBinding) -> None:
+        if binding.artifact_type != "M3_ACTION":
+            raise QualityBindingError("IF_GUIDE_M3 scope only accepts M3 actions")
+        if binding.batch_id is not None or binding.sample_id is not None:
+            raise QualityBindingError("M3 quality evidence cannot bind to a real-idea sample")
+        if not binding.owner_actor or not binding.artifact_id or binding.artifact_revision is None:
+            raise QualityBindingError("M3 quality evidence requires owner, artifact, and revision binding")
+        if binding.artifact_revision < 1 or not binding.artifact_version_id.strip():
+            raise QualityBindingError("M3 artifact version identity is required")
+        row = self.database.fetch_one(
+            "SELECT project_id, kind, card_revision FROM first_action_cards WHERE task_id = ?",
+            (binding.artifact_id,),
+        )
+        owner = self.database.fetch_one(
+            "SELECT owner_actor FROM project_intents WHERE project_id = ? "
+            "ORDER BY revision DESC LIMIT 1",
+            (binding.project_id,),
+        )
+        if not row or row["project_id"] != binding.project_id or not owner:
+            raise QualityBindingError("M3 quality evidence artifact does not exist")
+        if owner["owner_actor"] != binding.owner_actor or row["kind"] != "FIRST_ACTION":
+            raise QualityBindingError("M3 quality evidence is not bound to the owner first action")
+        if row["card_revision"] != binding.artifact_revision:
+            raise QualityBindingError("M3 artifact revision is stale")
 
     def _validate_m2_binding(self, binding: ArtifactBinding) -> None:
         if binding.artifact_type not in {"BUILD_SLICE", "PROTOTYPE_TASK"}:
@@ -198,7 +230,7 @@ class QualityEvaluationService:
 
     def _insert(self, binding: ArtifactBinding, *, status: str, revision: int = 1,
                 supersedes: str | None = None) -> ArtifactQualityEvaluation:
-        if binding.evaluation_scope == "IF_GUIDE_M2":
+        if binding.evaluation_scope in {"IF_GUIDE_M2", "IF_GUIDE_M3"}:
             duplicate = self.database.fetch_one(
                 "SELECT 1 FROM real_idea_quality_evaluations "
                 "WHERE evaluation_scope=? AND project_id=? AND artifact_type=? "
@@ -306,7 +338,7 @@ class QualityEvaluationService:
 
     @staticmethod
     def _validate_p2_review(
-        review: Mapping[str, Any], *, require_m2_audit_envelope: bool
+        review: Mapping[str, Any], *, required_rubric_version: str | None = None
     ) -> tuple[str, str, list[str]]:
         """Validate the small, safe, human-audit envelope for one P2 review."""
         _assert_safe_evidence(review)
@@ -318,10 +350,10 @@ class QualityEvaluationService:
             raise QualityBindingError("P2 review_id is required")
         rubric_version = review.get("rubric_version", "")
         evidence_ids = review.get("evidence_ids", [])
-        if require_m2_audit_envelope:
+        if required_rubric_version is not None:
             if not isinstance(rubric_version, str) or not rubric_version.strip():
                 raise QualityBindingError("P2 rubric version is required")
-            if rubric_version != M2_P2_RUBRIC_VERSION:
+            if rubric_version != required_rubric_version:
                 raise QualityBindingError("unknown P2 rubric version")
             if not isinstance(evidence_ids, list) or not evidence_ids or any(
                 not isinstance(item, str) or not item.strip() for item in evidence_ids
@@ -338,14 +370,22 @@ class QualityEvaluationService:
         if source.quality_layer not in {"P0", "P1"} or source.status == "FAIL":
             raise QualityBindingError("P2 requires a passing operational evaluation")
         role, review_id, evidence_ids = self._validate_p2_review(
-            review, require_m2_audit_envelope=source.evaluation_scope == "IF_GUIDE_M2"
+            review,
+            required_rubric_version=(
+                M2_P2_RUBRIC_VERSION if source.evaluation_scope == "IF_GUIDE_M2"
+                else M3_P2_RUBRIC_VERSION if source.evaluation_scope == "IF_GUIDE_M3"
+                else None
+            ),
         )
         payload = dict(source.metric_payload)
         payload["p2_review"] = {key: value for key, value in review.items() if key != "evaluator_role"}
         evidence_manifest = {"review_id": review_id}
-        if source.evaluation_scope == "IF_GUIDE_M2":
+        if source.evaluation_scope in {"IF_GUIDE_M2", "IF_GUIDE_M3"}:
             evidence_manifest.update({
-                "rubric_version": M2_P2_RUBRIC_VERSION,
+                "rubric_version": (
+                    M2_P2_RUBRIC_VERSION if source.evaluation_scope == "IF_GUIDE_M2"
+                    else M3_P2_RUBRIC_VERSION
+                ),
                 "evidence_ids": evidence_ids,
             })
         binding = self._binding_from_evaluation(
@@ -392,12 +432,12 @@ class QualityEvaluationService:
         if not correction_reason.strip():
             raise QualityRevisionError("correction reason is required")
         original = self.get(quality_evaluation_id)
-        if original.evaluation_scope == "IF_GUIDE_M2" and original.quality_layer == "P2" and evaluator_role not in {
+        if original.evaluation_scope in {"IF_GUIDE_M2", "IF_GUIDE_M3"} and original.quality_layer == "P2" and evaluator_role not in {
             "idea_provider", "independent_reviewer"
         }:
             raise QualityBindingError("P2 corrections require an authoritative human reviewer")
         next_revision = original.quality_revision + 1
-        if original.evaluation_scope == "IF_GUIDE_M2":
+        if original.evaluation_scope in {"IF_GUIDE_M2", "IF_GUIDE_M3"}:
             existing = self.database.fetch_one(
                 "SELECT 1 FROM real_idea_quality_evaluations WHERE evaluation_scope=? AND project_id=? "
                 "AND artifact_type=? AND artifact_id=? AND artifact_revision=? AND quality_revision=?",

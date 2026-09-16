@@ -97,6 +97,11 @@ _QUALITY_EXTENSION_COLUMNS = {
     "slice_revision",
 }
 
+_QUALITY_ARTIFACT_TYPES = (
+    "'SOLUTIONS', 'PRD', 'TECHDOC', 'HANDOFF', "
+    "'BUILD_SLICE', 'PROTOTYPE_TASK', 'M3_ACTION'"
+)
+
 
 def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     return connection.execute(
@@ -139,7 +144,11 @@ def _rebuild_quality_ledger(connection: sqlite3.Connection) -> None:
             "PRAGMA table_info(real_idea_quality_evaluations)"
         ).fetchall()
     }
-    if _QUALITY_EXTENSION_COLUMNS <= columns:
+    table_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        ("real_idea_quality_evaluations",),
+    ).fetchone()[0]
+    if _QUALITY_EXTENSION_COLUMNS <= columns and "'M3_ACTION'" in table_sql:
         return
 
     for trigger in (
@@ -166,15 +175,14 @@ def _rebuild_quality_ledger(connection: sqlite3.Connection) -> None:
     )
 
     connection.execute(
-        """
+        f"""
         CREATE TABLE real_idea_quality_evaluations (
             quality_evaluation_id TEXT PRIMARY KEY,
             batch_id TEXT REFERENCES real_idea_batches(batch_id),
             sample_id TEXT REFERENCES real_idea_samples(sample_id),
             project_id TEXT NOT NULL REFERENCES projects(id),
             artifact_type TEXT NOT NULL CHECK(artifact_type IN (
-                'SOLUTIONS', 'PRD', 'TECHDOC', 'HANDOFF',
-                'BUILD_SLICE', 'PROTOTYPE_TASK'
+                {_QUALITY_ARTIFACT_TYPES}
             )),
             artifact_version_id TEXT NOT NULL,
             selected_solution_id TEXT REFERENCES solution_candidates(id),

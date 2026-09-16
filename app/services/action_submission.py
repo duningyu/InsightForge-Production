@@ -13,16 +13,14 @@ from typing import Any
 
 from app.db import utc_now
 from app.errors import ConflictError
+from app.services.if_guide_m3_guards import (
+    SOURCE_IDENTITIES,
+    validate_execution_claim,
+    validate_source_identity,
+)
 
 
 SUBMISSION_KINDS = {"DONE", "BLOCKED"}
-SOURCE_IDENTITIES = {
-    "USER_INPUT",
-    "MODEL_HYPOTHESIS",
-    "REAL_OBSERVATION",
-    "SIMULATION",
-    "IMPLEMENTATION_EVIDENCE",
-}
 _EXECUTION_CLAIM_KEYS = {
     "executed",
     "tested",
@@ -79,16 +77,7 @@ class ActionSubmissionService:
 
     @staticmethod
     def _validate_execution_claim(execution_claim: dict[str, Any]) -> None:
-        if not isinstance(execution_claim, dict):
-            raise ValueError("execution_claim must be an object")
-        for key, value in execution_claim.items():
-            if str(key).casefold() in _EXECUTION_CLAIM_KEYS and bool(value):
-                raise ValueError("EXECUTION_CLAIM_NOT_VERIFIED")
-            if (
-                str(key).casefold() == "evidence_level"
-                and str(value).upper() == "AUTHORIZED_RUN"
-            ):
-                raise ValueError("AUTHORIZED_RUN_NOT_ALLOWED")
+        validate_execution_claim(execution_claim)
 
     @staticmethod
     def _public(row: Any) -> dict[str, Any]:
@@ -127,8 +116,7 @@ class ActionSubmissionService:
     ) -> dict[str, Any]:
         if submission_kind not in SUBMISSION_KINDS:
             raise ValueError("INVALID_SUBMISSION_KIND")
-        if source_identity not in SOURCE_IDENTITIES:
-            raise ValueError("INVALID_SOURCE_IDENTITY")
+        validate_source_identity(source_identity)
         if not isinstance(task_revision, int) or task_revision < 1:
             raise ValueError("INVALID_TASK_REVISION")
         if not isinstance(description, str) or not description.strip():

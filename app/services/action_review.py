@@ -9,6 +9,7 @@ from typing import Any
 
 from app.db import utc_now
 from app.errors import ConflictError
+from app.services.if_guide_m3_guards import validate_evidence_level
 
 
 REVIEW_STATUSES = {"PASS", "FAIL", "UNKNOWN", "NOT_APPLICABLE"}
@@ -139,10 +140,13 @@ class ActionReviewService:
     ) -> dict[str, Any]:
         if overall_status not in REVIEW_STATUSES:
             raise ValueError("INVALID_REVIEW_STATUS")
-        if evidence_level not in EVIDENCE_LEVELS:
-            raise ValueError("INVALID_EVIDENCE_LEVEL")
-        if evidence_level == "AUTHORIZED_RUN":
-            raise ValueError("AUTHORIZED_RUN_NOT_ALLOWED")
+        evidence_refs = [
+            ref
+            for item in check_items
+            if isinstance(item, dict)
+            for ref in (item.get("evidence_refs") or [])
+        ]
+        validate_evidence_level(evidence_level, evidence_refs)
         if not isinstance(submission_revision, int) or submission_revision < 1:
             raise ValueError("INVALID_SUBMISSION_REVISION")
         if not isinstance(task_revision, int) or task_revision < 1:

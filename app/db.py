@@ -976,12 +976,14 @@ class Database:
             from app.migrations.if_guide_m1 import apply as apply_if_guide_m1
             from app.migrations.if_guide_m2 import apply as apply_if_guide_m2
             from app.migrations.if_guide_m3 import apply as apply_if_guide_m3
+            from app.migrations.if_guide_m4 import apply as apply_if_guide_m4
 
             apply(connection)
             apply_v2(connection)
             apply_if_guide_m1(connection)
             apply_if_guide_m2(connection)
             apply_if_guide_m3(connection)
+            apply_if_guide_m4(connection)
             connection.execute(
                 """
                 INSERT OR IGNORE INTO project_canvas_versions(

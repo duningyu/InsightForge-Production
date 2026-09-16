@@ -109,6 +109,13 @@ _QUALITY_METRICS = {
         "evidence_sufficiency", "review_accuracy", "result_decision_traceability",
         "unsupported_conclusion_rate", "recovery_specificity", "unknown_status_distribution",
     },
+    "M4_SESSION": {
+        "first_valid_action", "first_usable_flow_completion", "independent_acceptance",
+        "evidence_backed_decision", "recovery", "critical_requirement_recall",
+        "overall_requirement_recall", "requirement_alignment_precision", "checkability_coverage",
+        "acceptance_coverage", "acceptance_testability", "unsupported_claim_rate", "actionability",
+        "result_decision_traceability",
+    },
 }
 
 M2_P2_RUBRIC_VERSION = "if-guide-m2-quality-v1"
@@ -152,6 +159,8 @@ class QualityEvaluationService:
             self._validate_m2_binding(binding)
         elif binding.evaluation_scope == "IF_GUIDE_M3":
             self._validate_m3_binding(binding)
+        elif binding.evaluation_scope == "IF_GUIDE_M4":
+            self._validate_m4_binding(binding)
         elif binding.evaluation_scope != "REAL_IDEA_BATCH":
             raise QualityBindingError("unknown evaluation scope")
         else:
@@ -228,9 +237,29 @@ class QualityEvaluationService:
         ):
             raise QualityBindingError("Prototype Task parent slice binding is inconsistent")
 
+    def _validate_m4_binding(self, binding: ArtifactBinding) -> None:
+        if binding.artifact_type != "M4_SESSION":
+            raise QualityBindingError("IF_GUIDE_M4 scope only accepts M4 sessions")
+        if binding.batch_id is not None or binding.sample_id is not None:
+            raise QualityBindingError("M4 quality evidence cannot bind to a real-idea sample")
+        if not binding.owner_actor or not binding.artifact_id or binding.artifact_revision is None:
+            raise QualityBindingError("M4 quality evidence requires owner, artifact, and revision binding")
+        if binding.artifact_revision < 1 or not binding.artifact_version_id.strip():
+            raise QualityBindingError("M4 artifact version identity is required")
+        row = self.database.fetch_one(
+            "SELECT account_id, project_id, revision FROM m4_sessions WHERE session_id = ?",
+            (binding.artifact_id,),
+        )
+        if not row:
+            raise QualityBindingError("M4 quality evidence session does not exist")
+        if row["account_id"] != binding.owner_actor or row["project_id"] != binding.project_id:
+            raise QualityBindingError("M4 quality evidence is not bound to the owner session")
+        if row["revision"] != binding.artifact_revision:
+            raise QualityBindingError("M4 quality evidence session revision is stale")
+
     def _insert(self, binding: ArtifactBinding, *, status: str, revision: int = 1,
                 supersedes: str | None = None) -> ArtifactQualityEvaluation:
-        if binding.evaluation_scope in {"IF_GUIDE_M2", "IF_GUIDE_M3"}:
+        if binding.evaluation_scope in {"IF_GUIDE_M2", "IF_GUIDE_M3", "IF_GUIDE_M4"}:
             duplicate = self.database.fetch_one(
                 "SELECT 1 FROM real_idea_quality_evaluations "
                 "WHERE evaluation_scope=? AND project_id=? AND artifact_type=? "
@@ -239,7 +268,7 @@ class QualityEvaluationService:
                  binding.artifact_id, binding.artifact_revision, revision),
             )
             if duplicate:
-                raise QualityRevisionError("M2 quality revision already exists")
+                raise QualityRevisionError("quality revision already exists")
         quality_id = f"quality_{uuid.uuid4().hex}"
         created_at = utc_now()
         input_hash = _canonical_hash(binding.input_manifest)
@@ -437,7 +466,7 @@ class QualityEvaluationService:
         }:
             raise QualityBindingError("P2 corrections require an authoritative human reviewer")
         next_revision = original.quality_revision + 1
-        if original.evaluation_scope in {"IF_GUIDE_M2", "IF_GUIDE_M3"}:
+        if original.evaluation_scope in {"IF_GUIDE_M2", "IF_GUIDE_M3", "IF_GUIDE_M4"}:
             existing = self.database.fetch_one(
                 "SELECT 1 FROM real_idea_quality_evaluations WHERE evaluation_scope=? AND project_id=? "
                 "AND artifact_type=? AND artifact_id=? AND artifact_revision=? AND quality_revision=?",

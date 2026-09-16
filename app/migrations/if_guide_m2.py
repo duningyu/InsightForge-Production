@@ -99,7 +99,7 @@ _QUALITY_EXTENSION_COLUMNS = {
 
 _QUALITY_ARTIFACT_TYPES = (
     "'SOLUTIONS', 'PRD', 'TECHDOC', 'HANDOFF', "
-    "'BUILD_SLICE', 'PROTOTYPE_TASK', 'M3_ACTION'"
+    "'BUILD_SLICE', 'PROTOTYPE_TASK', 'M3_ACTION', 'M4_SESSION'"
 )
 
 
@@ -148,7 +148,7 @@ def _rebuild_quality_ledger(connection: sqlite3.Connection) -> None:
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
         ("real_idea_quality_evaluations",),
     ).fetchone()[0]
-    if _QUALITY_EXTENSION_COLUMNS <= columns and "'M3_ACTION'" in table_sql:
+    if _QUALITY_EXTENSION_COLUMNS <= columns and "'M4_SESSION'" in table_sql:
         return
 
     for trigger in (

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 
+from app.migrations.if_guide_m2 import _rebuild_quality_ledger
 
-VERSION = 1
+
+VERSION = 2
 _VERSION_TABLE = "if_guide_m4_schema_meta"
 
 
@@ -186,6 +188,8 @@ def apply(connection: sqlite3.Connection) -> None:
         _execute_script(connection, SESSIONS_SQL)
         _execute_script(connection, GOLD_ITEMS_SQL)
         _execute_script(connection, ANNOTATIONS_SQL)
+        if current < 2:
+            _rebuild_quality_ledger(connection)
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS if_guide_m4_schema_meta (

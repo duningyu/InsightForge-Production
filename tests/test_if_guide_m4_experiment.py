@@ -110,6 +110,20 @@ def test_experiment_freeze_and_owned_session_lifecycle(db):
     with pytest.raises(PermissionError, match="M4_ACCOUNT_ACCESS_DENIED"):
         service.get_session(session_id="s-001", account_id="other-account")
 
+    with pytest.raises(PermissionError, match="M4_ACCOUNT_ACCESS_DENIED"):
+        service.create_session(
+            session_id="s-cross-account-project",
+            experiment_id="m4-exp-001",
+            participant_id="p-001",
+            account_id="other-account",
+            project_id=project_id,
+            condition="GENERAL_AI",
+            assignment_rule_version="balanced-by-purpose-v1",
+            condition_version="general-v1",
+            source_commit="m4-source",
+            deployment_id="m4-deploy",
+        )
+
     with pytest.raises(ConflictError, match="SESSION_EXISTS"):
         service.create_session(
             session_id="s-duplicate",

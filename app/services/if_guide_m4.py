@@ -317,7 +317,8 @@ class M4EvaluationService:
                 raise PermissionError("M4_ACCOUNT_ACCESS_DENIED")
             if participant["experiment_id"] != experiment_id:
                 raise ConflictError("PARTICIPANT_EXPERIMENT_MISMATCH")
-            self._project_owner(connection, project_id)
+            if self._project_owner(connection, project_id) != account_id:
+                raise PermissionError("M4_ACCOUNT_ACCESS_DENIED")
             now = utc_now()
             try:
                 connection.execute(

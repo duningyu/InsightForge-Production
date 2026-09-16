@@ -3233,7 +3233,21 @@ async function confirmFirstAction() {
   } catch (error) { reportError(error); }
 }
 
-async function loadProject(projectId) {
+// Project loading mutates shared state from several independent requests.
+// Serialize complete loads so a slow previous selection cannot overwrite the
+// state of the project the user selected next.
+let projectLoadQueue = Promise.resolve();
+
+function loadProject(projectId) {
+  const next = projectLoadQueue.then(
+    () => loadProjectNow(projectId),
+    () => loadProjectNow(projectId),
+  );
+  projectLoadQueue = next.catch(() => {});
+  return next;
+}
+
+async function loadProjectNow(projectId) {
   if (state.currentProjectId !== projectId) {
     state.generationIntentId = null;
     state.generationTerminalFailure = false;

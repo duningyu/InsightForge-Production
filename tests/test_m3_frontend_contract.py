@@ -91,3 +91,12 @@ def test_m3_frontend_uses_real_routes_and_reopen_state_without_external_actions(
         "m3-export",
     )
     assert not any(control in javascript or control in _read(INDEX) for control in forbidden_controls)
+
+
+def test_m3_project_switches_serialize_full_project_loads():
+    javascript = _read(APP_JS)
+
+    # A project load updates shared state from several awaited requests.  The
+    # browser flow can switch projects while a prior load is still in flight;
+    # the production contract must serialize those stateful loads.
+    assert "projectLoadQueue" in javascript

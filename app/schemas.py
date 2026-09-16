@@ -300,6 +300,116 @@ class M3DecisionConfirmRequest(StrictModel):
     expected_revision: int = Field(ge=1)
 
 
+class M4CreateExperimentRequest(StrictModel):
+    experiment_id: str = Field(min_length=1, max_length=200)
+    spec_version: str = Field(min_length=1, max_length=120)
+    source_commit: str = Field(min_length=1, max_length=120)
+    deployment_id: str = Field(default="local", min_length=1, max_length=200)
+    condition_definitions: dict[str, Any]
+    assignment_rule: str = Field(min_length=1, max_length=2000)
+    metric_versions: dict[str, Any]
+    rubric_versions: dict[str, Any]
+    threshold_policy: dict[str, Any]
+    operator_assistance_policy: dict[str, Any]
+
+
+class M4UpdateExperimentRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+    condition_definitions: dict[str, Any] | None = None
+    assignment_rule: str | None = Field(default=None, min_length=1, max_length=2000)
+    metric_versions: dict[str, Any] | None = None
+    rubric_versions: dict[str, Any] | None = None
+    threshold_policy: dict[str, Any] | None = None
+    operator_assistance_policy: dict[str, Any] | None = None
+
+
+class M4CreateParticipantRequest(StrictModel):
+    participant_id: str = Field(min_length=1, max_length=200)
+    purpose: Literal["LEARNING", "PERSONAL_USE", "FOR_OTHERS"]
+    prior_ai_familiarity: str = Field(min_length=1, max_length=120)
+    prior_product_experience: str = Field(min_length=1, max_length=120)
+    task_category: str = Field(min_length=1, max_length=200)
+
+
+class M4AssignSessionRequest(StrictModel):
+    session_id: str = Field(min_length=1, max_length=200)
+    participant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
+
+
+class M4TransitionSessionRequest(StrictModel):
+    target_state: Literal[
+        "ASSIGNED",
+        "READY",
+        "IN_PROGRESS",
+        "COMPLETED",
+        "WITHDRAWN",
+        "OPERATIONAL_INCOMPLETE",
+        "QUALITY_INCOMPLETE",
+        "FINALIZED",
+    ]
+    expected_revision: int = Field(ge=1)
+    withdrawal_reason: str | None = Field(default=None, max_length=2000)
+
+
+class M4OperationalAccountingRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+    elapsed_ms: int = Field(default=0, ge=0)
+    time_to_first_valid_action_ms: int | None = Field(default=None, ge=0)
+    time_to_first_usable_flow_ms: int | None = Field(default=None, ge=0)
+    edit_count: int = Field(default=0, ge=0)
+    support_minutes: float = Field(default=0, ge=0)
+    provider_calls: int = Field(default=0, ge=0)
+    provider_cost: float = Field(default=0, ge=0)
+    retry_count: int = Field(default=0, ge=0)
+    timeout_count: int = Field(default=0, ge=0)
+    severe_error_count: int = Field(default=0, ge=0)
+    recovery_attempts: int = Field(default=0, ge=0)
+
+
+class M4GoldSetRequest(StrictModel):
+    participant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
+    purpose: str = Field(min_length=1, max_length=2000)
+    constraints: list[str] = Field(default_factory=list, max_length=30)
+    explicit_non_goals: list[str] = Field(default_factory=list, max_length=30)
+    requirements: list[dict[str, Any]] = Field(min_length=1, max_length=50)
+    participant_confirmed: Literal[True]
+    expected_session_revision: int = Field(ge=1)
+
+
+class M4AnnotationRequest(StrictModel):
+    project_id: str = Field(min_length=1, max_length=200)
+    artifact_ref: str = Field(min_length=1, max_length=300)
+    annotation_type: str = Field(min_length=1, max_length=120)
+    target_id: str = Field(min_length=1, max_length=200)
+    label: str = Field(min_length=1, max_length=200)
+    evaluator_role: Literal["participant", "independent_reviewer", "llm_judge"]
+    evidence_ref: str | None = Field(default=None, max_length=300)
+    disagreement: dict[str, Any] | None = None
+    source_identity: str | None = Field(default=None, max_length=80)
+    adjudication_status: str | None = Field(default=None, max_length=80)
+    expected_session_revision: int | None = Field(default=None, ge=1)
+
+
+class M4QualityRequest(StrictModel):
+    project_id: str = Field(min_length=1, max_length=200)
+    expected_session_revision: int = Field(ge=1)
+    metrics: dict[str, Any]
+
+
+class M4FinalizeSessionRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+    outcome: Literal[
+        "WITHDRAWN",
+        "OPERATIONAL_INCOMPLETE",
+        "QUALITY_INCOMPLETE",
+        "COMPLETED",
+        "INTEGRITY_FAIL",
+    ]
+    reason: str | None = Field(default=None, max_length=2000)
+
+
 class CanonicalExampleResponse(StrictModel):
     id: str
     title: str

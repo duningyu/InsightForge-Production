@@ -7,7 +7,7 @@ import sqlite3
 from app.migrations.if_guide_m2 import _rebuild_quality_ledger
 
 
-VERSION = 3
+VERSION = 4
 _VERSION_TABLE = "if_guide_m4_schema_meta"
 
 
@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS m4_sessions (
     )),
     version_split INTEGER NOT NULL DEFAULT 0 CHECK(version_split IN (0, 1)),
     version_split_reason TEXT,
+    finalization_reason TEXT,
     outcome_classification TEXT CHECK(outcome_classification IN (
         'WITHDRAWN', 'OPERATIONAL_INCOMPLETE', 'QUALITY_INCOMPLETE',
         'COMPLETED', 'INTEGRITY_FAIL'
@@ -202,6 +203,15 @@ def apply(connection: sqlite3.Connection) -> None:
             if "outcome_classification" not in columns:
                 connection.execute(
                     "ALTER TABLE m4_sessions ADD COLUMN outcome_classification TEXT"
+                )
+        if current < 4 and _table_exists(connection, "m4_sessions"):
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(m4_sessions)").fetchall()
+            }
+            if "finalization_reason" not in columns:
+                connection.execute(
+                    "ALTER TABLE m4_sessions ADD COLUMN finalization_reason TEXT"
                 )
         connection.execute(
             """

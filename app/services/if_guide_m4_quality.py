@@ -131,6 +131,11 @@ class M4QualityService:
         violations = self._unique(violations)
         payload["primary_metrics"] = primary
         payload["secondary_metrics"] = secondary
+        # The shared quality ledger binds metric names at the top level. Keep
+        # the grouped representation for M4 reports while exposing the same
+        # normalized metrics at the binding boundary.
+        payload.update(primary)
+        payload.update(secondary)
         payload["p0_violations"] = violations
         # Preserve observed accounting in the immutable quality payload.  The
         # P0 gate must see a non-zero observation as a violation rather than

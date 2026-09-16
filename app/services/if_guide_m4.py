@@ -398,6 +398,8 @@ class M4EvaluationService:
         result = dict(row)
         if "outcome_classification" in result:
             result["outcome"] = result["outcome_classification"]
+        if result.get("outcome_classification") == "WITHDRAWN":
+            result["withdrawal_reason"] = result.get("finalization_reason")
         return result
 
     def get_session(self, *, session_id: str, account_id: str) -> dict[str, Any]:
@@ -439,11 +441,13 @@ class M4EvaluationService:
             connection.execute(
                 """
                 UPDATE m4_sessions
-                SET state = ?, revision = revision + 1,
+                SET state = ?,
+                    finalization_reason = CASE WHEN ?='WITHDRAWN' THEN ? ELSE finalization_reason END,
+                    revision = revision + 1,
                     updated_at = ?
                 WHERE session_id = ?
                 """,
-                (target_state, now, session_id),
+                (target_state, target_state, withdrawal_reason, now, session_id),
             )
             return self._session_public(
                 connection.execute(
@@ -637,12 +641,11 @@ class M4EvaluationService:
                 """
                 UPDATE m4_sessions
                 SET state='FINALIZED', outcome_classification=?,
-                    withdrawal_reason=CASE WHEN ?='WITHDRAWN' THEN ? ELSE withdrawal_reason END,
-                    version_split_reason=CASE WHEN ? IS NOT NULL THEN ? ELSE version_split_reason END,
+                    finalization_reason=?,
                     revision=revision+1, updated_at=?
                 WHERE session_id=?
                 """,
-                (effective, effective, reason, reason, reason, now, session_id),
+                (effective, reason, now, session_id),
             )
             return self._session_public(
                 connection.execute(

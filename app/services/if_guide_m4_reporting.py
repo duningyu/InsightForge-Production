@@ -237,3 +237,30 @@ class M4ReportingService:
             sort_keys=True,
             separators=(",", ":"),
         )
+
+    def build_release_gate_report(self, *, experiment_id: str, account_id: str) -> dict[str, Any]:
+        """Return a safe descriptive gate report; it never authorizes release."""
+        report = self.build_report(experiment_id=experiment_id, account_id=account_id)
+        report["release_gate"] = {
+            "safe_only": True,
+            "status": "RELEASE_NOT_AUTHORIZED",
+            "hard_gate_violations": {
+                "cross_account_project_leakage": [],
+                "false_authorized_run": [],
+                "unauthorized_external_action": [],
+                "duplicate_paid_dispatch": [],
+                "wrong_exact_version_binding": [],
+                "severe_unsupported_verified_fact": [],
+            },
+            "integrity_failures": report["integrity_failures"],
+            "quality_summary": report["aggregates"],
+            "missing_or_incomplete": report["missing_or_incomplete"],
+            "version_splits": report["version_splits"],
+            "claim_boundary": {
+                "aggregate_type": "DESCRIPTIVE_ONLY",
+                "automatic_release": "NOT_PROVIDED",
+                "statistical_significance": "NOT_CLAIMED",
+            },
+        }
+        self.reject_unsafe_fields(report)
+        return report

@@ -72,6 +72,16 @@ from app.schemas import (
     RecoveryCreateRequest,
     M3DecisionRecommendRequest,
     M3DecisionConfirmRequest,
+    M4CreateExperimentRequest,
+    M4UpdateExperimentRequest,
+    M4CreateParticipantRequest,
+    M4AssignSessionRequest,
+    M4TransitionSessionRequest,
+    M4OperationalAccountingRequest,
+    M4GoldSetRequest,
+    M4AnnotationRequest,
+    M4QualityRequest,
+    M4FinalizeSessionRequest,
 )
 from app.services.projects import ProjectService
 from app.services.competitors import CompetitorService
@@ -122,6 +132,12 @@ from app.services.action_review import ActionReviewService
 from app.services.recovery import RecoveryService
 from app.services.m3_decision import M3DecisionService
 from app.services.if_guide_m3_inspector import IFGuideM3Inspector
+from app.services.if_guide_m4 import M4EvaluationService
+from app.services.if_guide_m4_assignment import M4AssignmentService
+from app.services.if_guide_m4_gold_set import M4GoldSetService
+from app.services.if_guide_m4_quality import M4QualityService
+from app.services.if_guide_m4_reporting import M4ReportingService
+from app.services.if_guide_m4_inspector import M4InspectorService
 from app.services.solution_generation_guard import SolutionGenerationGuard
 from app.services.provider_dispatch_ledger import ProviderDispatchLedger
 from app.services.retrieval_service import ProjectRetrievalService
@@ -281,6 +297,12 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         application.state.recovery = RecoveryService(db)
         application.state.m3_decisions = M3DecisionService(db)
         application.state.m3_inspector = IFGuideM3Inspector(db)
+        application.state.m4_evaluation = M4EvaluationService(db)
+        application.state.m4_assignment = M4AssignmentService(db)
+        application.state.m4_gold_set = M4GoldSetService(db)
+        application.state.m4_quality = M4QualityService(db)
+        application.state.m4_reporting = M4ReportingService(db)
+        application.state.m4_inspector = M4InspectorService(db)
         application.state.competitors = CompetitorService(db, application.state.projects)
         application.state.competitor_decisions = CompetitorDecisionService(
             db, application.state.projects
@@ -441,6 +463,13 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
     # Expose the repository object for internal/operator issuance and tests;
     # no public issuance endpoint is registered.
     application.state.acceptance_authorization_repository = ProviderAcceptanceAuthorizationRepository(db)
+
+    def require_m4_internal(x_actor: str | None, x_internal: str | None) -> str:
+        """Require the operator-only M4 surface and a trusted actor header."""
+
+        if not x_actor or x_internal != "1":
+            raise PermissionError("M4_INTERNAL_ACCESS_REQUIRED")
+        return x_actor
 
     @application.middleware("http")
     async def beta_session_middleware(request: Request, call_next):
@@ -2229,6 +2258,265 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             content=exporter.to_docx_bytes(version),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={"Content-Disposition": f'attachment; filename="{basename}.docx"'},
+        )
+
+    # M4 internal routes are metadata/evaluation only: M4_PROVIDER_SEARCH_FORBIDDEN.
+    @application.post("/api/internal/m4/experiments")
+    def m4_create_experiment(
+        payload: M4CreateExperimentRequest,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_evaluation.create_experiment(
+            experiment_id=payload.experiment_id,
+            account_id=actor,
+            spec_version=payload.spec_version,
+            source_commit=payload.source_commit,
+            deployment_id=payload.deployment_id,
+            condition_definitions=payload.condition_definitions,
+            assignment_rule=payload.assignment_rule,
+            metric_versions=payload.metric_versions,
+            rubric_versions=payload.rubric_versions,
+            threshold_policy=payload.threshold_policy,
+            operator_assistance_policy=payload.operator_assistance_policy,
+        )
+
+    @application.patch("/api/internal/m4/experiments/{experiment_id}")
+    def m4_update_experiment(
+        experiment_id: str,
+        payload: M4UpdateExperimentRequest,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_evaluation.update_experiment_metadata(
+            experiment_id=experiment_id,
+            account_id=actor,
+            expected_revision=payload.expected_revision,
+            condition_definitions=payload.condition_definitions,
+            assignment_rule=payload.assignment_rule,
+            metric_versions=payload.metric_versions,
+            rubric_versions=payload.rubric_versions,
+            threshold_policy=payload.threshold_policy,
+            operator_assistance_policy=payload.operator_assistance_policy,
+        )
+
+    @application.post("/api/internal/m4/experiments/{experiment_id}/freeze")
+    def m4_freeze_experiment(
+        experiment_id: str,
+        expected_revision: int = Query(..., ge=1),
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_evaluation.freeze_experiment(
+            experiment_id=experiment_id,
+            account_id=actor,
+            expected_revision=expected_revision,
+        )
+
+    @application.post("/api/internal/m4/experiments/{experiment_id}/participants")
+    def m4_create_participant(
+        experiment_id: str,
+        payload: M4CreateParticipantRequest,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_evaluation.create_participant(
+            experiment_id=experiment_id,
+            participant_id=payload.participant_id,
+            account_id=actor,
+            purpose=payload.purpose,
+            prior_ai_familiarity=payload.prior_ai_familiarity,
+            prior_product_experience=payload.prior_product_experience,
+            task_category=payload.task_category,
+        )
+
+    @application.post("/api/internal/m4/experiments/{experiment_id}/sessions")
+    def m4_assign_session(
+        experiment_id: str,
+        payload: M4AssignSessionRequest,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_assignment.assign_session(
+            session_id=payload.session_id,
+            experiment_id=experiment_id,
+            participant_id=payload.participant_id,
+            account_id=actor,
+            project_id=payload.project_id,
+        )
+
+    @application.get("/api/internal/m4/sessions/{session_id}")
+    def m4_inspect_session(
+        session_id: str,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_inspector.inspect_session(
+            session_id=session_id,
+            account_id=actor,
+        )
+
+    @application.post("/api/internal/m4/sessions/{session_id}/transition")
+    def m4_transition_session(
+        session_id: str,
+        payload: M4TransitionSessionRequest,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_evaluation.transition_session(
+            session_id=session_id,
+            account_id=actor,
+            target_state=payload.target_state,
+            expected_revision=payload.expected_revision,
+            withdrawal_reason=payload.withdrawal_reason,
+        )
+
+    @application.post("/api/internal/m4/sessions/{session_id}/accounting")
+    def m4_record_accounting(
+        session_id: str,
+        payload: M4OperationalAccountingRequest,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_evaluation.record_operational_accounting(
+            session_id=session_id,
+            account_id=actor,
+            **payload.model_dump(),
+        )
+
+    @application.post("/api/internal/m4/sessions/{session_id}/gold-set")
+    def m4_finalize_gold_set(
+        session_id: str,
+        payload: M4GoldSetRequest,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_gold_set.finalize_gold_set(
+            session_id=session_id,
+            account_id=actor,
+            confirmed_by="idea_provider",
+            **payload.model_dump(),
+        )
+
+    @application.get("/api/internal/m4/sessions/{session_id}/gold-set")
+    def m4_get_gold_set(
+        session_id: str,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_gold_set.get_gold_set(session_id, actor)
+
+    @application.post("/api/internal/m4/sessions/{session_id}/annotations")
+    def m4_create_annotation(
+        session_id: str,
+        payload: M4AnnotationRequest,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        evaluator_role = {
+            "participant": "PARTICIPANT",
+            "independent_reviewer": "INDEPENDENT_REVIEWER",
+            "llm_judge": "LLM_ASSIST",
+        }[payload.evaluator_role]
+        return application.state.m4_gold_set.create_annotation(
+            session_id=session_id,
+            account_id=actor,
+            evaluator_role=evaluator_role,
+            **{
+                key: value
+                for key, value in payload.model_dump().items()
+                if key != "evaluator_role"
+            },
+        )
+
+    @application.post("/api/internal/m4/sessions/{session_id}/quality")
+    def m4_evaluate_session(
+        session_id: str,
+        payload: M4QualityRequest,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_quality.evaluate_session(
+            session_id=session_id,
+            account_id=actor,
+            **payload.model_dump(),
+        )
+
+    @application.post("/api/internal/m4/sessions/{session_id}/finalize")
+    def m4_finalize_session(
+        session_id: str,
+        payload: M4FinalizeSessionRequest,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_evaluation.finalize_session(
+            session_id=session_id,
+            account_id=actor,
+            **payload.model_dump(),
+        )
+
+    @application.get("/api/internal/m4/experiments/{experiment_id}")
+    def m4_inspect_experiment(
+        experiment_id: str,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_inspector.inspect_experiment(
+            experiment_id=experiment_id,
+            account_id=actor,
+        )
+
+    @application.get("/api/internal/m4/experiments/{experiment_id}/report")
+    def m4_report(
+        experiment_id: str,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_reporting.build_report(
+            experiment_id=experiment_id,
+            account_id=actor,
+        )
+
+    @application.get("/api/internal/m4/experiments/{experiment_id}/release-gate")
+    def m4_release_gate_report(
+        experiment_id: str,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> dict[str, Any]:
+        actor = require_m4_internal(x_actor, x_internal)
+        return application.state.m4_reporting.build_release_gate_report(
+            experiment_id=experiment_id,
+            account_id=actor,
+        )
+
+    @application.get("/api/internal/m4/experiments/{experiment_id}/report/export")
+    def m4_export_report(
+        experiment_id: str,
+        x_actor: str | None = Header(default=None, alias="X-Actor"),
+        x_internal: str | None = Header(default=None, alias="X-InsightForge-Internal"),
+    ) -> Response:
+        actor = require_m4_internal(x_actor, x_internal)
+        return Response(
+            content=application.state.m4_reporting.export_json(
+                experiment_id=experiment_id,
+                account_id=actor,
+            ),
+            media_type="application/json",
         )
 
     @application.get("/api/audit")

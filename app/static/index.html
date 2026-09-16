@@ -386,6 +386,24 @@
               <div id="m3-history-items" class="status-note">暂无 M3 记录。</div>
             </section>
           </section>
+          <section id="m4-evaluation-panel" class="secondary-panel" hidden aria-labelledby="m4-evaluation-title">
+            <div class="secondary-panel-heading">
+              <div>
+                <p class="eyebrow">M4 · Controlled Evaluation</p>
+                <h2 id="m4-evaluation-title">M4 控制评测</h2>
+                <p>仅显示安全的实验/会话元数据和聚合结果，不显示参与者私密正文。</p>
+              </div>
+              <span id="m4-status" class="evidence-status status-unverified">只读</span>
+            </div>
+            <p id="m4-read-only-note" class="status-note">M4_READ_ONLY：本地仪表盘只读，不启动参与者会话或 Provider。</p>
+            <div class="m2-form-actions">
+              <label>Experiment ID<input id="m4-experiment-id" autocomplete="off"></label>
+              <label>Session ID<input id="m4-session-id" autocomplete="off"></label>
+              <button id="m4-refresh" class="button button-secondary" type="button">只读加载当前会话</button>
+              <button id="m4-report-export" class="button button-secondary" type="button">加载安全报告</button>
+            </div>
+            <pre id="m4-report" class="m4-report-output"></pre>
+          </section>
           <section id="snapshot-view" class="workspace-view" data-workspace-view="snapshot">
             <div id="snapshot-content" class="view-content"></div>
             <button id="snapshot-primary-action" class="button button-primary hidden" type="button"></button>

@@ -39,6 +39,7 @@ const state = {
     decision: null,
     busy: false,
   },
+  m4: {experiment: null, session: null, report: null, busy: false},
   walkthrough: null,
   modelProfiles: [],
   projectModelProfileId: null,
@@ -2865,6 +2866,40 @@ function renderM3() {
   renderM3History(history);
 }
 
+function m4Headers() {
+  return {"X-Actor": String(state.accountId || ""), "X-InsightForge-Internal": "1"};
+}
+
+function renderM4() {
+  const panel = qs("#m4-evaluation-panel");
+  if (!panel) return;
+  panel.hidden = !state.currentProjectId;
+  const status = qs("#m4-status");
+  if (status) status.textContent = state.m4.report ? "已加载安全报告" : "只读";
+  const pre = qs("#m4-report");
+  if (pre) pre.textContent = state.m4.report
+    ? JSON.stringify(state.m4.report, null, 2)
+    : "选择项目后输入实验/会话 ID，再执行只读加载。";
+}
+
+async function loadM4Report() {
+  const experimentId = qs("#m4-experiment-id")?.value.trim();
+  if (!experimentId) { toast("请输入 Experiment ID。"); return; }
+  const report = await api(`/api/internal/m4/experiments/${encodeURIComponent(experimentId)}/report`, {headers: m4Headers()});
+  state.m4.report = report;
+  renderM4();
+}
+
+async function loadM4() {
+  const sessionId = qs("#m4-session-id")?.value.trim();
+  if (!sessionId) { toast("请输入 Session ID。"); return; }
+  const session = await api(`/api/internal/m4/sessions/${encodeURIComponent(sessionId)}`, {headers: m4Headers()});
+  state.m4.session = session;
+  if (session.experiment_id && !qs("#m4-experiment-id").value) qs("#m4-experiment-id").value = session.experiment_id;
+  await loadM4Report();
+  renderM4();
+}
+
 async function loadM3State() {
   if (!state.currentProjectId) return;
   try { state.m3.history = await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/m3/history`); }
@@ -3259,6 +3294,7 @@ async function loadProjectNow(projectId) {
   state.buildSliceQuality = null;
   state.prototypeTask = null;
   state.prototypeTaskQuality = null;
+  state.m4 = {experiment: null, session: null, report: null, busy: false};
   state.m3 = {history: null, currentSubmission: null, currentReview: null, recovery: null, decision: null, busy: false};
   state.documentWorkspace = {...state.documentWorkspace, versions: [], selectedVersionId: null, compareVersionId: null, draft: null, dirty: false, error: null};
   renderProjectPicker();
@@ -3266,6 +3302,7 @@ async function loadProjectNow(projectId) {
   renderProjectIntent();
   renderM2BuildSlice();
   renderM3();
+  renderM4();
   try { state.ideaBrief = await api(`/api/projects/${projectId}/idea-brief`); } catch (_) { state.ideaBrief = null; }
   try { state.solutions = await api(`/api/projects/${projectId}/solutions`); } catch (_) { state.solutions = null; }
   try { state.snapshot = await api(`/api/projects/${projectId}/snapshot`); } catch (_) { state.snapshot = null; }
@@ -3765,6 +3802,8 @@ function wireEvents() {
   qs("#m3-recovery-create")?.addEventListener("click", () => void createM3Recovery());
   qs("#m3-decision-recommend")?.addEventListener("click", () => void recommendM3Decision());
   qs("#m3-decision-confirm")?.addEventListener("click", () => void confirmM3Decision());
+  qs("#m4-refresh")?.addEventListener("click", () => void loadM4());
+  qs("#m4-report-export")?.addEventListener("click", () => void loadM4Report());
   qs("#ai-reference-generate")?.addEventListener("click", () => void generateAIReference());
   qs("#evidence-coach-open")?.addEventListener("click", () => selectEvidenceEntry("action_guidance"));
   qs("#competitor-open")?.addEventListener("click", openCompetitors);

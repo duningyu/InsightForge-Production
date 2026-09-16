@@ -171,3 +171,25 @@ def test_gold_set_revisions_are_append_only_and_exactly_bound(db):
     with pytest.raises(PermissionError, match="M4_ACCOUNT_ACCESS_DENIED"):
         service.get_gold_set("gold-session", "other-account")
 
+
+def test_annotation_accepts_safe_string_evidence_reference(db):
+    account_id, participant_id, project_id = _create_m4_session(db)
+    service = M4GoldSetService(db)
+
+    annotation = service.create_annotation(
+        session_id="gold-session",
+        account_id=account_id,
+        project_id=project_id,
+        artifact_ref="m4://gold-session/artifact",
+        annotation_type="REQUIREMENT_MAPPING",
+        target_id="req-1",
+        label="SUPPORTED",
+        evaluator_role="INDEPENDENT_REVIEWER",
+        evidence_ref="safe-ref://fixture",
+        source_identity="REAL_OBSERVATION",
+        adjudication_status="PENDING",
+        expected_session_revision=1,
+    )
+
+    assert annotation["evidence_ref"]["ref"] == "safe-ref://fixture"
+    assert annotation["evidence_ref"]["source_identity"] == "REAL_OBSERVATION"

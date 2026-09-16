@@ -296,7 +296,7 @@ class M4GoldSetService:
         target_id: str,
         label: str,
         evaluator_role: str,
-        evidence_ref: Mapping[str, Any] | None = None,
+        evidence_ref: Mapping[str, Any] | str | None = None,
         disagreement: Mapping[str, Any] | None = None,
         source_identity: str | None = None,
         adjudication_status: str | None = None,
@@ -313,7 +313,12 @@ class M4GoldSetService:
             raise ConflictError("ANNOTATION_ADJUDICATION_STATUS_INVALID")
         if evaluator_role == "LLM_ASSIST" and status == "ADJUDICATED":
             raise ConflictError("LLM_ASSIST_CANNOT_FINALIZE_GROUND_TRUTH")
-        evidence = dict(evidence_ref or {})
+        if evidence_ref is None:
+            evidence: dict[str, Any] = {}
+        elif isinstance(evidence_ref, Mapping):
+            evidence = dict(evidence_ref)
+        else:
+            evidence = {"ref": _text(evidence_ref, "ANNOTATION_EVIDENCE_REF_INVALID")}
         if disagreement is not None:
             evidence["disagreement"] = dict(disagreement)
         if source_identity is not None:

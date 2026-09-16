@@ -45,7 +45,11 @@ def test_m4_metrics_use_conditional_denominators_and_existing_quality_ledger(db)
         "SELECT evaluation_scope, artifact_type, quality_layer FROM real_idea_quality_evaluations "
         "WHERE quality_evaluation_id = ?", (result["quality_evaluation_id"],)
     )
-    assert tuple(row) == ("IF_GUIDE_M4", "M4_SESSION", "P0")
+    assert (
+        row["evaluation_scope"],
+        row["artifact_type"],
+        row["quality_layer"],
+    ) == ("IF_GUIDE_M4", "M4_SESSION", "P0")
     assert result["provider_calls"] == 0
     assert result["search_calls"] == 0
 
@@ -60,4 +64,3 @@ def test_m4_metrics_reject_invalid_ratio_and_preserve_missing_as_not_applicable(
     )
     assert result["p0_status"] == "FAIL"
     assert "invalid_metric_ratio" in result["p0_violations"]
-

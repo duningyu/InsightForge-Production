@@ -32,6 +32,28 @@ _SESSION_STATES = {
     "QUALITY_INCOMPLETE",
     "FINALIZED",
 }
+_OUTCOMES = {
+    "WITHDRAWN",
+    "OPERATIONAL_INCOMPLETE",
+    "QUALITY_INCOMPLETE",
+    "COMPLETED",
+    "INTEGRITY_FAIL",
+}
+_VERSION_FIELDS = {
+    "source_commit": "source_commit",
+    "deployment_id": "deployment_id",
+    "condition_definitions": "condition_definitions_json",
+    "condition_definitions_json": "condition_definitions_json",
+    "assignment_rule": "assignment_rule",
+    "metric_versions": "metric_versions_json",
+    "metric_versions_json": "metric_versions_json",
+    "rubric_versions": "rubric_versions_json",
+    "rubric_versions_json": "rubric_versions_json",
+    "threshold_policy": "threshold_policy_json",
+    "threshold_policy_json": "threshold_policy_json",
+    "operator_assistance_policy": "operator_assistance_policy_json",
+    "operator_assistance_policy_json": "operator_assistance_policy_json",
+}
 _SESSION_TRANSITIONS = {
     "ASSIGNED": {"READY", "WITHDRAWN", "OPERATIONAL_INCOMPLETE"},
     "READY": {"IN_PROGRESS", "WITHDRAWN", "OPERATIONAL_INCOMPLETE"},
@@ -373,7 +395,10 @@ class M4EvaluationService:
 
     @staticmethod
     def _session_public(row: sqlite3.Row) -> dict[str, Any]:
-        return dict(row)
+        result = dict(row)
+        if "outcome_classification" in result:
+            result["outcome"] = result["outcome_classification"]
+        return result
 
     def get_session(self, *, session_id: str, account_id: str) -> dict[str, Any]:
         with self.db.connect() as connection:
@@ -495,4 +520,132 @@ class M4EvaluationService:
             )
             return self._session_public(
                 connection.execute("SELECT * FROM m4_sessions WHERE session_id = ?", (session_id,)).fetchone()
+            )
+
+    def record_version_observation(
+        self,
+        *,
+        experiment_id: str,
+        account_id: str,
+        observed_metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Compare runtime metadata to the frozen experiment and split safely."""
+        if not isinstance(observed_metadata, dict):
+            raise ConflictError("VERSION_METADATA_INVALID")
+        with self.db.connect() as connection:
+            experiment = self._experiment(connection, experiment_id, account_id)
+            if experiment["state"] not in {"FROZEN", "VERSION_SPLIT"}:
+                raise ConflictError("EXPERIMENT_NOT_FROZEN")
+            mismatches: list[str] = []
+            for key, observed in observed_metadata.items():
+                column = _VERSION_FIELDS.get(key)
+                if column is None:
+                    continue
+                expected = experiment[column]
+                if column.endswith("_json"):
+                    observed_value = _json(observed)
+                    expected_value = _json(_from_json(expected))
+                else:
+                    observed_value = str(observed)
+                    expected_value = str(expected)
+                if observed_value != expected_value:
+                    mismatches.append(key)
+            already_split = experiment["state"] == "VERSION_SPLIT"
+            if mismatches and not already_split:
+                reason = _json({"mismatches": sorted(mismatches)})
+                now = utc_now()
+                connection.execute(
+                    """
+                    UPDATE m4_experiments
+                    SET state='VERSION_SPLIT', revision=revision+1, updated_at=?
+                    WHERE experiment_id=?
+                    """,
+                    (now, experiment_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE m4_sessions
+                    SET version_split=1, version_split_reason=?, revision=revision+1,
+                        updated_at=?
+                    WHERE experiment_id=? AND version_split=0
+                    """,
+                    (reason, now, experiment_id),
+                )
+            return {
+                "experiment_id": experiment_id,
+                "version_split": bool(mismatches or already_split),
+                "mismatches": sorted(mismatches),
+                "state": "VERSION_SPLIT" if (mismatches or already_split) else experiment["state"],
+            }
+
+    def aggregateable_session(
+        self, *, session_id: str, account_id: str
+    ) -> dict[str, Any]:
+        """Return a session only when it belongs to a non-split experiment."""
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM m4_sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError("M4_SESSION_NOT_FOUND")
+            self._check_account(row, account_id)
+            experiment = self._experiment(connection, row["experiment_id"], account_id)
+            if row["version_split"] or experiment["state"] == "VERSION_SPLIT":
+                raise ConflictError("EXPERIMENT_VERSION_SPLIT")
+            return self._session_public(row)
+
+    def finalize_session(
+        self,
+        *,
+        session_id: str,
+        account_id: str,
+        expected_revision: int,
+        outcome: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Classify and terminally finalize a session without fabricating quality."""
+        if outcome not in _OUTCOMES:
+            raise ConflictError("INVALID_OUTCOME_CLASSIFICATION")
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM m4_sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError("M4_SESSION_NOT_FOUND")
+            self._check_account(row, account_id)
+            self._check_revision(row, expected_revision, "SESSION_REVISION_CONFLICT")
+            if row["state"] == "FINALIZED":
+                raise ConflictError("SESSION_FINALIZED")
+            if outcome != "COMPLETED":
+                reason = _required_text(reason or "", "OUTCOME_REASON_REQUIRED")
+            effective = outcome
+            if outcome == "COMPLETED":
+                quality = connection.execute(
+                    """
+                    SELECT status FROM real_idea_quality_evaluations
+                    WHERE evaluation_scope='IF_GUIDE_M4' AND artifact_type='M4_SESSION'
+                      AND artifact_id=? AND artifact_revision=? AND quality_layer='P1'
+                    ORDER BY quality_revision DESC LIMIT 1
+                    """,
+                    (session_id, row["revision"]),
+                ).fetchone()
+                if quality is None or quality["status"] != "PASS":
+                    effective = "QUALITY_INCOMPLETE"
+                    reason = reason or "QUALITY_EVIDENCE_INCOMPLETE"
+            now = utc_now()
+            connection.execute(
+                """
+                UPDATE m4_sessions
+                SET state='FINALIZED', outcome_classification=?,
+                    withdrawal_reason=CASE WHEN ?='WITHDRAWN' THEN ? ELSE withdrawal_reason END,
+                    version_split_reason=CASE WHEN ? IS NOT NULL THEN ? ELSE version_split_reason END,
+                    revision=revision+1, updated_at=?
+                WHERE session_id=?
+                """,
+                (effective, effective, reason, reason, reason, now, session_id),
+            )
+            return self._session_public(
+                connection.execute(
+                    "SELECT * FROM m4_sessions WHERE session_id = ?", (session_id,)
+                ).fetchone()
             )

@@ -67,6 +67,7 @@ from app.schemas import (
     BuildSliceUpsertRequest,
     M2RevisionRequest,
     PrototypeTaskUpsertRequest,
+    ActionSubmissionCreateRequest,
 )
 from app.services.projects import ProjectService
 from app.services.competitors import CompetitorService
@@ -112,6 +113,7 @@ from app.services.beta_usage import BetaUsageService
 from app.services.project_intent import ProjectIntentService
 from app.services.build_slice import BuildSliceService
 from app.services.prototype_task import PrototypeTaskService
+from app.services.action_submission import ActionSubmissionService
 from app.services.solution_generation_guard import SolutionGenerationGuard
 from app.services.provider_dispatch_ledger import ProviderDispatchLedger
 from app.services.retrieval_service import ProjectRetrievalService
@@ -266,6 +268,7 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
         application.state.project_intent = ProjectIntentService(db)
         application.state.build_slices = BuildSliceService(db)
         application.state.prototype_tasks = PrototypeTaskService(db)
+        application.state.action_submissions = ActionSubmissionService(db)
         application.state.competitors = CompetitorService(db, application.state.projects)
         application.state.competitor_decisions = CompetitorDecisionService(
             db, application.state.projects
@@ -1507,6 +1510,36 @@ def create_app(*, database_path: str | Path | None = None, seed: bool = True,
             task_id,
             expected_revision=payload.expected_revision,
             actor=x_actor,
+        )
+
+    @application.post("/api/projects/{project_id}/actions/{task_id}/submissions", status_code=201)
+    def create_action_submission(
+        project_id: str,
+        task_id: str,
+        payload: ActionSubmissionCreateRequest,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.action_submissions.submit(
+            project_id=project_id,
+            task_id=task_id,
+            task_revision=payload.task_revision,
+            submission_kind=payload.submission_kind,
+            description=payload.description,
+            attachment_refs=payload.attachment_refs,
+            check_results=payload.check_results,
+            execution_claim=payload.execution_claim,
+            source_identity=payload.source_identity,
+            actor=x_actor,
+        )
+
+    @application.get("/api/projects/{project_id}/actions/{task_id}/submissions")
+    def list_action_submissions(
+        project_id: str,
+        task_id: str,
+        x_actor: str = Header(default="web_user", alias="X-Actor"),
+    ) -> dict[str, Any]:
+        return application.state.action_submissions.list_for_task(
+            project_id, task_id, actor=x_actor
         )
 
     @application.get("/api/projects/{project_id}/build-slice")

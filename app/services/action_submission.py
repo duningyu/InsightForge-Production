@@ -194,3 +194,24 @@ class ActionSubmissionService:
                     (submission_id,),
                 ).fetchone()
             )
+
+    def list_for_task(self, project_id: str, task_id: str, *, actor: str) -> dict[str, Any]:
+        with self.db.connect() as connection:
+            self._project(connection, project_id)
+            if self._current_owner(connection, project_id) != actor:
+                raise PermissionError("project belongs to another actor")
+            self._task(connection, project_id, task_id)
+            rows = connection.execute(
+                """SELECT * FROM action_submissions
+                   WHERE project_id = ? AND task_id = ?
+                   ORDER BY revision ASC, created_at ASC""",
+                (project_id, task_id),
+            ).fetchall()
+            return {
+                "project_id": project_id,
+                "task_id": task_id,
+                "submissions": [self._public(row) for row in rows],
+                "provider_dispatches": 0,
+                "provider_transports": 0,
+                "search_requests": 0,
+            }

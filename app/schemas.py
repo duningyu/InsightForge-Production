@@ -248,6 +248,22 @@ class PrototypeTaskUpsertRequest(StrictModel):
     permission_risk_notes: list[str] | None = Field(default=None, max_length=30)
 
 
+class ActionSubmissionCreateRequest(StrictModel):
+    task_revision: int = Field(ge=1)
+    submission_kind: Literal["DONE", "BLOCKED"]
+    description: str = Field(min_length=1, max_length=8000)
+    attachment_refs: list[Any] = Field(default_factory=list, max_length=30)
+    check_results: list[Any] = Field(default_factory=list, max_length=30)
+    execution_claim: dict[str, Any] = Field(default_factory=dict)
+    source_identity: Literal[
+        "USER_INPUT",
+        "MODEL_HYPOTHESIS",
+        "REAL_OBSERVATION",
+        "SIMULATION",
+        "IMPLEMENTATION_EVIDENCE",
+    ]
+
+
 class CanonicalExampleResponse(StrictModel):
     id: str
     title: str

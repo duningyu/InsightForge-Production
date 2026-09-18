@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import json
+from fastapi.testclient import TestClient
+
+from app.config import Settings
+from app.main import create_app
+from dataclasses import replace
+import pytest
+
 
 def create_quick_project(client, idea: str = "帮小型便利店减少缺货") -> str:
     response = client.post(
@@ -8,6 +16,23 @@ def create_quick_project(client, idea: str = "帮小型便利店减少缺货") -
     )
     assert response.status_code == 201, response.text
     return response.json()["project_id"]
+
+
+@pytest.fixture()
+def stage_a_quick_start_client(monkeypatch, tmp_path):
+    settings = replace(
+        Settings.from_env(),
+        accounts_enabled=False,
+        safe_fixture_mode=True,
+        beta_participant_id="railway_stage_a",
+    )
+    application = create_app(
+        database_path=tmp_path / "stage_a_quick_start.sqlite3",
+        seed=False,
+        settings_override=settings,
+    )
+    with TestClient(application) as test_client:
+        yield test_client
 
 
 def test_quick_start_creates_project_and_inferred_brief_without_canvas_or_guide(client):
@@ -34,6 +59,27 @@ def test_quick_start_creates_project_and_inferred_brief_without_canvas_or_guide(
     assert client.app.state.db.fetch_one(
         "SELECT id FROM project_snapshots WHERE project_id = ?", (project_id,)
     ) is None
+
+
+def test_quick_start_brief_uses_current_input_instead_of_fixture_context(stage_a_quick_start_client):
+    idea = "CLOUD_ACCEPTANCE_UNIQUE_IDEA_20260918"
+    target_user = "CLOUD_ACCEPTANCE_UNIQUE_TARGET_20260918"
+    response = stage_a_quick_start_client.post(
+        "/api/projects/quick-start",
+        json={
+            "idea": idea,
+            "target_user": target_user,
+            "resources": [],
+            "priority": "fast_mvp",
+        },
+    )
+    assert response.status_code == 201, response.text
+    brief = response.json()["idea_brief"]
+    assert brief["original_idea"] == idea
+    assert brief["target_user"] == target_user
+    serialized = json.dumps(brief, ensure_ascii=False)
+    for unrelated in ("求职者", "面试", "投递", "便利店", "B2B"):
+        assert unrelated not in serialized
 
 
 def test_quick_start_persists_complete_runtime_trace(client):

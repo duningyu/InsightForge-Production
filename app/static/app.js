@@ -3778,6 +3778,14 @@ async function mutateCompetitors(path, options, adding = false) {
     renderCompetitorBusy();
   }
 }
+function returnToIdeaEdit(event) {
+  event?.preventDefault?.();
+  closeStaleIdeaBriefDialog();
+  showQuickStart();
+  qs("#quick-start-idea")?.focus();
+  toast("已返回修改，当前输入已保留；修改后可重新生成项目方案。");
+}
+
 function wireEvents() {
   qs("#m1-intent-form")?.addEventListener("submit", saveProjectIntent);
   qs("#m1-action-form")?.addEventListener("submit", saveFirstAction);
@@ -3837,7 +3845,7 @@ function wireEvents() {
     }, {delay: 500});
   }));
   qs("#idea-brief-form").addEventListener("submit", confirmIdeaBrief);
-  qs("#idea-brief-edit").addEventListener("click", (event) => { event.preventDefault(); qs("#idea-brief-target-user")?.focus(); toast("可以直接修改以上项目理解，确认后才会保存。"); });
+  qs("#idea-brief-edit").addEventListener("click", returnToIdeaEdit);
   qs("#new-idea-button").addEventListener("click", showQuickStart);
   qs("#settings-button").addEventListener("click", showModelSettings);
   qs("#settings-back").addEventListener("click", showQuickStart);
@@ -3896,6 +3904,7 @@ const recoveryTestHooks = window.__INSIGHTFORGE_TEST__ ? {
     cancelActiveGeneration,
     state,
     quickStart,
+    returnToIdeaEdit,
     confirmIdeaBrief,
     openIdeaBriefReview,
     renderIdeaBrief,

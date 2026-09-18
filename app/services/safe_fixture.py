@@ -43,15 +43,24 @@ class StageASafeFixtureRuntime:
         self.scenario = scenario
         self.fixture_invocation_count = 0
 
-    def synthetic_brief(self, idea: str) -> IdeaBriefDraft:
+    def synthetic_brief(
+        self,
+        idea: str,
+        *,
+        target_user: str | None = None,
+        resources: list[str] | None = None,
+    ) -> IdeaBriefDraft:
+        normalized_idea = idea.strip()
+        normalized_target_user = (target_user or "本次验收中填写的目标用户").strip()
+        known_resources = [item.strip() for item in (resources or []) if item.strip()]
         return IdeaBriefDraft(
-            original_idea=idea,
-            target_user="正在求职、需要管理多个投递流程的求职者",
-            problem="职位、面试、材料和跟进事项分散，用户容易错过下一步",
-            desired_outcome="让用户在一个清晰的时间线上知道每个申请的状态和下一步",
-            known_resources=["用户主动记录的职位链接和面试时间"],
-            constraints=["第一版不接入招聘平台账号", "不自动替用户发送消息"],
-            unknowns=["用户愿意每天维护多久", "哪些提醒真正能改变行为"],
+            original_idea=normalized_idea,
+            target_user=normalized_target_user,
+            problem=f"需要验证如何围绕“{normalized_idea}”完成第一步可执行行动",
+            desired_outcome=f"让用户能够围绕“{normalized_idea}”明确下一步并检查结果",
+            known_resources=known_resources,
+            constraints=["第一版只验证当前输入定义的目标", "不把其他项目内容带入本项目"],
+            unknowns=["用户希望如何判断第一步已经完成"],
             provenance={
                 "target_user": "model_hypothesis",
                 "problem": "model_hypothesis",
@@ -60,7 +69,11 @@ class StageASafeFixtureRuntime:
         )
 
     def interpret_idea(self, request: QuickStartRequest) -> IdeaBriefDraft:
-        return self.synthetic_brief(request.idea.strip())
+        return self.synthetic_brief(
+            request.idea,
+            target_user=request.target_user,
+            resources=request.resources,
+        )
 
     def generate_ai_reference(self, context: dict[str, Any]) -> AIReferenceDraft:
         return AIReferenceDraft(

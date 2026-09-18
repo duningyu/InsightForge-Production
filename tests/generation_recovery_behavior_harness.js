@@ -81,6 +81,16 @@ vm.runInThisContext(fs.readFileSync("app/static/app.js", "utf8"), {filename: "ap
 
 const hooks = window.InsightForgeUi.__test;
 assert.ok(hooks, "app.js must expose behavior hooks only in test mode");
+hooks.state.currentProjectId = "fresh-quick-start-project";
+getElement("#idea-brief-dialog").setAttribute("open", "");
+getElement("#quick-start-idea").value = "CLOUD_ACCEPTANCE_UNIQUE_IDEA_20260918";
+getElement("#quick-start-target-user").value = "CLOUD_ACCEPTANCE_UNIQUE_TARGET_20260918";
+hooks.returnToIdeaEdit({preventDefault() {}});
+assert.equal(hooks.state.currentProjectId, "fresh-quick-start-project", "return-to-edit preserves the current project identity");
+assert.ok(getElement("#idea-brief-dialog").closeCalls >= 1, "return-to-edit closes the confirmation dialog");
+assert.equal(getElement("#quick-start-view").classList.contains("hidden"), false, "return-to-edit returns to the quick-start view");
+assert.equal(getElement("#quick-start-idea").value, "CLOUD_ACCEPTANCE_UNIQUE_IDEA_20260918", "return-to-edit preserves the current idea");
+assert.equal(getElement("#quick-start-target-user").value, "CLOUD_ACCEPTANCE_UNIQUE_TARGET_20260918", "return-to-edit preserves the current target user");
 hooks.state.runtimeMode = "hybrid";
 hooks.renderRuntimeDisclosure();
 assert.equal(
